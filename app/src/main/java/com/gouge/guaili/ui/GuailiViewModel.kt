@@ -54,6 +54,7 @@ class GuailiViewModel(
     private var pendingRefreshClearsCells: Boolean = false
     private var fetcher: GuailiFetcher? = null
     private var fetcherBaseUrl: String? = null
+    private var isForeground: Boolean = true
 
     init {
         viewModelScope.launch {
@@ -81,6 +82,17 @@ class GuailiViewModel(
     fun saveSettings(settings: GuailiSettings) {
         viewModelScope.launch {
             settingsSource.save(settings)
+        }
+    }
+
+    fun setForeground(foreground: Boolean) {
+        if (isForeground == foreground) return
+        isForeground = foreground
+        if (foreground && autoRefreshEnabled) {
+            restartAutoRefresh()
+        } else {
+            autoRefreshJob?.cancel()
+            autoRefreshJob = null
         }
     }
 
@@ -173,6 +185,7 @@ class GuailiViewModel(
 
     private fun restartAutoRefresh() {
         autoRefreshJob?.cancel()
+        if (!isForeground) return
         autoRefreshJob = viewModelScope.launch {
             while (true) {
                 val seconds = _state.value.settings.autoRefreshSeconds.coerceAtLeast(1)

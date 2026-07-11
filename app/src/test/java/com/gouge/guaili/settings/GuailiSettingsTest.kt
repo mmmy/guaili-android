@@ -16,10 +16,13 @@ class GuailiSettingsTest {
                 "XAUUSDT",
                 "CLUSDT",
                 "QQQUSDT",
-                "HKHYNIXUSDT",
+                "SKHYNIXUSDT",
             ),
             settings.symbols,
         )
+        assertEquals(SymbolDisplayMode.Auto, settings.symbolDisplayMode)
+        assertEquals(SymbolColumnWidthMode.Auto, settings.symbolColumnWidthMode)
+        assertEquals(TableDensity.Compact, settings.tableDensity)
         assertEquals(
             listOf(
                 "1",

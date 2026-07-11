@@ -1,20 +1,32 @@
 package com.gouge.guaili.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.gouge.guaili.domain.GuailiCell
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -22,54 +34,123 @@ fun CellDetailSheet(
     cell: GuailiCell,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 20.dp, top = 8.dp, end = 20.dp, bottom = 28.dp),
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, top = 4.dp, end = 20.dp, bottom = 28.dp),
         ) {
             Text(
-                text = "${cell.symbol} ${formatInterval(cell.interval)}",
-                style = MaterialTheme.typography.titleMedium,
+                text = "${cell.symbol}  ${formatInterval(cell.interval)}",
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 12.dp),
             )
-            DetailLine("symbol", cell.symbol)
-            DetailLine("interval", cell.interval)
-            DetailLine("value", cell.value?.toString())
-            DetailLine("guaili", cell.guaili?.toString())
-            DetailLine("ma", cell.ma?.toString())
-            DetailLine("atr14", cell.atr14?.toString())
-            DetailLine("atrRank", cell.atrRank?.toString())
-            DetailLine("rankFilter", cell.rankFilter?.toString())
-            DetailLine("longTrend", cell.longTrend?.toString())
-            DetailLine("shortTrend", cell.shortTrend?.toString())
-            DetailLine("isClosed", cell.isClosed?.toString())
-            DetailLine("openTime", cell.openTime)
-            DetailLine("closeTime", cell.closeTime)
+            Text(
+                text = cell.value?.let { "Signal value $it" } ?: "No signal value",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
+            )
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                StatusChip("Candle", if (cell.isClosed == true) "Closed" else "Live")
+                StatusChip("ATR filter", if (cell.rankFilter == true) "Passed" else "Filtered")
+                val trend = when {
+                    cell.longTrend == true && cell.shortTrend != true -> "Long"
+                    cell.shortTrend == true && cell.longTrend != true -> "Short"
+                    else -> "Neutral"
+                }
+                StatusChip("Trend", trend)
+            }
+
+            DetailSection("Indicators")
+            DetailLine("Guaili", formatDecimal(cell.guaili, 4))
+            DetailLine("Moving average", formatDecimal(cell.ma, 4))
+            DetailLine("ATR", formatDecimal(cell.atr14, 4))
+            DetailLine("ATR rank", formatDecimal(cell.atrRank, 2, "%"))
+
+            DetailSection("Candle time")
+            DetailLine("Open", formatDateTime(cell.openTime))
+            DetailLine("Close", formatDateTime(cell.closeTime))
         }
     }
 }
 
 @Composable
-private fun DetailLine(label: String, value: String?) {
+private fun StatusChip(label: String, value: String) {
+    AssistChip(
+        onClick = {},
+        label = {
+            Column {
+                Text(label, style = MaterialTheme.typography.labelSmall)
+                Text(value, fontWeight = FontWeight.SemiBold)
+            }
+        },
+    )
+}
+
+@Composable
+private fun DetailSection(title: String) {
+    Spacer(modifier = Modifier.height(18.dp))
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(bottom = 6.dp),
+    )
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
     Row(
+        verticalAlignment = Alignment.Top,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp),
+            .padding(vertical = 7.dp),
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            modifier = Modifier.width(92.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(128.dp),
         )
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = value ?: "-",
+            text = value,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
         )
     }
 }
+
+internal fun formatDecimal(value: Double?, digits: Int, suffix: String = ""): String {
+    if (value == null) return "-"
+    return String.format(Locale.US, "%.${digits}f%s", value, suffix)
+}
+
+internal fun formatDateTime(value: String?): String {
+    if (value.isNullOrBlank()) return "-"
+    return try {
+        OffsetDateTime.parse(value).format(DetailTimeFormatter)
+    } catch (_: Exception) {
+        value
+    }
+}
+
+private val DetailTimeFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")

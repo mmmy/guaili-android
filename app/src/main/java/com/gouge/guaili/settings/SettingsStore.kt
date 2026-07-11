@@ -33,6 +33,18 @@ class SettingsStore(
             GuailiSettings(
                 baseUrl = prefs[Keys.baseUrl] ?: defaults.baseUrl,
                 symbols = parseCsvOrDefault(prefs[Keys.symbols], defaults.symbols),
+                symbolDisplayMode = parseEnumOrDefault(
+                    prefs[Keys.symbolDisplayMode],
+                    defaults.symbolDisplayMode,
+                ),
+                symbolColumnWidthMode = parseEnumOrDefault(
+                    prefs[Keys.symbolColumnWidthMode],
+                    defaults.symbolColumnWidthMode,
+                ),
+                tableDensity = parseEnumOrDefault(
+                    prefs[Keys.tableDensity],
+                    defaults.tableDensity,
+                ),
                 intervals = parseCsvOrDefault(prefs[Keys.intervals], defaults.intervals),
                 autoRefreshSeconds = prefs[Keys.autoRefreshSeconds] ?: defaults.autoRefreshSeconds,
                 limit = defaults.limit,
@@ -52,6 +64,9 @@ class SettingsStore(
         context.dataStore.edit { prefs ->
             prefs[Keys.baseUrl] = settings.baseUrl
             prefs[Keys.symbols] = settings.symbols.joinToString(",")
+            prefs[Keys.symbolDisplayMode] = settings.symbolDisplayMode.name
+            prefs[Keys.symbolColumnWidthMode] = settings.symbolColumnWidthMode.name
+            prefs[Keys.tableDensity] = settings.tableDensity.name
             prefs[Keys.intervals] = settings.intervals.joinToString(",")
             prefs[Keys.autoRefreshSeconds] = settings.autoRefreshSeconds
             prefs[Keys.calcLimit] = settings.calcLimit
@@ -69,6 +84,9 @@ class SettingsStore(
     private object Keys {
         val baseUrl = stringPreferencesKey("base_url")
         val symbols = stringPreferencesKey("symbols")
+        val symbolDisplayMode = stringPreferencesKey("symbol_display_mode")
+        val symbolColumnWidthMode = stringPreferencesKey("symbol_column_width_mode")
+        val tableDensity = stringPreferencesKey("table_density")
         val intervals = stringPreferencesKey("intervals")
         val autoRefreshSeconds = intPreferencesKey("auto_refresh_seconds")
         val calcLimit = intPreferencesKey("calc_limit")
@@ -82,6 +100,9 @@ class SettingsStore(
         val useSlope = booleanPreferencesKey("use_slope")
     }
 }
+
+private inline fun <reified T : Enum<T>> parseEnumOrDefault(raw: String?, default: T): T =
+    enumValues<T>().firstOrNull { it.name == raw } ?: default
 
 private fun parseCsvOrDefault(raw: String?, default: List<String>): List<String> {
     val parsed = raw?.let(::parseCsv).orEmpty()

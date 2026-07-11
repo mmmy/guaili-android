@@ -3,6 +3,9 @@ package com.gouge.guaili.settings
 data class GuailiSettings(
     val baseUrl: String,
     val symbols: List<String>,
+    val symbolDisplayMode: SymbolDisplayMode,
+    val symbolColumnWidthMode: SymbolColumnWidthMode,
+    val tableDensity: TableDensity,
     val intervals: List<String>,
     val autoRefreshSeconds: Int,
     val limit: Int,
@@ -24,8 +27,11 @@ data class GuailiSettings(
                 "XAUUSDT",
                 "CLUSDT",
                 "QQQUSDT",
-                "HKHYNIXUSDT",
+                "SKHYNIXUSDT",
             ),
+            symbolDisplayMode = SymbolDisplayMode.Auto,
+            symbolColumnWidthMode = SymbolColumnWidthMode.Auto,
+            tableDensity = TableDensity.Compact,
             intervals = listOf(
                 "1",
                 "2",
@@ -64,6 +70,24 @@ data class GuailiSettings(
             useSlope = true,
         )
     }
+}
+
+enum class SymbolDisplayMode(val label: String) {
+    Auto("Auto"),
+    Full("Full code"),
+    Base("Hide quote suffix"),
+}
+
+enum class SymbolColumnWidthMode(val label: String) {
+    Auto("Auto"),
+    Compact("Compact"),
+    Standard("Standard"),
+    Wide("Wide"),
+}
+
+enum class TableDensity(val label: String) {
+    Compact("Compact"),
+    Comfortable("Comfortable"),
 }
 
 fun parseCsv(value: String): List<String> =
