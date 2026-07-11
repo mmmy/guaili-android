@@ -45,7 +45,15 @@ class SettingsStore(
                     prefs[Keys.tableDensity],
                     defaults.tableDensity,
                 ),
-                intervals = parseCsvOrDefault(prefs[Keys.intervals], defaults.intervals),
+                layoutMode = parseEnumOrDefault(
+                    prefs[Keys.layoutMode],
+                    defaults.layoutMode,
+                ),
+                groupLayoutSize = parseEnumOrDefault(
+                    prefs[Keys.groupLayoutSize],
+                    defaults.groupLayoutSize,
+                ),
+                intervals = parseIntervalsOrDefault(prefs[Keys.intervals], defaults.intervals),
                 autoRefreshSeconds = prefs[Keys.autoRefreshSeconds] ?: defaults.autoRefreshSeconds,
                 limit = defaults.limit,
                 calcLimit = prefs[Keys.calcLimit] ?: defaults.calcLimit,
@@ -67,6 +75,8 @@ class SettingsStore(
             prefs[Keys.symbolDisplayMode] = settings.symbolDisplayMode.name
             prefs[Keys.symbolColumnWidthMode] = settings.symbolColumnWidthMode.name
             prefs[Keys.tableDensity] = settings.tableDensity.name
+            prefs[Keys.layoutMode] = settings.layoutMode.name
+            prefs[Keys.groupLayoutSize] = settings.groupLayoutSize.name
             prefs[Keys.intervals] = settings.intervals.joinToString(",")
             prefs[Keys.autoRefreshSeconds] = settings.autoRefreshSeconds
             prefs[Keys.calcLimit] = settings.calcLimit
@@ -87,6 +97,8 @@ class SettingsStore(
         val symbolDisplayMode = stringPreferencesKey("symbol_display_mode")
         val symbolColumnWidthMode = stringPreferencesKey("symbol_column_width_mode")
         val tableDensity = stringPreferencesKey("table_density")
+        val layoutMode = stringPreferencesKey("layout_mode")
+        val groupLayoutSize = stringPreferencesKey("group_layout_size")
         val intervals = stringPreferencesKey("intervals")
         val autoRefreshSeconds = intPreferencesKey("auto_refresh_seconds")
         val calcLimit = intPreferencesKey("calc_limit")
@@ -107,4 +119,14 @@ private inline fun <reified T : Enum<T>> parseEnumOrDefault(raw: String?, defaul
 private fun parseCsvOrDefault(raw: String?, default: List<String>): List<String> {
     val parsed = raw?.let(::parseCsv).orEmpty()
     return parsed.ifEmpty { default }
+}
+
+internal fun parseIntervalsOrDefault(raw: String?, default: List<String>): List<String> {
+    val parsed = raw?.let(::parseCsv).orEmpty()
+    return when {
+        parsed.isEmpty() -> default
+        parsed == LegacyDefaultIntervals -> default
+        parsed.size == default.size && parsed.toSet() == default.toSet() -> default
+        else -> parsed
+    }
 }

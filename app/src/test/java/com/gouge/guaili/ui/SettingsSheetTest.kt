@@ -37,6 +37,8 @@ class SettingsSheetTest {
         assertEquals(original.symbolDisplayMode, updated.symbolDisplayMode)
         assertEquals(original.symbolColumnWidthMode, updated.symbolColumnWidthMode)
         assertEquals(original.tableDensity, updated.tableDensity)
+        assertEquals(original.layoutMode, updated.layoutMode)
+        assertEquals(original.groupLayoutSize, updated.groupLayoutSize)
         assertEquals(original.calcLimit, updated.calcLimit)
         assertEquals(original.closedOnly, updated.closedOnly)
         assertEquals(original.maLength, updated.maLength)

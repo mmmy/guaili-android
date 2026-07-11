@@ -23,31 +23,38 @@ class GuailiSettingsTest {
         assertEquals(SymbolDisplayMode.Auto, settings.symbolDisplayMode)
         assertEquals(SymbolColumnWidthMode.Auto, settings.symbolColumnWidthMode)
         assertEquals(TableDensity.Compact, settings.tableDensity)
+        assertEquals(LayoutMode.Auto, settings.layoutMode)
+        assertEquals(GroupLayoutSize.Standard, settings.groupLayoutSize)
         assertEquals(
             listOf(
-                "1",
-                "2",
-                "3",
-                "5",
-                "8",
-                "10",
-                "15",
-                "20",
-                "30",
-                "45",
-                "60",
-                "90",
-                "120",
-                "180",
-                "240",
-                "360",
-                "480",
-                "720",
-                "D",
-                "2D",
-                "3D",
-                "4D",
+                "10D",
                 "W",
+                "4D",
+                "3D",
+                "2D",
+                "D",
+                "720",
+                "480",
+                "360",
+                "240",
+                "180",
+                "120",
+                "90",
+                "60",
+                "45",
+                "30",
+                "20",
+                "15",
+                "10",
+                "8",
+                "5",
+                "3",
+                "2",
+                "1",
+                "45S",
+                "30S",
+                "15S",
+                "10S",
             ),
             settings.intervals,
         )
@@ -67,5 +74,21 @@ class GuailiSettingsTest {
     @Test
     fun commaListsTrimBlankEntries() {
         assertEquals(listOf("BTCUSDT", "ETHUSDT"), parseCsv(" BTCUSDT, ,ETHUSDT "))
+    }
+
+    @Test
+    fun legacyDefaultIntervalsMigrateWithoutOverwritingCustomLists() {
+        assertEquals(DefaultIntervals, parseIntervalsOrDefault(
+            LegacyDefaultIntervals.joinToString(","),
+            DefaultIntervals,
+        ))
+        assertEquals(
+            DefaultIntervals,
+            parseIntervalsOrDefault(DefaultIntervals.reversed().joinToString(","), DefaultIntervals),
+        )
+        assertEquals(
+            listOf("D", "60", "15S"),
+            parseIntervalsOrDefault("D,60,15S", DefaultIntervals),
+        )
     }
 }

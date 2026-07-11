@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
@@ -53,6 +55,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.gouge.guaili.domain.GuailiCell
+import com.gouge.guaili.settings.LayoutMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -63,6 +66,7 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
+    val tableLayout = resolveTableLayout(state.settings.layoutMode, compactHeader)
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -112,6 +116,14 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
                 state = state,
                 compact = compactHeader,
                 onRefresh = viewModel::refresh,
+                tableLayout = tableLayout,
+                onToggleLayout = {
+                    val next = when (tableLayout) {
+                        TableLayout.Table -> LayoutMode.Groups
+                        TableLayout.Groups -> LayoutMode.Table
+                    }
+                    viewModel.setLayoutMode(next)
+                },
                 onOpenSettings = { showSettings = true },
                 onOpenLegend = { showLegend = true },
             )
@@ -135,12 +147,20 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
                     .weight(1f)
                     .padding(bottom = 8.dp),
             ) {
-                GuailiTable(
-                    state = state,
-                    intervals = visibleIntervals,
-                    onCellClick = { selectedCell = it },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                when (tableLayout) {
+                    TableLayout.Table -> GuailiTable(
+                        state = state,
+                        intervals = visibleIntervals,
+                        onCellClick = { selectedCell = it },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    TableLayout.Groups -> GuailiGroupedTable(
+                        state = state,
+                        intervals = visibleIntervals,
+                        onCellClick = { selectedCell = it },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 if (state.isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
@@ -174,6 +194,8 @@ private fun Toolbar(
     state: GuailiTableState,
     compact: Boolean,
     onRefresh: () -> Unit,
+    tableLayout: TableLayout,
+    onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLegend: () -> Unit,
 ) {
@@ -194,6 +216,8 @@ private fun Toolbar(
             ToolbarActions(
                 state = state,
                 onRefresh = onRefresh,
+                tableLayout = tableLayout,
+                onToggleLayout = onToggleLayout,
                 onOpenSettings = onOpenSettings,
                 onOpenLegend = onOpenLegend,
             )
@@ -219,6 +243,8 @@ private fun Toolbar(
             ToolbarActions(
                 state = state,
                 onRefresh = onRefresh,
+                tableLayout = tableLayout,
+                onToggleLayout = onToggleLayout,
                 onOpenSettings = onOpenSettings,
                 onOpenLegend = onOpenLegend,
             )
@@ -231,10 +257,24 @@ private fun Toolbar(
 private fun ToolbarActions(
     state: GuailiTableState,
     onRefresh: () -> Unit,
+    tableLayout: TableLayout,
+    onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLegend: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onToggleLayout) {
+            Icon(
+                imageVector = when (tableLayout) {
+                    TableLayout.Table -> Icons.Outlined.GridView
+                    TableLayout.Groups -> Icons.AutoMirrored.Outlined.ViewList
+                },
+                contentDescription = when (tableLayout) {
+                    TableLayout.Table -> "Switch to symbol groups"
+                    TableLayout.Groups -> "Switch to compact table"
+                },
+            )
+        }
         IconButton(onClick = onOpenLegend) {
             Icon(Icons.Outlined.Info, contentDescription = "Color and marker legend")
         }
@@ -334,7 +374,6 @@ private fun LegendDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 LegendLine(Color(0xFF007A1A), "Positive value")
                 LegendLine(Color(0xFFBE0041), "Negative value")
-                LegendLine(Color(0xFFFACC15), "Header marker: interval has an unfinished candle")
                 Text("Dimmed cells did not pass the ATR rank filter.")
                 Text("Arrows show the long or short trend direction.")
             }
@@ -367,14 +406,26 @@ internal fun filterIntervals(intervals: List<String>, group: IntervalGroup): Lis
     if (group == IntervalGroup.All) return intervals
 
     return intervals.filter { interval ->
-        val minutes = interval.toIntOrNull()
+        val minutes = intervalMinutes(interval)
         when (group) {
             IntervalGroup.All -> true
-            IntervalGroup.Short -> minutes != null && minutes <= 15
-            IntervalGroup.Medium -> minutes != null && minutes in 16..240
-            IntervalGroup.Long -> minutes == null || minutes > 240
+            IntervalGroup.Short -> minutes != null && minutes <= 15.0
+            IntervalGroup.Medium -> minutes != null && minutes > 15.0 && minutes <= 240.0
+            IntervalGroup.Long -> minutes == null || minutes > 240.0
         }
     }
+}
+
+private fun intervalMinutes(interval: String): Double? {
+    val normalized = interval.trim().uppercase()
+    val multiplier = when (normalized.lastOrNull()) {
+        'S' -> 1.0 / 60.0
+        'D' -> 24.0 * 60.0
+        'W' -> 7.0 * 24.0 * 60.0
+        else -> return normalized.toDoubleOrNull()
+    }
+    val value = normalized.dropLast(1).toDoubleOrNull() ?: return null
+    return value * multiplier
 }
 
 private fun statusText(state: GuailiTableState): String {
@@ -386,7 +437,8 @@ private fun statusText(state: GuailiTableState): String {
         else -> "Live"
     }
     val updatedAt = state.lastUpdatedAt?.let { "Updated ${formatTime(it)}" } ?: "Not updated"
-    return "$loadState  |  $updatedAt  |  ${state.symbols.size} symbols"
+    val candleMode = if (state.settings.closedOnly) "Closed only" else "Live candles"
+    return "$loadState  |  $candleMode  |  $updatedAt  |  ${state.symbols.size} symbols"
 }
 
 @Composable

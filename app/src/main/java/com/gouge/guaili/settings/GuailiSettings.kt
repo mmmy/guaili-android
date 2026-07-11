@@ -6,6 +6,8 @@ data class GuailiSettings(
     val symbolDisplayMode: SymbolDisplayMode,
     val symbolColumnWidthMode: SymbolColumnWidthMode,
     val tableDensity: TableDensity,
+    val layoutMode: LayoutMode,
+    val groupLayoutSize: GroupLayoutSize,
     val intervals: List<String>,
     val autoRefreshSeconds: Int,
     val limit: Int,
@@ -32,31 +34,9 @@ data class GuailiSettings(
             symbolDisplayMode = SymbolDisplayMode.Auto,
             symbolColumnWidthMode = SymbolColumnWidthMode.Auto,
             tableDensity = TableDensity.Compact,
-            intervals = listOf(
-                "1",
-                "2",
-                "3",
-                "5",
-                "8",
-                "10",
-                "15",
-                "20",
-                "30",
-                "45",
-                "60",
-                "90",
-                "120",
-                "180",
-                "240",
-                "360",
-                "480",
-                "720",
-                "D",
-                "2D",
-                "3D",
-                "4D",
-                "W",
-            ),
+            layoutMode = LayoutMode.Auto,
+            groupLayoutSize = GroupLayoutSize.Standard,
+            intervals = DefaultIntervals,
             autoRefreshSeconds = 5,
             limit = 1,
             calcLimit = 500,
@@ -71,6 +51,42 @@ data class GuailiSettings(
         )
     }
 }
+
+internal val DefaultIntervals = listOf(
+    "10D",
+    "W",
+    "4D",
+    "3D",
+    "2D",
+    "D",
+    "720",
+    "480",
+    "360",
+    "240",
+    "180",
+    "120",
+    "90",
+    "60",
+    "45",
+    "30",
+    "20",
+    "15",
+    "10",
+    "8",
+    "5",
+    "3",
+    "2",
+    "1",
+    "45S",
+    "30S",
+    "15S",
+    "10S",
+)
+
+internal val LegacyDefaultIntervals = listOf(
+    "1", "2", "3", "5", "8", "10", "15", "20", "30", "45", "60", "90",
+    "120", "180", "240", "360", "480", "720", "D", "2D", "3D", "4D", "W",
+)
 
 enum class SymbolDisplayMode(val label: String) {
     Auto("Auto"),
@@ -88,6 +104,18 @@ enum class SymbolColumnWidthMode(val label: String) {
 enum class TableDensity(val label: String) {
     Compact("Compact"),
     Comfortable("Comfortable"),
+}
+
+enum class LayoutMode(val label: String) {
+    Auto("Auto"),
+    Table("Table"),
+    Groups("Groups"),
+}
+
+enum class GroupLayoutSize(val label: String) {
+    Standard("Standard"),
+    Compact("Compact"),
+    TenColumns("10 columns"),
 }
 
 fun parseCsv(value: String): List<String> =

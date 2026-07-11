@@ -7,6 +7,8 @@ import com.gouge.guaili.data.GuailiSeries
 import com.gouge.guaili.data.GuailiSymbolResult
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.GuailiSettingsSource
+import com.gouge.guaili.settings.GroupLayoutSize
+import com.gouge.guaili.settings.LayoutMode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -158,6 +160,45 @@ class GuailiViewModelTest {
             viewModel.clearViewModel()
         }
     }
+
+    @Test
+    fun presentationChangesKeepCellsAndDoNotFetchAgain() = runTest {
+        val settings = GuailiSettings.defaults().copy(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("1"),
+        )
+        val settingsSource = FakeSettingsSource(settings)
+        val fetcher = QueueingFetcher(
+            GuailiResult.Success(responseFor(settings, "BTCUSDT", "1", value = 12)),
+        )
+        val viewModel = GuailiViewModel(
+            settingsSource = settingsSource,
+            fetcherFactory = { fetcher },
+            autoRefreshEnabled = false,
+        )
+        try {
+            advanceUntilIdle()
+
+            viewModel.setLayoutMode(LayoutMode.Groups)
+            advanceUntilIdle()
+            viewModel.saveSettings(
+                viewModel.state.value.settings.copy(
+                    groupLayoutSize = GroupLayoutSize.TenColumns,
+                ),
+            )
+            advanceUntilIdle()
+
+            assertEquals(LayoutMode.Groups, viewModel.state.value.settings.layoutMode)
+            assertEquals(
+                GroupLayoutSize.TenColumns,
+                viewModel.state.value.settings.groupLayoutSize,
+            )
+            assertEquals(12, viewModel.state.value.cells["BTCUSDT"]?.get("1")?.value)
+            assertEquals(1, fetcher.calls)
+        } finally {
+            viewModel.clearViewModel()
+        }
+    }
 }
 
 private fun GuailiViewModel.clearViewModel() {
@@ -193,9 +234,13 @@ private class QueueingFetcher(
     private vararg val results: GuailiResult<GuailiResponse>,
 ) : GuailiFetcher {
     private var index = 0
+    var calls = 0
+        private set
 
-    override suspend fun fetch(settings: GuailiSettings): GuailiResult<GuailiResponse> =
-        results[index++]
+    override suspend fun fetch(settings: GuailiSettings): GuailiResult<GuailiResponse> {
+        calls += 1
+        return results[index++]
+    }
 }
 
 private class BlockingFetcher(

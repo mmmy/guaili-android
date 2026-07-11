@@ -9,6 +9,7 @@ import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.toTable
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.GuailiSettingsSource
+import com.gouge.guaili.settings.LayoutMode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,19 +56,24 @@ class GuailiViewModel(
     private var fetcher: GuailiFetcher? = null
     private var fetcherBaseUrl: String? = null
     private var isForeground: Boolean = true
+    private var hasObservedSettings = false
 
     init {
         viewModelScope.launch {
             settingsSource.settings.collect { settings ->
-                val isSettingsChange = _state.value.settings != settings
+                val requestSettingsChanged = !hasObservedSettings ||
+                    !sameDataRequest(_state.value.settings, settings)
+                hasObservedSettings = true
                 _state.value = _state.value.copy(
                     settings = settings,
                     symbols = settings.symbols,
                     intervals = settings.intervals,
-                    cells = if (isSettingsChange) emptyMap() else _state.value.cells,
-                    isStale = if (isSettingsChange) false else _state.value.isStale,
+                    cells = if (requestSettingsChanged) emptyMap() else _state.value.cells,
+                    isStale = if (requestSettingsChanged) false else _state.value.isStale,
                 )
-                requestRefresh(settings, clearsCells = isSettingsChange)
+                if (requestSettingsChanged) {
+                    requestRefresh(settings, clearsCells = true)
+                }
                 if (autoRefreshEnabled) {
                     restartAutoRefresh()
                 }
@@ -83,6 +89,11 @@ class GuailiViewModel(
         viewModelScope.launch {
             settingsSource.save(settings)
         }
+    }
+
+    fun setLayoutMode(layoutMode: LayoutMode) {
+        if (_state.value.settings.layoutMode == layoutMode) return
+        saveSettings(_state.value.settings.copy(layoutMode = layoutMode))
     }
 
     fun setForeground(foreground: Boolean) {
@@ -121,7 +132,6 @@ class GuailiViewModel(
     private suspend fun refreshNow(settings: GuailiSettings, clearsCells: Boolean = false) {
         val hadData = _state.value.cells.isNotEmpty() && !clearsCells
         _state.value = _state.value.copy(
-            settings = settings,
             symbols = settings.symbols,
             intervals = settings.intervals,
             cells = if (clearsCells) emptyMap() else _state.value.cells,
@@ -134,7 +144,7 @@ class GuailiViewModel(
         val currentFetcher = try {
             fetcherFor(settings.baseUrl)
         } catch (error: Exception) {
-            if (_state.value.settings == settings) {
+            if (sameDataRequest(_state.value.settings, settings)) {
                 _state.value = _state.value.copy(
                     isLoading = false,
                     isRefreshing = false,
@@ -147,11 +157,10 @@ class GuailiViewModel(
 
         when (val result = currentFetcher.fetch(settings)) {
             is GuailiResult.Success -> {
-                if (_state.value.settings != settings) return
+                if (!sameDataRequest(_state.value.settings, settings)) return
 
                 val table = result.value.toTable(settings.symbols, settings.intervals)
                 _state.value = _state.value.copy(
-                    settings = settings,
                     symbols = table.symbols,
                     intervals = table.intervals,
                     cells = table.cells,
@@ -163,7 +172,7 @@ class GuailiViewModel(
                 )
             }
             is GuailiResult.Failure -> {
-                if (_state.value.settings != settings) return
+                if (!sameDataRequest(_state.value.settings, settings)) return
 
                 _state.value = _state.value.copy(
                     isLoading = false,
@@ -195,3 +204,13 @@ class GuailiViewModel(
         }
     }
 }
+
+internal fun sameDataRequest(first: GuailiSettings, second: GuailiSettings): Boolean =
+    first.copy(
+        symbolDisplayMode = second.symbolDisplayMode,
+        symbolColumnWidthMode = second.symbolColumnWidthMode,
+        tableDensity = second.tableDensity,
+        layoutMode = second.layoutMode,
+        groupLayoutSize = second.groupLayoutSize,
+        autoRefreshSeconds = second.autoRefreshSeconds,
+    ) == second

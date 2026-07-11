@@ -48,6 +48,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import com.gouge.guaili.settings.GuailiSettings
+import com.gouge.guaili.settings.GroupLayoutSize
+import com.gouge.guaili.settings.LayoutMode
 import com.gouge.guaili.settings.SymbolColumnWidthMode
 import com.gouge.guaili.settings.SymbolDisplayMode
 import com.gouge.guaili.settings.TableDensity
@@ -68,6 +70,8 @@ fun SettingsSheet(
         mutableStateOf(settings.symbolColumnWidthMode)
     }
     var tableDensity by remember(settings) { mutableStateOf(settings.tableDensity) }
+    var layoutMode by remember(settings) { mutableStateOf(settings.layoutMode) }
+    var groupLayoutSize by remember(settings) { mutableStateOf(settings.groupLayoutSize) }
     var intervals by remember(settings) { mutableStateOf(settings.intervals) }
     var refreshSeconds by remember(settings) { mutableStateOf(settings.autoRefreshSeconds.toString()) }
     var calcLimit by remember(settings) { mutableStateOf(settings.calcLimit.toString()) }
@@ -90,6 +94,8 @@ fun SettingsSheet(
                 symbolDisplayMode = symbolDisplayMode,
                 symbolColumnWidthMode = symbolColumnWidthMode,
                 tableDensity = tableDensity,
+                layoutMode = layoutMode,
+                groupLayoutSize = groupLayoutSize,
                 intervals = intervals,
                 autoRefreshSeconds = refreshSeconds,
                 calcLimit = calcLimit,
@@ -166,6 +172,28 @@ fun SettingsSheet(
                             onItemsChange = { symbols = it },
                             normalize = { it.trim().uppercase() },
                             error = fieldErrors["symbols"],
+                        )
+                    }
+                    item {
+                        OptionSelector(
+                            label = "Layout",
+                            options = LayoutMode.entries.map { it.label },
+                            selected = layoutMode.label,
+                            onSelected = { label ->
+                                layoutMode = LayoutMode.entries.first { it.label == label }
+                            },
+                        )
+                    }
+                    item {
+                        OptionSelector(
+                            label = "Group size",
+                            options = GroupLayoutSize.entries.map { it.label },
+                            selected = groupLayoutSize.label,
+                            onSelected = { label ->
+                                groupLayoutSize = GroupLayoutSize.entries.first {
+                                    it.label == label
+                                }
+                            },
                         )
                     }
                     item {
@@ -545,6 +573,8 @@ internal fun buildSettingsFromValues(
     symbolDisplayMode: SymbolDisplayMode = current.symbolDisplayMode,
     symbolColumnWidthMode: SymbolColumnWidthMode = current.symbolColumnWidthMode,
     tableDensity: TableDensity = current.tableDensity,
+    layoutMode: LayoutMode = current.layoutMode,
+    groupLayoutSize: GroupLayoutSize = current.groupLayoutSize,
     intervals: List<String>,
     autoRefreshSeconds: String,
     calcLimit: String,
@@ -597,6 +627,8 @@ internal fun buildSettingsFromValues(
             symbolDisplayMode = symbolDisplayMode,
             symbolColumnWidthMode = symbolColumnWidthMode,
             tableDensity = tableDensity,
+            layoutMode = layoutMode,
+            groupLayoutSize = groupLayoutSize,
             intervals = normalizedIntervals,
             autoRefreshSeconds = checkNotNull(parsedRefresh),
             calcLimit = checkNotNull(parsedCalcLimit),
@@ -625,6 +657,8 @@ internal fun buildSettingsFromFields(
     symbolDisplayMode = current.symbolDisplayMode,
     symbolColumnWidthMode = current.symbolColumnWidthMode,
     tableDensity = current.tableDensity,
+    layoutMode = current.layoutMode,
+    groupLayoutSize = current.groupLayoutSize,
     intervals = parseCsv(intervals),
     autoRefreshSeconds = autoRefreshSeconds.toIntOrNull()?.coerceAtLeast(1)?.toString().orEmpty(),
     calcLimit = current.calcLimit.toString(),
