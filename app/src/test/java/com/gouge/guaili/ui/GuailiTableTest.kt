@@ -19,10 +19,22 @@ class GuailiTableTest {
         assertEquals(52.dp, compact.cellWidth)
         assertEquals(40.dp, compact.cellHeight)
         assertEquals(14.sp, compact.valueFontSize)
-        assertEquals(8.sp, compact.trendMarkerFontSize)
         assertEquals(60.dp, comfortable.cellWidth)
         assertEquals(48.dp, comfortable.cellHeight)
-        assertEquals(10.sp, comfortable.trendMarkerFontSize)
+    }
+
+    @Test
+    fun trendPresentationHandlesEveryFlagCombination() {
+        assertEquals(TrendState.Neutral, trendState(longTrend = null, shortTrend = null))
+        assertEquals(TrendState.Neutral, trendState(longTrend = false, shortTrend = false))
+        assertEquals(TrendState.Long, trendState(longTrend = true, shortTrend = false))
+        assertEquals(TrendState.Short, trendState(longTrend = false, shortTrend = true))
+        assertEquals(TrendState.Conflict, trendState(longTrend = true, shortTrend = true))
+
+        assertEquals(LongTrendTextColor, trendTextColor(TrendState.Long))
+        assertEquals(ShortTrendTextColor, trendTextColor(TrendState.Short))
+        assertEquals(ConflictTrendTextColor, trendTextColor(TrendState.Conflict))
+        assertEquals(NeutralTrendTextColor, trendTextColor(TrendState.Neutral))
     }
 
     @Test

@@ -276,7 +276,7 @@ private fun ToolbarActions(
             )
         }
         IconButton(onClick = onOpenLegend) {
-            Icon(Icons.Outlined.Info, contentDescription = "Color and marker legend")
+            Icon(Icons.Outlined.Info, contentDescription = "Value and trend color legend")
         }
         IconButton(
             onClick = onRefresh,
@@ -374,8 +374,10 @@ private fun LegendDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 LegendLine(Color(0xFF007A1A), "Positive value")
                 LegendLine(Color(0xFFBE0041), "Negative value")
+                LegendLine(LongTrendTextColor, "Long trend period label")
+                LegendLine(ShortTrendTextColor, "Short trend period label")
+                LegendLine(ConflictTrendTextColor, "Conflicting trend period label")
                 Text("Dimmed cells did not pass the ATR rank filter.")
-                Text("Arrows show the long or short trend direction.")
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },

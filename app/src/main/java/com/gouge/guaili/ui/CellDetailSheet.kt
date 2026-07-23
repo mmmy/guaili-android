@@ -66,11 +66,7 @@ fun CellDetailSheet(
             ) {
                 StatusChip("Candle", if (cell.isClosed == true) "Closed" else "Live")
                 StatusChip("ATR filter", if (cell.rankFilter == true) "Passed" else "Filtered")
-                val trend = when {
-                    cell.longTrend == true && cell.shortTrend != true -> "Long"
-                    cell.shortTrend == true && cell.longTrend != true -> "Short"
-                    else -> "Neutral"
-                }
+                val trend = trendState(cell.longTrend, cell.shortTrend).label
                 StatusChip("Trend", trend)
             }
 

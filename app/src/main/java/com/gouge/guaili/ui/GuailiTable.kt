@@ -215,6 +215,14 @@ private fun GroupedPeriodCell(
     dimensions: GroupedLayoutDimensions,
     modifier: Modifier = Modifier,
 ) {
+    val trend = cell?.let { trendState(it.longTrend, it.shortTrend) }
+    val periodTextColor = trend?.let(::trendTextColor) ?: NeutralTrendTextColor
+    val periodTextWeight = if (trend == null || trend == TrendState.Neutral) {
+        FontWeight.SemiBold
+    } else {
+        FontWeight.Bold
+    }
+
     Column(modifier = modifier) {
         Box(
             contentAlignment = Alignment.Center,
@@ -226,9 +234,9 @@ private fun GroupedPeriodCell(
         ) {
             Text(
                 text = formatInterval(interval),
-                color = Color(0xFFE5E7EB),
+                color = periodTextColor,
                 fontSize = dimensions.periodFontSize,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = periodTextWeight,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -310,7 +318,8 @@ private fun ValueCell(
             .then(if (cell != null) Modifier.clickable { onCellClick(cell) } else Modifier)
             .semantics {
                 contentDescription = cell?.let {
-                    "${it.symbol}, ${formatInterval(it.interval)}, value ${it.value ?: "no data"}"
+                    val trend = trendState(it.longTrend, it.shortTrend).label.lowercase()
+                    "${it.symbol}, ${formatInterval(it.interval)}, value ${it.value ?: "no data"}, $trend trend"
                 } ?: "No data"
             }
             .padding(horizontal = 2.dp),
@@ -325,24 +334,6 @@ private fun ValueCell(
             overflow = TextOverflow.Clip,
             textAlign = TextAlign.Center,
         )
-        val trendMarker = when {
-            cell?.longTrend == true && cell.shortTrend != true -> "\u2191"
-            cell?.shortTrend == true && cell.longTrend != true -> "\u2193"
-            else -> null
-        }
-        trendMarker?.let { marker ->
-            Text(
-                text = marker,
-                color = Color.White.copy(alpha = 0.72f),
-                fontSize = dimensions.trendMarkerFontSize,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(
-                        end = dimensions.trendMarkerEndPadding,
-                        bottom = 1.dp,
-                    ),
-            )
-        }
     }
 }
 
@@ -350,8 +341,6 @@ internal data class TableDimensions(
     val cellWidth: Dp,
     val cellHeight: Dp,
     val valueFontSize: TextUnit,
-    val trendMarkerFontSize: TextUnit,
-    val trendMarkerEndPadding: Dp,
 )
 
 internal fun tableDimensions(density: TableDensity): TableDimensions = when (density) {
@@ -359,15 +348,11 @@ internal fun tableDimensions(density: TableDensity): TableDimensions = when (den
         cellWidth = 52.dp,
         cellHeight = 40.dp,
         valueFontSize = 14.sp,
-        trendMarkerFontSize = 8.sp,
-        trendMarkerEndPadding = 2.dp,
     )
     TableDensity.Comfortable -> TableDimensions(
         cellWidth = 60.dp,
         cellHeight = 48.dp,
         valueFontSize = 14.sp,
-        trendMarkerFontSize = 10.sp,
-        trendMarkerEndPadding = 3.dp,
     )
 }
 
@@ -414,8 +399,6 @@ internal fun groupedLayoutDimensions(
                 cellWidth = 0.dp,
                 cellHeight = if (density == TableDensity.Compact) 32.dp else 36.dp,
                 valueFontSize = 13.sp,
-                trendMarkerFontSize = 7.sp,
-                trendMarkerEndPadding = 1.dp,
             ),
         )
         GroupLayoutSize.TenColumns -> GroupedLayoutDimensions(
@@ -431,8 +414,6 @@ internal fun groupedLayoutDimensions(
                 cellWidth = 0.dp,
                 cellHeight = 28.dp,
                 valueFontSize = 12.sp,
-                trendMarkerFontSize = 6.sp,
-                trendMarkerEndPadding = 1.dp,
             ),
         )
     }
