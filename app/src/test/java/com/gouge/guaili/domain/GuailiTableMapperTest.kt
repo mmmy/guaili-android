@@ -10,7 +10,21 @@ import org.junit.Test
 
 class GuailiTableMapperTest {
     @Test
-    fun mapsLatestPointsIntoSymbolIntervalMatrix() {
+    fun mapsLatestValuesAndPreviousCandleTrendsIntoSymbolIntervalMatrix() {
+        val previous = GuailiPoint(
+            openTime = "2026-07-26T10:00:00Z",
+            value = 8,
+            guaili = 0.8,
+            longTrend = true,
+            shortTrend = false,
+        )
+        val latest = GuailiPoint(
+            openTime = "2026-07-26T10:01:00Z",
+            value = 0,
+            guaili = 0.0,
+            longTrend = false,
+            shortTrend = false,
+        )
         val response = GuailiResponse(
             symbols = listOf("BTCUSDT"),
             intervals = listOf("1", "5"),
@@ -23,7 +37,8 @@ class GuailiTableMapperTest {
                     series = listOf(
                         GuailiSeries(
                             interval = "1",
-                            latest = GuailiPoint(value = 12, guaili = 1.2, longTrend = true),
+                            latest = latest,
+                            data = listOf(previous, latest),
                         ),
                     ),
                 ),
@@ -35,7 +50,37 @@ class GuailiTableMapperTest {
             requestedIntervals = listOf("1", "5"),
         )
 
-        assertEquals(12, table.cells["BTCUSDT"]?.get("1")?.value)
+        val cell = table.cells["BTCUSDT"]?.get("1")
+        assertEquals(0, cell?.value)
+        assertEquals(0.0, cell?.guaili)
+        assertEquals(true, cell?.longTrend)
+        assertEquals(false, cell?.shortTrend)
         assertNull(table.cells["BTCUSDT"]?.get("5"))
+    }
+
+    @Test
+    fun usesNeutralTrendWhenPreviousCandleIsUnavailable() {
+        val latest = GuailiPoint(value = 0, guaili = 0.0, longTrend = true)
+        val response = GuailiResponse(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("1"),
+            limit = 1,
+            calcLimit = 500,
+            closedOnly = false,
+            results = listOf(
+                GuailiSymbolResult(
+                    symbol = "BTCUSDT",
+                    series = listOf(
+                        GuailiSeries(interval = "1", latest = latest, data = listOf(latest)),
+                    ),
+                ),
+            ),
+        )
+
+        val cell = response.toTable(listOf("BTCUSDT"), listOf("1"))
+            .cells["BTCUSDT"]?.get("1")
+
+        assertNull(cell?.longTrend)
+        assertNull(cell?.shortTrend)
     }
 }

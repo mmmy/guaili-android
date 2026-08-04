@@ -11,8 +11,15 @@ fun GuailiResponse.toTable(
     val cells = requestedSymbols.associateWith { symbol ->
         val seriesByInterval = bySymbol[symbol]?.series.orEmpty().associateBy { it.interval }
         requestedIntervals.mapNotNull { interval ->
-            val latest = seriesByInterval[interval]?.latest ?: return@mapNotNull null
-            interval to latest.toCell(symbol = symbol, interval = interval)
+            val series = seriesByInterval[interval] ?: return@mapNotNull null
+            val latest = series.latest ?: return@mapNotNull null
+            val previous = series.data.getOrNull(series.data.lastIndex - 1)
+            interval to latest.toCell(
+                symbol = symbol,
+                interval = interval,
+                longTrend = previous?.longTrend,
+                shortTrend = previous?.shortTrend,
+            )
         }.toMap()
     }
 
@@ -23,7 +30,12 @@ fun GuailiResponse.toTable(
     )
 }
 
-private fun GuailiPoint.toCell(symbol: String, interval: String): GuailiCell =
+private fun GuailiPoint.toCell(
+    symbol: String,
+    interval: String,
+    longTrend: Boolean?,
+    shortTrend: Boolean?,
+): GuailiCell =
     GuailiCell(
         symbol = symbol,
         interval = interval,

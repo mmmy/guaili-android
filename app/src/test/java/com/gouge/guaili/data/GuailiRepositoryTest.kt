@@ -48,6 +48,16 @@ class GuailiRepositoryTest {
     }
 
     @Test
+    fun fetchRequestsAtLeastTwoPointsForPreviousCandleTrend() = runTest {
+        val api = RecordingGuailiApiService()
+        val repository = GuailiRepository(api)
+
+        repository.fetch(GuailiSettings.defaults().copy(limit = 1))
+
+        assertEquals(2, api.calls.single().limit)
+    }
+
+    @Test
     fun fetchReturnsFailureWhenRequestThrows() = runTest {
         val error = IllegalStateException("boom")
         val api = RecordingGuailiApiService(error = error)
