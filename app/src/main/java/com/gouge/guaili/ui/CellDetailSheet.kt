@@ -13,10 +13,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -32,6 +36,7 @@ import java.util.Locale
 @Composable
 fun CellDetailSheet(
     cell: GuailiCell,
+    onOpenKline: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -79,6 +84,17 @@ fun CellDetailSheet(
             DetailSection("Candle time")
             DetailLine("Open", formatDateTime(cell.openTime))
             DetailLine("Close", formatDateTime(cell.closeTime))
+
+            FilledTonalButton(
+                onClick = onOpenKline,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("View K-line")
+            }
         }
     }
 }

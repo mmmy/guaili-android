@@ -37,11 +37,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -71,6 +73,11 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var selectedCell by remember { mutableStateOf<GuailiCell?>(null) }
+    var klineSymbol by rememberSaveable { mutableStateOf<String?>(null) }
+    var klineInterval by rememberSaveable { mutableStateOf<String?>(null) }
+    val klineTarget = klineSymbol?.let { symbol ->
+        klineInterval?.let { interval -> KlineTarget(symbol, interval) }
+    }
     var showSettings by remember { mutableStateOf(false) }
     var showLegend by remember { mutableStateOf(false) }
     var intervalGroup by remember { mutableStateOf(IntervalGroup.All) }
@@ -78,16 +85,39 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
         filterIntervals(state.intervals, intervalGroup)
     }
 
-    DisposableEffect(lifecycleOwner, viewModel) {
+    DisposableEffect(lifecycleOwner, viewModel, klineTarget) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.setForeground(true)
+                Lifecycle.Event.ON_START -> viewModel.setForeground(klineTarget == null)
                 Lifecycle.Event.ON_STOP -> viewModel.setForeground(false)
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(klineTarget) {
+        viewModel.setForeground(
+            klineTarget == null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+        )
+    }
+
+    klineTarget?.let { target ->
+        KlineScreen(
+            baseUrl = state.settings.baseUrl,
+            symbols = state.settings.symbols,
+            intervals = state.settings.intervals,
+            initialSymbol = target.symbol,
+            initialInterval = target.interval,
+            refreshSeconds = state.settings.autoRefreshSeconds,
+            closedOnly = state.settings.closedOnly,
+            onBack = {
+                klineSymbol = null
+                klineInterval = null
+            },
+        )
+        return
     }
 
     if (showSettings) {
@@ -180,6 +210,11 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
     selectedCell?.let { cell ->
         CellDetailSheet(
             cell = cell,
+            onOpenKline = {
+                klineSymbol = cell.symbol
+                klineInterval = cell.interval
+                selectedCell = null
+            },
             onDismiss = { selectedCell = null },
         )
     }
@@ -188,6 +223,11 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
         LegendDialog(onDismiss = { showLegend = false })
     }
 }
+
+private data class KlineTarget(
+    val symbol: String,
+    val interval: String,
+)
 
 @Composable
 private fun Toolbar(
