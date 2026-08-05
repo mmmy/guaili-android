@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.gouge.guaili.data.KlineRepository
 import com.gouge.guaili.data.KlineResult
 import com.gouge.guaili.domain.KlineChartRow
-import com.gouge.guaili.domain.calculateGuailiChannel
+import com.gouge.guaili.domain.calculateKlineChartRows
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,7 +61,7 @@ class KlineViewModel(
             when (val result = repository.fetch(symbol, interval, closedOnly = closedOnly)) {
                 is KlineResult.Success -> {
                     _state.value = _state.value.copy(
-                        rows = calculateGuailiChannel(result.value),
+                        rows = calculateKlineChartRows(result.value),
                         isLoading = false,
                         isRefreshing = false,
                         errorMessage = null,

@@ -1,7 +1,6 @@
 package com.gouge.guaili.domain
 
 import kotlin.math.abs
-import kotlin.math.max
 
 private const val EmaLength = 20
 private const val AtrLength = 14
@@ -62,44 +61,4 @@ private fun channelTrend(
             ChannelTrend.Short
         else -> ChannelTrend.Neutral
     }
-}
-
-private fun trueRanges(candles: List<Kline>): List<Double> =
-    candles.mapIndexed { index, candle ->
-        if (index == 0) {
-            candle.high - candle.low
-        } else {
-            val previousClose = candles[index - 1].close
-            max(
-                candle.high - candle.low,
-                max(abs(candle.high - previousClose), abs(candle.low - previousClose)),
-            )
-        }
-    }
-
-private fun pineEma(values: List<Double>, length: Int): List<Double?> {
-    val output = MutableList<Double?>(values.size) { null }
-    if (values.isEmpty()) return output
-
-    var ema = values.first()
-    output[0] = ema
-    val alpha = 2.0 / (length + 1.0)
-    for (index in 1 until values.size) {
-        ema = alpha * values[index] + (1.0 - alpha) * ema
-        output[index] = ema
-    }
-    return output
-}
-
-private fun pineRma(values: List<Double>, length: Int): List<Double?> {
-    val output = MutableList<Double?>(values.size) { null }
-    if (values.size < length) return output
-
-    var rma = values.take(length).average()
-    output[length - 1] = rma
-    for (index in length until values.size) {
-        rma = (rma * (length - 1) + values[index]) / length
-        output[index] = rma
-    }
-    return output
 }

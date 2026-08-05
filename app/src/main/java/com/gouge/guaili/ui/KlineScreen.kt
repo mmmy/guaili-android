@@ -83,6 +83,8 @@ private val EmaNeutralColor = Color(0xFFE5E7EB)
 private val UpperColor = Color(0xFFEF5350)
 private val LowerColor = Color(0xFF26A69A)
 private val ChannelFillColor = Color(0x332196F3)
+private val WeakTopColor = Color(0xFFFFB020)
+private val WeakBottomColor = Color(0xFF38BDF8)
 
 @Composable
 fun KlineScreen(
@@ -103,6 +105,7 @@ fun KlineScreen(
     var symbol by rememberSaveable(initialSymbol) { mutableStateOf(initialSymbol) }
     var interval by rememberSaveable(initialInterval) { mutableStateOf(initialInterval) }
     var channelVisible by rememberSaveable { mutableStateOf(true) }
+    var amplitudeSignalVisible by rememberSaveable { mutableStateOf(true) }
     var selectedIndex by remember { mutableIntStateOf(-1) }
     val lifecycleOwner = LocalLifecycleOwner.current
     var isForeground by remember {
@@ -170,6 +173,14 @@ fun KlineScreen(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 KlineLegend(channelVisible)
+                Spacer(modifier = Modifier.width(18.dp))
+                FilterChip(
+                    selected = amplitudeSignalVisible,
+                    onClick = { amplitudeSignalVisible = !amplitudeSignalVisible },
+                    label = { Text("波幅信号") },
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                SignalLegend(amplitudeSignalVisible)
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -216,6 +227,7 @@ fun KlineScreen(
                     state.rows.isNotEmpty() -> KlineChart(
                         rows = state.rows,
                         showChannel = channelVisible,
+                        showAmplitudeSignal = amplitudeSignalVisible,
                         selectedIndex = selectedIndex,
                         onSelectedIndex = { selectedIndex = it },
                         modifier = Modifier.fillMaxSize(),
@@ -329,9 +341,26 @@ private fun LegendItem(label: String, color: Color, contentColor: Color) {
 }
 
 @Composable
+private fun SignalLegend(visible: Boolean) {
+    val contentColor = if (visible) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        MaterialTheme.colorScheme.outline
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LegendItem("弱势顶", WeakTopColor, contentColor)
+        LegendItem("弱势底", WeakBottomColor, contentColor)
+    }
+}
+
+@Composable
 private fun SelectedCandleSummary(row: KlineChartRow?) {
     val candle = row?.candle
     val channel = row?.channel
+    val amplitudeSignal = row?.amplitudeSignal
     Row(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier
@@ -346,6 +375,18 @@ private fun SelectedCandleSummary(row: KlineChartRow?) {
         SummaryValue("C", formatPrice(candle?.close))
         SummaryValue("EMA20", formatPrice(channel?.ema20))
         SummaryValue("乖离", channel?.guaili?.let { String.format(Locale.US, "%.2f ATR", it) } ?: "-")
+        val signal = when {
+            amplitudeSignal?.weakTop == true && amplitudeSignal.weakBottom -> "弱势顶 / 弱势底"
+            amplitudeSignal?.weakTop == true -> "弱势顶"
+            amplitudeSignal?.weakBottom == true -> "弱势底"
+            else -> "-"
+        }
+        val signalColor = when {
+            amplitudeSignal?.weakTop == true -> WeakTopColor
+            amplitudeSignal?.weakBottom == true -> WeakBottomColor
+            else -> null
+        }
+        SummaryValue("波幅", signal, signalColor)
         SummaryValue("Vol", formatCompact(candle?.volume))
     }
 }
@@ -367,6 +408,7 @@ private fun SummaryValue(label: String, value: String, valueColor: Color? = null
 private fun KlineChart(
     rows: List<KlineChartRow>,
     showChannel: Boolean,
+    showAmplitudeSignal: Boolean,
     selectedIndex: Int,
     onSelectedIndex: (Int) -> Unit,
     modifier: Modifier = Modifier,
@@ -521,6 +563,28 @@ private fun KlineChart(
             }
         }
 
+        if (showAmplitudeSignal) {
+            visible.forEachIndexed { index, row ->
+                val x = xAt(index)
+                if (row.amplitudeSignal.weakTop) {
+                    drawSignalMarker(
+                        x = x,
+                        y = yAt(row.candle.high) - 8.dp.toPx(),
+                        pointsDown = true,
+                        color = WeakTopColor,
+                    )
+                }
+                if (row.amplitudeSignal.weakBottom) {
+                    drawSignalMarker(
+                        x = x,
+                        y = yAt(row.candle.low) + 8.dp.toPx(),
+                        pointsDown = false,
+                        color = WeakBottomColor,
+                    )
+                }
+            }
+        }
+
         val maxVolume = visible.maxOfOrNull { it.candle.volume }?.coerceAtLeast(0.0000001) ?: 1.0
         visible.forEachIndexed { index, row ->
             val height = ((row.candle.volume / maxVolume).toFloat() * (volumeBottom - volumeTop))
@@ -572,6 +636,29 @@ private fun KlineChart(
             )
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSignalMarker(
+    x: Float,
+    y: Float,
+    pointsDown: Boolean,
+    color: Color,
+) {
+    val halfWidth = 5.dp.toPx()
+    val halfHeight = 4.dp.toPx()
+    val path = Path().apply {
+        if (pointsDown) {
+            moveTo(x - halfWidth, y - halfHeight)
+            lineTo(x + halfWidth, y - halfHeight)
+            lineTo(x, y + halfHeight)
+        } else {
+            moveTo(x - halfWidth, y + halfHeight)
+            lineTo(x + halfWidth, y + halfHeight)
+            lineTo(x, y - halfHeight)
+        }
+        close()
+    }
+    drawPath(path, color)
 }
 
 internal data class KlineViewport(

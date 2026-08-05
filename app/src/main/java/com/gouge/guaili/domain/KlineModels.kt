@@ -28,9 +28,18 @@ data class GuailiChannelPoint(
     val trend: ChannelTrend,
 )
 
+data class AmplitudeSignalPoint(
+    val normalizedRange: Double? = null,
+    val threshold: Double? = null,
+    val guaili: Double? = null,
+    val weakTop: Boolean = false,
+    val weakBottom: Boolean = false,
+)
+
 data class KlineChartRow(
     val candle: Kline,
     val channel: GuailiChannelPoint,
+    val amplitudeSignal: AmplitudeSignalPoint = AmplitudeSignalPoint(),
 )
 
 interface KlineIndicator<T> {
