@@ -1,6 +1,7 @@
 package com.gouge.guaili.ui
 
 import android.graphics.Paint
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -97,6 +98,8 @@ fun KlineScreen(
     closedOnly: Boolean,
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
+
     val viewModel: KlineViewModel = viewModel(
         key = "kline:$baseUrl",
         factory = KlineViewModel.factory(baseUrl),
