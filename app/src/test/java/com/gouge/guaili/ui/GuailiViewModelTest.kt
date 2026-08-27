@@ -102,6 +102,66 @@ class GuailiViewModelTest {
     }
 
     @Test
+    fun returningToForegroundMarksDataOlderThanThirtyMinutesStale() = runTest {
+        val settings = GuailiSettings.defaults().copy(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("1"),
+        )
+        var now = 1_000L
+        val viewModel = GuailiViewModel(
+            settingsSource = FakeSettingsSource(settings),
+            fetcherFactory = {
+                QueueingFetcher(
+                    GuailiResult.Success(responseFor(settings, "BTCUSDT", "1", value = 12)),
+                )
+            },
+            nowMillis = { now },
+            autoRefreshEnabled = false,
+        )
+        try {
+            advanceUntilIdle()
+            viewModel.setForeground(false)
+            now += 30 * 60 * 1000L
+
+            viewModel.setForeground(true)
+
+            assertTrue(viewModel.state.value.isStale)
+        } finally {
+            viewModel.clearViewModel()
+        }
+    }
+
+    @Test
+    fun returningToForegroundKeepsDataYoungerThanThirtyMinutesLive() = runTest {
+        val settings = GuailiSettings.defaults().copy(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("1"),
+        )
+        var now = 1_000L
+        val viewModel = GuailiViewModel(
+            settingsSource = FakeSettingsSource(settings),
+            fetcherFactory = {
+                QueueingFetcher(
+                    GuailiResult.Success(responseFor(settings, "BTCUSDT", "1", value = 12)),
+                )
+            },
+            nowMillis = { now },
+            autoRefreshEnabled = false,
+        )
+        try {
+            advanceUntilIdle()
+            viewModel.setForeground(false)
+            now += 30 * 60 * 1000L - 1L
+
+            viewModel.setForeground(true)
+
+            assertFalse(viewModel.state.value.isStale)
+        } finally {
+            viewModel.clearViewModel()
+        }
+    }
+
+    @Test
     fun repositoryFactoryExceptionBecomesErrorState() = runTest {
         val settings = GuailiSettings.defaults().copy(
             baseUrl = "not a url",

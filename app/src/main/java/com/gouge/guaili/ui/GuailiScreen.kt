@@ -64,7 +64,11 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
 @Composable
-fun GuailiScreen(viewModel: GuailiViewModel) {
+fun GuailiScreen(
+    viewModel: GuailiViewModel,
+    requestedKlineTarget: KlineTarget? = null,
+    onRequestedKlineConsumed: () -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
@@ -83,6 +87,14 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
     var intervalGroup by remember { mutableStateOf(IntervalGroup.All) }
     val visibleIntervals = remember(state.intervals, intervalGroup) {
         filterIntervals(state.intervals, intervalGroup)
+    }
+
+    LaunchedEffect(requestedKlineTarget) {
+        requestedKlineTarget?.let { target ->
+            klineSymbol = target.symbol
+            klineInterval = target.interval
+            onRequestedKlineConsumed()
+        }
     }
 
     DisposableEffect(lifecycleOwner, viewModel, klineTarget) {
@@ -224,7 +236,7 @@ fun GuailiScreen(viewModel: GuailiViewModel) {
     }
 }
 
-private data class KlineTarget(
+data class KlineTarget(
     val symbol: String,
     val interval: String,
 )
@@ -486,7 +498,7 @@ private fun statusText(state: GuailiTableState): String {
 @Composable
 private fun statusColor(state: GuailiTableState): Color = when {
     state.isLoading || state.isRefreshing -> MaterialTheme.colorScheme.primary
-    state.isStale || state.errorMessage != null -> Color(0xFFF59E0B)
+    state.isStale || state.errorMessage != null || state.lastUpdatedAt == null -> Color(0xFFF59E0B)
     else -> Color(0xFF22C55E)
 }
 

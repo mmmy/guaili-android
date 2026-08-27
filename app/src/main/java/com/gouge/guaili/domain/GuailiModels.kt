@@ -1,5 +1,8 @@
 package com.gouge.guaili.domain
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class GuailiCell(
     val symbol: String,
     val interval: String,
@@ -16,6 +19,7 @@ data class GuailiCell(
     val closeTime: String?,
 )
 
+@Serializable
 data class GuailiTable(
     val symbols: List<String>,
     val intervals: List<String>,

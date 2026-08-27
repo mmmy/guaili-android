@@ -2,11 +2,12 @@ package com.gouge.guaili.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.gouge.guaili.data.GuailiResponse
-import com.gouge.guaili.data.GuailiRepository
+import com.gouge.guaili.data.GuailiRefreshUseCase
 import com.gouge.guaili.data.GuailiResult
+import com.gouge.guaili.data.GuailiSnapshotSink
+import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
+import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.domain.GuailiCell
-import com.gouge.guaili.domain.toTable
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.GuailiSettingsSource
 import com.gouge.guaili.settings.LayoutMode
@@ -16,14 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-
-fun interface GuailiFetcher {
-    suspend fun fetch(settings: GuailiSettings): GuailiResult<GuailiResponse>
-}
-
-fun interface GuailiFetcherFactory {
-    fun create(baseUrl: String): GuailiFetcher
-}
 
 data class GuailiTableState(
     val settings: GuailiSettings = GuailiSettings.defaults(),
@@ -40,21 +33,23 @@ data class GuailiTableState(
 class GuailiViewModel(
     private val settingsSource: GuailiSettingsSource,
     private val fetcherFactory: GuailiFetcherFactory = GuailiFetcherFactory { baseUrl ->
-        val repository = GuailiRepository.create(baseUrl)
-        GuailiFetcher { settings -> repository.fetch(settings) }
+        val repository = com.gouge.guaili.data.GuailiRepository.create(baseUrl)
+        GuailiFetcher(repository::fetch)
     },
+    snapshotSink: GuailiSnapshotSink = GuailiSnapshotSink { },
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val autoRefreshEnabled: Boolean = true,
+    private val onSnapshotUpdated: suspend () -> Unit = { },
 ) : ViewModel() {
     private val _state = MutableStateFlow(GuailiTableState())
     val state: StateFlow<GuailiTableState> = _state.asStateFlow()
 
     private var autoRefreshJob: Job? = null
+    private var staleStatusJob: Job? = null
     private var refreshJob: Job? = null
     private var pendingRefreshSettings: GuailiSettings? = null
     private var pendingRefreshClearsCells: Boolean = false
-    private var fetcher: GuailiFetcher? = null
-    private var fetcherBaseUrl: String? = null
+    private val refresher = GuailiRefreshUseCase(fetcherFactory, snapshotSink, nowMillis)
     private var isForeground: Boolean = true
     private var hasObservedSettings = false
 
@@ -97,13 +92,22 @@ class GuailiViewModel(
     }
 
     fun setForeground(foreground: Boolean) {
-        if (isForeground == foreground) return
+        if (isForeground == foreground) {
+            if (foreground) updateStaleStatus()
+            return
+        }
         isForeground = foreground
-        if (foreground && autoRefreshEnabled) {
-            restartAutoRefresh()
+        if (foreground) {
+            val stale = updateStaleStatus()
+            if (autoRefreshEnabled) {
+                if (stale) refresh()
+                restartAutoRefresh()
+            }
         } else {
             autoRefreshJob?.cancel()
             autoRefreshJob = null
+            staleStatusJob?.cancel()
+            staleStatusJob = null
         }
     }
 
@@ -141,35 +145,24 @@ class GuailiViewModel(
             isStale = false,
         )
 
-        val currentFetcher = try {
-            fetcherFor(settings.baseUrl)
-        } catch (error: Exception) {
-            if (sameDataRequest(_state.value.settings, settings)) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    isRefreshing = false,
-                    errorMessage = error.message ?: "Invalid base URL",
-                    isStale = hadData,
-                )
-            }
-            return
-        }
-
-        when (val result = currentFetcher.fetch(settings)) {
+        when (val result = refresher.refresh(settings)) {
             is GuailiResult.Success -> {
                 if (!sameDataRequest(_state.value.settings, settings)) return
 
-                val table = result.value.toTable(settings.symbols, settings.intervals)
+                val snapshot = result.value
+                val table = snapshot.table
                 _state.value = _state.value.copy(
                     symbols = table.symbols,
                     intervals = table.intervals,
                     cells = table.cells,
                     isLoading = false,
                     isRefreshing = false,
-                    lastUpdatedAt = nowMillis(),
+                    lastUpdatedAt = snapshot.updatedAt,
                     errorMessage = null,
                     isStale = false,
                 )
+                scheduleStaleStatusUpdate()
+                onSnapshotUpdated()
             }
             is GuailiResult.Failure -> {
                 if (!sameDataRequest(_state.value.settings, settings)) return
@@ -184,14 +177,6 @@ class GuailiViewModel(
         }
     }
 
-    private fun fetcherFor(baseUrl: String): GuailiFetcher {
-        if (fetcher == null || fetcherBaseUrl != baseUrl) {
-            fetcher = fetcherFactory.create(baseUrl)
-            fetcherBaseUrl = baseUrl
-        }
-        return checkNotNull(fetcher)
-    }
-
     private fun restartAutoRefresh() {
         autoRefreshJob?.cancel()
         if (!isForeground) return
@@ -201,6 +186,29 @@ class GuailiViewModel(
                 delay(seconds * 1000L)
                 refresh()
             }
+        }
+    }
+
+    private fun updateStaleStatus(): Boolean {
+        val updatedAt = _state.value.lastUpdatedAt ?: return false
+        val stale = isGuailiSnapshotStale(updatedAt, nowMillis())
+        if (_state.value.isStale != stale) {
+            _state.value = _state.value.copy(isStale = stale)
+        }
+        scheduleStaleStatusUpdate()
+        return stale
+    }
+
+    private fun scheduleStaleStatusUpdate() {
+        staleStatusJob?.cancel()
+        staleStatusJob = null
+        if (!isForeground || !autoRefreshEnabled || _state.value.isStale) return
+
+        val updatedAt = _state.value.lastUpdatedAt ?: return
+        val remainingMillis = (GUAILI_STALE_AFTER_MILLIS - (nowMillis() - updatedAt)).coerceAtLeast(1L)
+        staleStatusJob = viewModelScope.launch {
+            delay(remainingMillis)
+            updateStaleStatus()
         }
     }
 }

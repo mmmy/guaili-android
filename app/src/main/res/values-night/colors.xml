@@ -1,0 +1,14 @@
+<resources>
+    <color name="widget_background">#17191D</color>
+    <color name="widget_text_primary">#F3F4F6</color>
+    <color name="widget_text_secondary">#B7BBC3</color>
+    <color name="widget_text_accent">#9DB2FF</color>
+    <color name="widget_text_warning">#FBBF24</color>
+    <color name="widget_cell_filtered">#374151</color>
+    <color name="widget_cell_positive">#144D26</color>
+    <color name="widget_cell_negative">#6E1537</color>
+    <color name="widget_cell_neutral">#30343B</color>
+    <color name="widget_text_filtered">#D1D5DB</color>
+    <color name="widget_text_positive">#B7F7C8</color>
+    <color name="widget_text_negative">#FFC2D4</color>
+</resources>
