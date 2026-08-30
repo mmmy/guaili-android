@@ -8,6 +8,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -43,6 +44,8 @@ object GuailiWidgetScheduler {
         .setRequiredNetworkType(NetworkType.CONNECTED)
         .build()
 
+    internal val ImmediateWorkPolicy = ExistingWorkPolicy.REPLACE
+
     fun schedulePeriodic(context: Context) {
         val work = PeriodicWorkRequestBuilder<GuailiWidgetWorker>(15, TimeUnit.MINUTES)
             .setConstraints(networkConstraints)
@@ -57,10 +60,11 @@ object GuailiWidgetScheduler {
     fun refreshNow(context: Context) {
         val work = OneTimeWorkRequestBuilder<GuailiWidgetWorker>()
             .setConstraints(networkConstraints)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             ImmediateWorkName,
-            ExistingWorkPolicy.KEEP,
+            ImmediateWorkPolicy,
             work,
         )
     }
