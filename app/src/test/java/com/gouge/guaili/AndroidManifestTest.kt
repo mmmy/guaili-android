@@ -56,4 +56,30 @@ class AndroidManifestTest {
             widgetMetadata?.attributes?.getNamedItem("android:resource")?.nodeValue,
         )
     }
+
+    @Test
+    fun manifestRegistersDecisionReminderNotificationsAndBootRescheduling() {
+        val manifest = listOf(
+            File("src/main/AndroidManifest.xml"),
+            File("app/src/main/AndroidManifest.xml"),
+        ).first(File::exists)
+        val document = DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder()
+            .parse(manifest)
+
+        val permissions = document.getElementsByTagName("uses-permission")
+        val permissionNames = (0 until permissions.length).map { index ->
+            permissions.item(index).attributes.getNamedItem("android:name")?.nodeValue
+        }
+        assertEquals(true, "android.permission.POST_NOTIFICATIONS" in permissionNames)
+        assertEquals(true, "android.permission.RECEIVE_BOOT_COMPLETED" in permissionNames)
+        assertEquals(true, "android.permission.SCHEDULE_EXACT_ALARM" in permissionNames)
+
+        val receivers = document.getElementsByTagName("receiver")
+        val receiverNames = (0 until receivers.length).map { index ->
+            receivers.item(index).attributes.getNamedItem("android:name")?.nodeValue
+        }
+        assertEquals(true, ".widget.DecisionReminderReceiver" in receiverNames)
+        assertEquals(true, ".widget.DecisionReminderRescheduleReceiver" in receiverNames)
+    }
 }

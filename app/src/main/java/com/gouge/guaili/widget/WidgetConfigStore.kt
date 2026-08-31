@@ -6,6 +6,10 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.gouge.guaili.settings.GuailiSettings
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 private val Context.widgetConfigDataStore by preferencesDataStore(name = "guaili_widget_config")
 
@@ -14,12 +18,29 @@ data class WidgetConfig(
     val intervals: List<String>,
     val mode: WidgetMode = WidgetMode.Signals,
     val singleSymbolColumns: WidgetColumnCount = WidgetColumnCount.Auto,
+    val reminders: List<DecisionReminder> = emptyList(),
 )
 
 enum class WidgetMode(val label: String) {
     Signals("信号模式"),
     Matrix("数据矩阵"),
     SingleSymbol("单品种全周期"),
+    DecisionReminders("决策提醒"),
+}
+
+@Serializable
+data class DecisionReminder(
+    val id: String,
+    val symbol: String,
+    val interval: String,
+    val direction: DecisionDirection,
+    val targetAtEpochMillis: Long,
+)
+
+@Serializable
+enum class DecisionDirection(val label: String, val glyph: String) {
+    Long("看多", "↑"),
+    Short("看空", "↓"),
 }
 
 enum class WidgetColumnCount(val label: String, val count: Int?) {
@@ -39,6 +60,9 @@ class WidgetConfigStore(context: Context) {
         val savedIntervals = parse(preferences[stringPreferencesKey(intervalsKey(appWidgetId))])
         val savedMode = preferences[stringPreferencesKey(modeKey(appWidgetId))]
         val savedColumnCount = preferences[stringPreferencesKey(columnCountKey(appWidgetId))]
+        val savedReminders = decodeReminders(
+            preferences[stringPreferencesKey(remindersKey(appWidgetId))],
+        )
         val mode = savedMode
             ?.let { saved -> WidgetMode.entries.firstOrNull { it.name == saved } }
             ?: WidgetMode.Signals
@@ -54,6 +78,7 @@ class WidgetConfigStore(context: Context) {
             singleSymbolColumns = savedColumnCount
                 ?.let { saved -> WidgetColumnCount.entries.firstOrNull { it.name == saved } }
                 ?: WidgetColumnCount.Auto,
+            reminders = savedReminders,
         )
     }
 
@@ -67,12 +92,25 @@ class WidgetConfigStore(context: Context) {
             preferences[stringPreferencesKey(modeKey(appWidgetId))] = normalizedConfig.mode.name
             preferences[stringPreferencesKey(columnCountKey(appWidgetId))] =
                 normalizedConfig.singleSymbolColumns.name
+            preferences[stringPreferencesKey(remindersKey(appWidgetId))] =
+                ReminderJson.encodeToString(normalizedConfig.reminders)
+        }
+    }
+
+    suspend fun delete(appWidgetId: Int) {
+        context.widgetConfigDataStore.edit { preferences ->
+            preferences.remove(stringPreferencesKey(symbolsKey(appWidgetId)))
+            preferences.remove(stringPreferencesKey(intervalsKey(appWidgetId)))
+            preferences.remove(stringPreferencesKey(modeKey(appWidgetId)))
+            preferences.remove(stringPreferencesKey(columnCountKey(appWidgetId)))
+            preferences.remove(stringPreferencesKey(remindersKey(appWidgetId)))
         }
     }
 
     companion object {
         const val MaxSymbols = 5
         const val MaxIntervals = 4
+        const val MaxReminders = 12
 
         private val PreferredIntervals = listOf("5", "15", "60", "D")
 
@@ -85,12 +123,29 @@ class WidgetConfigStore(context: Context) {
         private fun intervalsKey(id: Int) = "widget_${id}_intervals"
         private fun modeKey(id: Int) = "widget_${id}_mode"
         private fun columnCountKey(id: Int) = "widget_${id}_single_symbol_columns"
+        private fun remindersKey(id: Int) = "widget_${id}_decision_reminders"
 
         private fun parse(value: String?): List<String> = value
             ?.split(',')
             ?.map(String::trim)
             ?.filter(String::isNotEmpty)
             .orEmpty()
+
+        private fun decodeReminders(value: String?): List<DecisionReminder> =
+            value
+                ?.let { encoded ->
+                    runCatching { ReminderJson.decodeFromString<List<DecisionReminder>>(encoded) }
+                        .getOrDefault(emptyList())
+                }
+                .orEmpty()
+                .filter { reminder ->
+                    reminder.id.isNotBlank() &&
+                        reminder.symbol.isNotBlank() &&
+                        reminder.interval.isNotBlank() &&
+                        reminder.targetAtEpochMillis > 0L
+                }
+                .distinctBy(DecisionReminder::id)
+                .take(MaxReminders)
     }
 }
 
@@ -100,4 +155,13 @@ internal fun normalizeWidgetSymbols(symbols: List<String>, mode: WidgetMode): Li
 internal fun normalizeWidgetConfig(config: WidgetConfig): WidgetConfig = config.copy(
     symbols = normalizeWidgetSymbols(config.symbols, config.mode),
     intervals = config.intervals.take(WidgetConfigStore.MaxIntervals),
+    reminders = config.reminders
+        .filter { it.symbol.isNotBlank() && it.interval.isNotBlank() && it.targetAtEpochMillis > 0L }
+        .distinctBy(DecisionReminder::id)
+        .take(WidgetConfigStore.MaxReminders),
 )
+
+private val ReminderJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}

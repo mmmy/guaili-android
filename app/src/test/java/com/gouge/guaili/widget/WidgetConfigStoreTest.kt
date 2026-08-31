@@ -45,6 +45,43 @@ class WidgetConfigStoreTest {
     }
 
     @Test
+    fun reminderModeKeepsMultipleIndependentRows() {
+        val reminders = listOf(
+            DecisionReminder("one", "BTCUSDT", "15", DecisionDirection.Long, 1_000L),
+            DecisionReminder("two", "ETHUSDT", "60", DecisionDirection.Short, 2_000L),
+        )
+
+        val config = buildWidgetConfig(
+            mode = WidgetMode.DecisionReminders,
+            selectedSymbols = emptyList(),
+            selectedSingleSymbol = null,
+            selectedIntervals = emptyList(),
+            reminders = reminders,
+        )
+
+        assertEquals(WidgetMode.DecisionReminders, config.mode)
+        assertEquals(reminders, config.reminders)
+    }
+
+    @Test
+    fun reminderNormalizationDropsInvalidAndDuplicateRows() {
+        val valid = DecisionReminder("same", "BTCUSDT", "15", DecisionDirection.Long, 1_000L)
+        val duplicate = valid.copy(symbol = "ETHUSDT")
+        val invalid = DecisionReminder("invalid", "", "60", DecisionDirection.Short, 2_000L)
+
+        val normalized = normalizeWidgetConfig(
+            WidgetConfig(
+                symbols = emptyList(),
+                intervals = emptyList(),
+                mode = WidgetMode.DecisionReminders,
+                reminders = listOf(valid, duplicate, invalid),
+            ),
+        )
+
+        assertEquals(listOf(valid), normalized.reminders)
+    }
+
+    @Test
     fun defaultIntervalsPreferUsefulShortMediumAndDailyPeriods() {
         val available = listOf("10D", "W", "D", "240", "60", "15", "5", "1")
 

@@ -64,6 +64,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class GuailiWidget : GlanceAppWidget() {
     override val stateDefinition = PreferencesGlanceStateDefinition
@@ -102,11 +106,31 @@ class GuailiWidgetReceiver : GlanceAppWidgetReceiver() {
         super.onEnabled(context)
         GuailiWidgetScheduler.schedulePeriodic(context)
         GuailiWidgetScheduler.refreshNow(context)
+        DecisionReminderScheduler.schedulePeriodicWidgetUpdates(context)
     }
 
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
         GuailiWidgetScheduler.cancelPeriodic(context)
+        DecisionReminderScheduler.cancelPeriodicWidgetUpdates(context)
+    }
+
+    override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+        super.onDeleted(context, appWidgetIds)
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            val settings = SettingsStore(context).settings.first()
+            val store = WidgetConfigStore(context)
+            appWidgetIds.forEach { appWidgetId ->
+                val config = store.read(appWidgetId, settings)
+                DecisionReminderScheduler.replace(
+                    context = context,
+                    appWidgetId = appWidgetId,
+                    previous = config.reminders,
+                    current = emptyList(),
+                )
+                store.delete(appWidgetId)
+            }
+        }
     }
 }
 
@@ -130,6 +154,13 @@ private fun GuailiWidgetContent(
     refreshStatus: WidgetRefreshStatus,
     appWidgetId: Int,
 ) {
+    if (config.mode == WidgetMode.DecisionReminders) {
+        DecisionReminderWidgetContent(
+            reminders = config.reminders,
+            appWidgetId = appWidgetId,
+        )
+        return
+    }
     val size = LocalSize.current
     val signals = if (snapshot == null || config.mode != WidgetMode.Signals) {
         emptyList()
@@ -177,6 +208,7 @@ private fun GuailiWidgetContent(
                 WidgetMode.Signals -> "乖离信号"
                 WidgetMode.Matrix -> "乖离矩阵"
                 WidgetMode.SingleSymbol -> singleSymbolTitle(config.symbols.firstOrNull().orEmpty())
+                WidgetMode.DecisionReminders -> "决策提醒"
             },
             darkStyle = useGroupedStyle,
             darkHeaderHeight = singleSymbolDimensions.symbolHeaderHeight,
@@ -228,6 +260,134 @@ private fun GuailiWidgetContent(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DecisionReminderWidgetContent(
+    reminders: List<DecisionReminder>,
+    appWidgetId: Int,
+) {
+    val now = System.currentTimeMillis()
+    val ordered = sortDecisionReminders(reminders, now)
+    Column(
+        modifier = GlanceModifier
+            .fillMaxSize()
+            .background(WidgetBackground)
+            .padding(10.dp),
+    ) {
+        Row(
+            modifier = GlanceModifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "决策提醒",
+                style = TextStyle(
+                    color = PrimaryText,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                modifier = GlanceModifier.defaultWeight(),
+                maxLines = 1,
+            )
+            Text(
+                text = "${ordered.size} 条",
+                style = TextStyle(color = SecondaryText, fontSize = 10.sp),
+            )
+            Spacer(modifier = GlanceModifier.width(8.dp))
+            Text(
+                text = "编辑",
+                style = TextStyle(
+                    color = AccentText,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                modifier = GlanceModifier
+                    .padding(horizontal = 2.dp, vertical = 4.dp)
+                    .clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))),
+            )
+        }
+        Spacer(modifier = GlanceModifier.height(6.dp))
+        if (ordered.isEmpty()) {
+            Column(
+                modifier = GlanceModifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "点击编辑添加提醒",
+                    style = TextStyle(color = SecondaryText, fontSize = 12.sp),
+                )
+            }
+        } else {
+            LazyColumn(modifier = GlanceModifier.defaultWeight().fillMaxWidth()) {
+                items(ordered) { reminder ->
+                    DecisionReminderWidgetRow(reminder = reminder, nowEpochMillis = now)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DecisionReminderWidgetRow(
+    reminder: DecisionReminder,
+    nowEpochMillis: Long,
+) {
+    val expired = reminder.targetAtEpochMillis <= nowEpochMillis
+    Row(
+        modifier = GlanceModifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .background(if (expired) ReminderDueBackground else SignalBackground)
+            .padding(horizontal = 7.dp, vertical = 7.dp)
+            .clickable(actionStartActivity(klineIntent(reminder.symbol, reminder.interval))),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = displaySymbol(reminder.symbol),
+            style = TextStyle(
+                color = PrimaryText,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+            modifier = GlanceModifier.width(54.dp),
+            maxLines = 1,
+        )
+        Text(
+            text = displayInterval(reminder.interval),
+            style = TextStyle(color = SecondaryText, fontSize = 10.sp),
+            modifier = GlanceModifier.width(40.dp),
+            maxLines = 1,
+        )
+        Text(
+            text = "${reminder.direction.glyph}${reminder.direction.label}",
+            style = TextStyle(
+                color = if (reminder.direction == DecisionDirection.Long) {
+                    ReminderLongText
+                } else {
+                    ReminderShortText
+                },
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+            modifier = GlanceModifier.width(48.dp),
+            maxLines = 1,
+        )
+        Text(
+            text = formatDecisionReminderDisplay(
+                reminder.targetAtEpochMillis,
+                nowEpochMillis,
+            ),
+            style = TextStyle(
+                color = if (expired) WarningText else PrimaryText,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.End,
+            ),
+            modifier = GlanceModifier.defaultWeight(),
+            maxLines = 1,
+        )
     }
 }
 
@@ -762,3 +922,6 @@ private val SecondaryText = dayNightColor(0xFF62666D, 0xFFB7BBC3)
 private val AccentText = dayNightColor(0xFF315EFB, 0xFF9DB2FF)
 private val WarningText = dayNightColor(0xFFB45309, 0xFFFBBF24)
 private val RefreshSuccessText = dayNightColor(0xFF06722D, 0xFF69F0AE)
+private val ReminderLongText = dayNightColor(0xFF06722D, 0xFF69F0AE)
+private val ReminderShortText = dayNightColor(0xFFB0003A, 0xFFFF8A80)
+private val ReminderDueBackground = dayNightColor(0xFFFFF1D6, 0xFF4A3513)
