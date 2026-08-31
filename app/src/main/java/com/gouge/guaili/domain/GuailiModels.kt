@@ -24,4 +24,5 @@ data class GuailiTable(
     val symbols: List<String>,
     val intervals: List<String>,
     val cells: Map<String, Map<String, GuailiCell>>,
+    val closedCells: Map<String, Map<String, GuailiCell>> = emptyMap(),
 )

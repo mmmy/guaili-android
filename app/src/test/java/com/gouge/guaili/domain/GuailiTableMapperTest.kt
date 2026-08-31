@@ -83,4 +83,41 @@ class GuailiTableMapperTest {
         assertNull(cell?.longTrend)
         assertNull(cell?.shortTrend)
     }
+
+    @Test
+    fun keepsMostRecentClosedPointSeparateFromLiveLatestPoint() {
+        val closed = GuailiPoint(
+            openTime = "2026-07-26T10:00:00Z",
+            value = -12,
+            rankFilter = true,
+            isClosed = true,
+        )
+        val live = GuailiPoint(
+            openTime = "2026-07-26T10:01:00Z",
+            value = 4,
+            rankFilter = true,
+            isClosed = false,
+        )
+        val response = GuailiResponse(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("1"),
+            limit = 2,
+            calcLimit = 500,
+            closedOnly = false,
+            results = listOf(
+                GuailiSymbolResult(
+                    symbol = "BTCUSDT",
+                    series = listOf(
+                        GuailiSeries(interval = "1", latest = live, data = listOf(closed, live)),
+                    ),
+                ),
+            ),
+        )
+
+        val table = response.toTable(listOf("BTCUSDT"), listOf("1"))
+
+        assertEquals(4, table.cells["BTCUSDT"]?.get("1")?.value)
+        assertEquals(-12, table.closedCells["BTCUSDT"]?.get("1")?.value)
+        assertEquals(true, table.closedCells["BTCUSDT"]?.get("1")?.isClosed)
+    }
 }

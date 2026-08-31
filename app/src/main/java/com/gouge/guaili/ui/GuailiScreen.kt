@@ -21,10 +21,8 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -83,7 +81,7 @@ fun GuailiScreen(
         klineInterval?.let { interval -> KlineTarget(symbol, interval) }
     }
     var showSettings by remember { mutableStateOf(false) }
-    var showLegend by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
     var intervalGroup by remember { mutableStateOf(IntervalGroup.All) }
     val visibleIntervals = remember(state.intervals, intervalGroup) {
         filterIntervals(state.intervals, intervalGroup)
@@ -144,6 +142,11 @@ fun GuailiScreen(
         return
     }
 
+    if (showHelp) {
+        GuailiSignalHelpScreen(onBack = { showHelp = false })
+        return
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MaterialTheme.colorScheme.background,
@@ -167,7 +170,7 @@ fun GuailiScreen(
                     viewModel.setLayoutMode(next)
                 },
                 onOpenSettings = { showSettings = true },
-                onOpenLegend = { showLegend = true },
+                onOpenHelp = { showHelp = true },
             )
 
             state.errorMessage?.let { error ->
@@ -231,9 +234,6 @@ fun GuailiScreen(
         )
     }
 
-    if (showLegend) {
-        LegendDialog(onDismiss = { showLegend = false })
-    }
 }
 
 data class KlineTarget(
@@ -249,7 +249,7 @@ private fun Toolbar(
     tableLayout: TableLayout,
     onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenLegend: () -> Unit,
+    onOpenHelp: () -> Unit,
 ) {
     if (compact) {
         Row(
@@ -271,7 +271,7 @@ private fun Toolbar(
                 tableLayout = tableLayout,
                 onToggleLayout = onToggleLayout,
                 onOpenSettings = onOpenSettings,
-                onOpenLegend = onOpenLegend,
+                onOpenHelp = onOpenHelp,
             )
         }
         return
@@ -298,7 +298,7 @@ private fun Toolbar(
                 tableLayout = tableLayout,
                 onToggleLayout = onToggleLayout,
                 onOpenSettings = onOpenSettings,
-                onOpenLegend = onOpenLegend,
+                onOpenHelp = onOpenHelp,
             )
         }
         StatusIndicator(state = state, modifier = Modifier.padding(start = 2.dp, bottom = 2.dp))
@@ -312,7 +312,7 @@ private fun ToolbarActions(
     tableLayout: TableLayout,
     onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenLegend: () -> Unit,
+    onOpenHelp: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggleLayout) {
@@ -327,8 +327,8 @@ private fun ToolbarActions(
                 },
             )
         }
-        IconButton(onClick = onOpenLegend) {
-            Icon(Icons.Outlined.Info, contentDescription = "Value and trend color legend")
+        IconButton(onClick = onOpenHelp) {
+            Icon(Icons.Outlined.Info, contentDescription = "乖离信号帮助")
         }
         IconButton(
             onClick = onRefresh,
@@ -414,38 +414,6 @@ private fun IntervalFilters(
                 label = { Text(group.label) },
             )
         }
-    }
-}
-
-@Composable
-private fun LegendDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Matrix legend") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                LegendLine(Color(0xFF007A1A), "Positive value")
-                LegendLine(Color(0xFFBE0041), "Negative value")
-                LegendLine(LongTrendTextColor, "Long trend period label")
-                LegendLine(ShortTrendTextColor, "Short trend period label")
-                LegendLine(ConflictTrendTextColor, "Conflicting trend period label")
-                Text("Dimmed cells did not pass the ATR rank filter.")
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
-}
-
-@Composable
-private fun LegendLine(color: Color, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(14.dp)
-                .background(color, MaterialTheme.shapes.extraSmall),
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Text(text)
     }
 }
 

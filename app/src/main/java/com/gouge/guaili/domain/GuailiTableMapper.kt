@@ -22,11 +22,31 @@ fun GuailiResponse.toTable(
             )
         }.toMap()
     }
+    val closedCells = requestedSymbols.associateWith { symbol ->
+        val seriesByInterval = bySymbol[symbol]?.series.orEmpty().associateBy { it.interval }
+        requestedIntervals.mapNotNull { interval ->
+            val series = seriesByInterval[interval] ?: return@mapNotNull null
+            val closedIndex = series.data.indexOfLast { it.isClosed == true }
+            val closed = series.data.getOrNull(closedIndex)
+                ?: series.latest?.takeIf { it.isClosed == true }
+                ?: return@mapNotNull null
+            val previousClosed = series.data
+                .take(closedIndex.coerceAtLeast(0))
+                .lastOrNull { it.isClosed == true }
+            interval to closed.toCell(
+                symbol = symbol,
+                interval = interval,
+                longTrend = previousClosed?.longTrend,
+                shortTrend = previousClosed?.shortTrend,
+            )
+        }.toMap()
+    }
 
     return GuailiTable(
         symbols = requestedSymbols,
         intervals = requestedIntervals,
         cells = cells,
+        closedCells = closedCells,
     )
 }
 

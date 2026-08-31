@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gouge.guaili.domain.GuailiCell
-import com.gouge.guaili.domain.guailiColorStrength
+import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.settings.GroupLayoutSize
 import com.gouge.guaili.settings.LayoutMode
 import com.gouge.guaili.settings.SymbolColumnWidthMode
@@ -503,24 +503,7 @@ private fun stripKnownQuoteSuffix(symbol: String): String {
 private val KnownQuoteSuffixes = listOf("USDT", "USDC", "USD", "BTC", "ETH")
 
 private fun cellBackground(cell: GuailiCell?): Color {
-    if (cell == null) return Color(0xFF11161C)
-
-    val strength = guailiColorStrength(cell.value)
-    return when {
-        strength < 0f -> blend(Color(0xFF31363D), Color(0xFFBE0041), -strength)
-        strength > 0f -> blend(Color(0xFF31363D), Color(0xFF007A1A), strength)
-        else -> Color(0xFF31363D)
-    }
-}
-
-private fun blend(from: Color, to: Color, amount: Float): Color {
-    val t = amount.coerceIn(0f, 1f)
-    return Color(
-        red = from.red + (to.red - from.red) * t,
-        green = from.green + (to.green - from.green) * t,
-        blue = from.blue + (to.blue - from.blue) * t,
-        alpha = 1f,
-    )
+    return Color(guailiBackgroundArgb(cell?.value))
 }
 
 internal fun formatInterval(interval: String): String {
