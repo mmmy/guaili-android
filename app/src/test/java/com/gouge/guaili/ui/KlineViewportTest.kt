@@ -45,4 +45,13 @@ class KlineViewportTest {
         assertEquals(0, viewport.coreStart)
         assertEquals(5, viewport.endExclusive)
     }
+
+    @Test
+    fun futureMarginMovesLatestCandlesTowardLeftEdge() {
+        val viewport = calculateKlineViewport(100, 20f, -17f)
+
+        assertEquals(80, viewport.coreStart)
+        assertEquals(100, viewport.endExclusive)
+        assertEquals(-17f, viewport.fractionalOffset, .001f)
+    }
 }

@@ -74,6 +74,7 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -418,6 +419,7 @@ private fun KlineChart(
 ) {
     var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(12f)) }
     var rightOffsetBars by remember { mutableFloatStateOf(0f) }
+    var verticalScale by remember { mutableFloatStateOf(1f) }
     var canvasWidth by remember { mutableIntStateOf(1) }
     val density = androidx.compose.ui.platform.LocalDensity.current
     val leftPaddingPx = with(density) { 8.dp.toPx() }
@@ -426,13 +428,24 @@ private fun KlineChart(
     LaunchedEffect(rows.size) {
         visibleBars = min(72, rows.size).toFloat().coerceAtLeast(1f)
         rightOffsetBars = 0f
+        verticalScale = 1f
     }
 
     Canvas(
         modifier = modifier
             .onSizeChanged { canvasWidth = it.width.coerceAtLeast(1) }
-            .pointerInput(rows.size) {
-                detectTransformGestures { _, pan, zoom, _ ->
+            .pointerInput(rows.size, canvasWidth) {
+                detectTransformGestures { centroid, pan, zoom, _ ->
+                    val plotRight = canvasWidth - rightPaddingPx
+                    if (centroid.x >= plotRight) {
+                        // Dragging the price axis changes the vertical scale.
+                        if (abs(pan.y) > 0.01f) {
+                            val scaleFactor = exp((-pan.y / 220f).toDouble()).toFloat()
+                            verticalScale = (verticalScale * scaleFactor).coerceIn(.25f, 4f)
+                        }
+                        return@detectTransformGestures
+                    }
+
                     val plotWidth = (canvasWidth - leftPaddingPx - rightPaddingPx).coerceAtLeast(1f)
                     val oldVisible = visibleBars
                     val minimumVisible = min(12, rows.size).toFloat().coerceAtLeast(1f)
@@ -442,20 +455,28 @@ private fun KlineChart(
                     )
                     val barsPerPixel = oldVisible / plotWidth
                     rightOffsetBars = (rightOffsetBars + pan.x * barsPerPixel).coerceIn(
-                        0f,
+                        -(visibleBars - 3f).coerceAtLeast(0f),
                         (rows.size - visibleBars).coerceAtLeast(0f),
                     )
                 }
             }
-            .pointerInput(rows.size) {
-                detectTapGestures { position ->
-                    val viewport = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
-                    val plotWidth = (canvasWidth - leftPaddingPx - rightPaddingPx).coerceAtLeast(1f)
-                    val slotWidth = plotWidth / viewport.visibleSpan
-                    onSelectedIndex(
-                        viewport.indexAtX(position.x, leftPaddingPx, slotWidth),
-                    )
-                }
+            .pointerInput(rows.size, canvasWidth) {
+                detectTapGestures(
+                    onDoubleTap = { position ->
+                        if (position.x >= canvasWidth - rightPaddingPx) {
+                            verticalScale = 1f
+                        }
+                    },
+                    onTap = { position ->
+                        if (position.x >= canvasWidth - rightPaddingPx) return@detectTapGestures
+                        val viewport = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
+                        val plotWidth = (canvasWidth - leftPaddingPx - rightPaddingPx).coerceAtLeast(1f)
+                        val slotWidth = plotWidth / viewport.visibleSpan
+                        onSelectedIndex(
+                            viewport.indexAtX(position.x, leftPaddingPx, slotWidth),
+                        )
+                    },
+                )
             },
     ) {
         if (rows.isEmpty()) return@Canvas
@@ -481,10 +502,14 @@ private fun KlineChart(
         }
         val rawMin = priceValues.minOrNull() ?: 0.0
         val rawMax = priceValues.maxOrNull() ?: 1.0
-        val pricePadding = ((rawMax - rawMin) * .06).takeIf { it > 0.0 } ?: rawMax * .001
-        val priceMin = rawMin - pricePadding
-        val priceMax = rawMax + pricePadding
-        val priceRange = (priceMax - priceMin).coerceAtLeast(0.0000001)
+        val rawRange = (rawMax - rawMin).coerceAtLeast(0.0000001)
+        val pricePadding = (rawRange * .06).coerceAtLeast(0.0000001)
+        val fittedRange = rawRange + pricePadding * 2.0
+        val scaledRange = (fittedRange / verticalScale.toDouble()).coerceAtLeast(0.0000001)
+        val priceCenter = (rawMax + rawMin) / 2.0
+        val priceMin = priceCenter - scaledRange / 2.0
+        val priceMax = priceCenter + scaledRange / 2.0
+        val priceRange = scaledRange
         val slotWidth = plotWidth / viewport.visibleSpan
         val bodyWidth = (slotWidth * .62f).coerceIn(1.5.dp.toPx(), 13.dp.toPx())
         val gridColor = Color(0xFF2A333D)
@@ -687,8 +712,23 @@ internal fun calculateKlineViewport(
 ): KlineViewport {
     require(rowCount > 0)
     val visibleSpan = visibleBars.coerceIn(1f, rowCount.toFloat())
+    // Keep a small future margin so the latest candles can be dragged toward
+    // the left edge, as in TradingView, instead of stopping at the right edge.
+    val minimumOffset = -(visibleSpan - 3f).coerceAtLeast(0f)
     val maximumOffset = (rowCount - visibleSpan).coerceAtLeast(0f)
-    val offset = rightOffsetBars.coerceIn(0f, maximumOffset)
+    val offset = rightOffsetBars.coerceIn(minimumOffset, maximumOffset)
+    if (offset < 0f) {
+        val coreCount = min(ceil(visibleSpan).toInt(), rowCount)
+        val coreStart = (rowCount - coreCount).coerceAtLeast(0)
+        return KlineViewport(
+            coreStart = coreStart,
+            drawStart = (coreStart - 1).coerceAtLeast(0),
+            endExclusive = rowCount,
+            visibleSpan = visibleSpan,
+            fractionalOffset = offset,
+        )
+    }
+
     val wholeOffset = floor(offset).toInt()
     val fractionalOffset = offset - wholeOffset
     val coreCount = min(ceil(visibleSpan).toInt(), rowCount)
