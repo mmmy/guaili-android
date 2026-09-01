@@ -1,6 +1,8 @@
 package com.gouge.guaili.data
 
 import com.gouge.guaili.settings.GuailiSettings
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -48,6 +50,45 @@ class GuailiRefreshUseCaseTest {
         assertTrue(result is GuailiResult.Success)
         result as GuailiResult.Success
         assertEquals(8, result.value.table.cells["BTCUSDT"]?.get("5")?.value)
+    }
+
+    @Test
+    fun refreshesFromDifferentEntrypointsDoNotRunConcurrently() = runTest {
+        val settings = GuailiSettings.defaults().copy(
+            symbols = listOf("BTCUSDT"),
+            intervals = listOf("5"),
+        )
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var requestCount = 0
+        var activeRequests = 0
+        var maxActiveRequests = 0
+        val fetcherFactory = GuailiFetcherFactory {
+            GuailiFetcher {
+                requestCount += 1
+                activeRequests += 1
+                maxActiveRequests = maxOf(maxActiveRequests, activeRequests)
+                if (requestCount == 1) {
+                    firstStarted.complete(Unit)
+                    releaseFirst.await()
+                }
+                activeRequests -= 1
+                GuailiResult.Success(response(settings, value = requestCount))
+            }
+        }
+        val firstUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory)
+        val secondUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory)
+
+        val first = async { firstUseCase.refresh(settings) }
+        firstStarted.await()
+        val second = async { secondUseCase.refresh(settings) }
+
+        releaseFirst.complete(Unit)
+        first.await()
+        second.await()
+
+        assertEquals(2, requestCount)
+        assertEquals(1, maxActiveRequests)
     }
 
     private fun response(settings: GuailiSettings, value: Int) = GuailiResponse(

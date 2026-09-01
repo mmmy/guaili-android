@@ -2,6 +2,8 @@ package com.gouge.guaili.data
 
 import com.gouge.guaili.domain.toTable
 import com.gouge.guaili.settings.GuailiSettings
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 fun interface GuailiFetcher {
     suspend fun fetch(settings: GuailiSettings): GuailiResult<GuailiResponse>
@@ -22,7 +24,12 @@ class GuailiRefreshUseCase(
     private var fetcher: GuailiFetcher? = null
     private var fetcherBaseUrl: String? = null
 
-    suspend fun refresh(settings: GuailiSettings): GuailiResult<GuailiSnapshot> {
+    suspend fun refresh(settings: GuailiSettings): GuailiResult<GuailiSnapshot> =
+        RefreshCoordinator.mutex.withLock {
+            refreshLocked(settings)
+        }
+
+    private suspend fun refreshLocked(settings: GuailiSettings): GuailiResult<GuailiSnapshot> {
         val currentFetcher = try {
             fetcherFor(settings.baseUrl)
         } catch (error: Exception) {
@@ -48,5 +55,11 @@ class GuailiRefreshUseCase(
             fetcherBaseUrl = baseUrl
         }
         return checkNotNull(fetcher)
+    }
+
+    // App and WorkManager use separate use-case instances, so the lock must be shared
+    // across instances to prevent an older response from overwriting a newer snapshot.
+    private object RefreshCoordinator {
+        val mutex = Mutex()
     }
 }
