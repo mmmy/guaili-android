@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.GuailiSettings
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
@@ -19,7 +20,11 @@ data class WidgetConfig(
     val mode: WidgetMode = WidgetMode.Signals,
     val singleSymbolColumns: WidgetColumnCount = WidgetColumnCount.Auto,
     val reminders: List<DecisionReminder> = emptyList(),
+    val enabledSignalKinds: Set<GuailiSignalKind> = DefaultWidgetSignalKinds,
 )
+
+internal val DefaultWidgetSignalKinds: Set<GuailiSignalKind> =
+    GuailiSignalKind.entries.toSet()
 
 enum class WidgetMode(val label: String) {
     Signals("信号模式"),
@@ -60,6 +65,7 @@ class WidgetConfigStore(context: Context) {
         val savedIntervals = parse(preferences[stringPreferencesKey(intervalsKey(appWidgetId))])
         val savedMode = preferences[stringPreferencesKey(modeKey(appWidgetId))]
         val savedColumnCount = preferences[stringPreferencesKey(columnCountKey(appWidgetId))]
+        val savedSignalKinds = preferences[stringPreferencesKey(signalKindsKey(appWidgetId))]
         val savedReminders = decodeReminders(
             preferences[stringPreferencesKey(remindersKey(appWidgetId))],
         )
@@ -67,18 +73,19 @@ class WidgetConfigStore(context: Context) {
             ?.let { saved -> WidgetMode.entries.firstOrNull { it.name == saved } }
             ?: WidgetMode.Signals
         val symbols = if (savedMode == null) {
-            settings.symbols.take(MaxSymbols)
+            settings.symbols.take(maxSymbols(mode))
         } else {
-            savedSymbols.ifEmpty { settings.symbols.take(MaxSymbols) }
+            savedSymbols.ifEmpty { settings.symbols.take(maxSymbols(mode)) }
         }
         return WidgetConfig(
-            symbols = normalizeWidgetSymbols(symbols, mode),
+            symbols = reconcileWidgetSymbols(symbols, settings.symbols, mode),
             intervals = savedIntervals.ifEmpty { defaultIntervals(settings.intervals) },
             mode = mode,
             singleSymbolColumns = savedColumnCount
                 ?.let { saved -> WidgetColumnCount.entries.firstOrNull { it.name == saved } }
                 ?: WidgetColumnCount.Auto,
             reminders = savedReminders,
+            enabledSignalKinds = decodeSignalKinds(savedSignalKinds),
         )
     }
 
@@ -94,6 +101,8 @@ class WidgetConfigStore(context: Context) {
                 normalizedConfig.singleSymbolColumns.name
             preferences[stringPreferencesKey(remindersKey(appWidgetId))] =
                 ReminderJson.encodeToString(normalizedConfig.reminders)
+            preferences[stringPreferencesKey(signalKindsKey(appWidgetId))] =
+                normalizedConfig.enabledSignalKinds.joinToString(",") { it.name }
         }
     }
 
@@ -104,11 +113,13 @@ class WidgetConfigStore(context: Context) {
             preferences.remove(stringPreferencesKey(modeKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(columnCountKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(remindersKey(appWidgetId)))
+            preferences.remove(stringPreferencesKey(signalKindsKey(appWidgetId)))
         }
     }
 
     companion object {
-        const val MaxSymbols = 5
+        const val MaxSignalSymbols = 10
+        const val MaxMatrixSymbols = 5
         const val MaxIntervals = 4
         const val MaxReminders = 12
 
@@ -119,11 +130,18 @@ class WidgetConfigStore(context: Context) {
             return (preferred + available).distinct().take(MaxIntervals)
         }
 
+        fun maxSymbols(mode: WidgetMode): Int = when (mode) {
+            WidgetMode.Signals -> MaxSignalSymbols
+            WidgetMode.Matrix, WidgetMode.DecisionReminders -> MaxMatrixSymbols
+            WidgetMode.SingleSymbol -> 1
+        }
+
         private fun symbolsKey(id: Int) = "widget_${id}_symbols"
         private fun intervalsKey(id: Int) = "widget_${id}_intervals"
         private fun modeKey(id: Int) = "widget_${id}_mode"
         private fun columnCountKey(id: Int) = "widget_${id}_single_symbol_columns"
         private fun remindersKey(id: Int) = "widget_${id}_decision_reminders"
+        private fun signalKindsKey(id: Int) = "widget_${id}_signal_kinds"
 
         private fun parse(value: String?): List<String> = value
             ?.split(',')
@@ -146,11 +164,30 @@ class WidgetConfigStore(context: Context) {
                 }
                 .distinctBy(DecisionReminder::id)
                 .take(MaxReminders)
+
+        private fun decodeSignalKinds(value: String?): Set<GuailiSignalKind> = when (value) {
+            null -> DefaultWidgetSignalKinds
+            else -> value.split(',')
+                .mapNotNull { saved ->
+                    GuailiSignalKind.entries.firstOrNull { it.name == saved.trim() }
+                }
+                .toSet()
+        }
     }
 }
 
 internal fun normalizeWidgetSymbols(symbols: List<String>, mode: WidgetMode): List<String> =
-    symbols.take(if (mode == WidgetMode.SingleSymbol) 1 else WidgetConfigStore.MaxSymbols)
+    symbols.distinct().take(WidgetConfigStore.maxSymbols(mode))
+
+internal fun reconcileWidgetSymbols(
+    configured: List<String>,
+    available: List<String>,
+    mode: WidgetMode,
+): List<String> {
+    val availableSet = available.toSet()
+    val current = configured.filter(availableSet::contains)
+    return normalizeWidgetSymbols(current.ifEmpty { available }, mode)
+}
 
 internal fun normalizeWidgetConfig(config: WidgetConfig): WidgetConfig = config.copy(
     symbols = normalizeWidgetSymbols(config.symbols, config.mode),

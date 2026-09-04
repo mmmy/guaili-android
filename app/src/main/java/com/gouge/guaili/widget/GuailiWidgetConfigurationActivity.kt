@@ -33,6 +33,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.lifecycleScope
+import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.SettingsStore
 import com.gouge.guaili.ui.theme.GuailiTheme
@@ -178,6 +180,7 @@ private fun WidgetConfigurationScreen(
     }
     var selectedIntervals by remember { mutableStateOf(initialConfig.intervals) }
     var mode by remember { mutableStateOf(initialConfig.mode) }
+    var enabledSignalKinds by remember { mutableStateOf(initialConfig.enabledSignalKinds) }
     var singleSymbolColumns by remember { mutableStateOf(initialConfig.singleSymbolColumns) }
     var reminders by remember { mutableStateOf(initialConfig.reminders) }
     var editingReminderId by remember { mutableStateOf<String?>(null) }
@@ -213,7 +216,7 @@ private fun WidgetConfigurationScreen(
         Text(
             text = when (mode) {
                 WidgetMode.Signals ->
-                    "监控最多 5 个品种，按优先级显示回撤风险、均线压缩和级别冲突。"
+                    "监控最多 10 个品种，可分别启用回撤风险、均线压缩和级别冲突。"
                 WidgetMode.Matrix ->
                     "选择最多 5 个品种和 4 个周期；组件根据尺寸显示前几个品种。"
                 WidgetMode.SingleSymbol ->
@@ -233,7 +236,15 @@ private fun WidgetConfigurationScreen(
                     WidgetMode.entries.forEach { candidate ->
                         FilterChip(
                             selected = mode == candidate,
-                            onClick = { mode = candidate },
+                            onClick = {
+                                mode = candidate
+                                if (candidate == WidgetMode.Matrix) {
+                                    selectedSymbols = normalizeWidgetSymbols(
+                                        selectedSymbols,
+                                        candidate,
+                                    )
+                                }
+                            },
                             label = { Text(candidate.label) },
                             modifier = Modifier.padding(end = 8.dp),
                         )
@@ -390,19 +401,41 @@ private fun WidgetConfigurationScreen(
                 }
             }
             else -> {
+                if (mode == WidgetMode.Signals) {
+                    item {
+                        SectionTitle("启用的信号")
+                        GuailiSignalKind.entries.forEach { kind ->
+                            SignalKindSwitchRow(
+                                text = signalKindLabel(kind),
+                                enabled = kind in enabledSignalKinds,
+                                onEnabledChange = { enabled ->
+                                    enabledSignalKinds = if (enabled) {
+                                        enabledSignalKinds + kind
+                                    } else {
+                                        enabledSignalKinds - kind
+                                    }
+                                },
+                            )
+                        }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                    }
+                }
                 item {
-                    SectionTitle("品种（${selectedSymbols.size}/${WidgetConfigStore.MaxSymbols}）")
+                    SectionTitle(
+                        "品种（${selectedSymbols.size}/${WidgetConfigStore.maxSymbols(mode)}）",
+                    )
                 }
                 items(settings.symbols, key = { "symbol-$it" }) { symbol ->
+                    val symbolLimit = WidgetConfigStore.maxSymbols(mode)
                     SelectionRow(
                         text = symbol,
                         selected = symbol in selectedSymbols,
-                        enabled = symbol in selectedSymbols || selectedSymbols.size < WidgetConfigStore.MaxSymbols,
+                        enabled = symbol in selectedSymbols || selectedSymbols.size < symbolLimit,
                         onToggle = {
                             selectedSymbols = toggleSelection(
                                 current = selectedSymbols,
                                 value = symbol,
-                                limit = WidgetConfigStore.MaxSymbols,
+                                limit = symbolLimit,
                             )
                         },
                     )
@@ -442,6 +475,7 @@ private fun WidgetConfigurationScreen(
                             selectedIntervals = selectedIntervals,
                             singleSymbolColumns = singleSymbolColumns,
                             reminders = reminders,
+                            enabledSignalKinds = enabledSignalKinds,
                         ),
                     )
                 },
@@ -466,6 +500,7 @@ internal fun buildWidgetConfig(
     selectedIntervals: List<String>,
     singleSymbolColumns: WidgetColumnCount = WidgetColumnCount.Auto,
     reminders: List<DecisionReminder> = emptyList(),
+    enabledSignalKinds: Set<GuailiSignalKind> = DefaultWidgetSignalKinds,
 ): WidgetConfig = WidgetConfig(
     symbols = if (mode == WidgetMode.SingleSymbol) {
         listOfNotNull(selectedSingleSymbol)
@@ -476,6 +511,7 @@ internal fun buildWidgetConfig(
     mode = mode,
     singleSymbolColumns = singleSymbolColumns,
     reminders = reminders,
+    enabledSignalKinds = enabledSignalKinds,
 )
 
 @Composable
@@ -550,6 +586,33 @@ private fun SectionTitle(text: String) {
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(vertical = 6.dp),
     )
+}
+
+@Composable
+private fun SignalKindSwitchRow(
+    text: String,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onEnabledChange(!enabled) }
+            .padding(vertical = 4.dp),
+    ) {
+        Text(text = text, modifier = Modifier.weight(1f))
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange,
+        )
+    }
+}
+
+private fun signalKindLabel(kind: GuailiSignalKind): String = when (kind) {
+    GuailiSignalKind.Extreme -> "回撤 / 反弹风险"
+    GuailiSignalKind.Compression -> "均线压缩"
+    GuailiSignalKind.Conflict -> "级别冲突"
 }
 
 @Composable

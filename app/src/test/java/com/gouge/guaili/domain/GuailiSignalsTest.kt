@@ -69,6 +69,31 @@ class GuailiSignalsTest {
     }
 
     @Test
+    fun disabledConflictFallsBackToEnabledExtremeSignal() {
+        val values = linkedMapOf(
+            "1" to -12, "2" to -14, "3" to -11, "5" to -13, "8" to -10,
+            "10" to 0,
+            "15" to 11, "20" to 12, "30" to 15, "45" to 13, "60" to 10,
+        )
+
+        val signal = GuailiSignalDetector.detect(
+            table = table(values),
+            enabledKinds = setOf(GuailiSignalKind.Extreme),
+        ).single()
+
+        assertEquals(GuailiSignalKind.Extreme, signal.kind)
+    }
+
+    @Test
+    fun noSignalKindsEnabledProducesNoSignals() {
+        val table = table(
+            values = mapOf("15" to -2, "20" to 0, "30" to 1, "45" to 0, "60" to 2),
+        )
+
+        assertTrue(GuailiSignalDetector.detect(table, enabledKinds = emptySet()).isEmpty())
+    }
+
+    @Test
     fun missingOrFilteredLevelBreaksAdjacency() {
         val values = mapOf("1" to 12, "2" to 13, "3" to 14, "5" to 15, "8" to 16)
         val cells = values.mapValues { (interval, value) -> cell(interval, value) }.toMutableMap()

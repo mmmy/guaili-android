@@ -1,5 +1,6 @@
 package com.gouge.guaili.widget
 
+import com.gouge.guaili.domain.GuailiSignalKind
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -31,17 +32,41 @@ class WidgetConfigStoreTest {
     }
 
     @Test
-    fun otherModesKeepTheNormalSymbolLimit() {
-        val symbols = listOf("A", "B", "C", "D", "E", "F")
+    fun signalModeAllowsTenSymbolsWhileMatrixKeepsFive() {
+        val symbols = (1..11).map { "S$it" }
 
         assertEquals(
-            listOf("A", "B", "C", "D", "E"),
+            symbols.take(10),
             normalizeWidgetSymbols(symbols, WidgetMode.Signals),
         )
         assertEquals(
-            listOf("A", "B", "C", "D", "E"),
+            symbols.take(5),
             normalizeWidgetSymbols(symbols, WidgetMode.Matrix),
         )
+    }
+
+    @Test
+    fun unavailableSavedSymbolsDoNotConsumeSelectionSlots() {
+        val configured = listOf("OLDUSDT", "BTCUSDT", "ETHUSDT")
+        val available = listOf("BTCUSDT", "ETHUSDT", "SOLUSDT")
+
+        assertEquals(
+            listOf("BTCUSDT", "ETHUSDT"),
+            reconcileWidgetSymbols(configured, available, WidgetMode.Signals),
+        )
+    }
+
+    @Test
+    fun signalDraftKeepsEnabledSignalKinds() {
+        val config = buildWidgetConfig(
+            mode = WidgetMode.Signals,
+            selectedSymbols = listOf("BTCUSDT"),
+            selectedSingleSymbol = null,
+            selectedIntervals = emptyList(),
+            enabledSignalKinds = setOf(GuailiSignalKind.Extreme),
+        )
+
+        assertEquals(setOf(GuailiSignalKind.Extreme), config.enabledSignalKinds)
     }
 
     @Test

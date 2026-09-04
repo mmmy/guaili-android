@@ -56,13 +56,14 @@ object GuailiSignalDetector {
     fun detect(
         table: GuailiTable,
         selectedSymbols: List<String> = table.symbols,
+        enabledKinds: Set<GuailiSignalKind> = GuailiSignalKind.entries.toSet(),
     ): List<GuailiSignal> {
         val orderedIntervals = table.intervals
             .distinct()
             .sortedBy(::guailiIntervalDurationMillis)
 
         return selectedSymbols.distinct().mapNotNull { symbol ->
-            detectForSymbol(table, symbol, orderedIntervals)
+            detectForSymbol(table, symbol, orderedIntervals, enabledKinds)
         }.sortedWith(
             compareByDescending<GuailiSignal> { it.priority }
                 .thenBy { selectedSymbols.indexOf(it.symbol).let { index -> if (index < 0) Int.MAX_VALUE else index } },
@@ -73,22 +74,29 @@ object GuailiSignalDetector {
         table: GuailiTable,
         symbol: String,
         orderedIntervals: List<String>,
+        enabledKinds: Set<GuailiSignalKind>,
     ): GuailiSignal? {
         val cells = table.closedCells[symbol]
             ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true }
         if (cells.isEmpty()) return null
 
         val extremeRuns = extremeRuns(orderedIntervals, cells)
-        conflictRuns(extremeRuns)?.let { runs ->
-            return GuailiSignal(symbol, GuailiSignalKind.Conflict, runs)
+        if (GuailiSignalKind.Conflict in enabledKinds) {
+            conflictRuns(extremeRuns)?.let { runs ->
+                return GuailiSignal(symbol, GuailiSignalKind.Conflict, runs)
+            }
         }
 
-        extremeRuns.maxWithOrNull(runComparator)?.let { run ->
-            return GuailiSignal(symbol, GuailiSignalKind.Extreme, listOf(run))
+        if (GuailiSignalKind.Extreme in enabledKinds) {
+            extremeRuns.maxWithOrNull(runComparator)?.let { run ->
+                return GuailiSignal(symbol, GuailiSignalKind.Extreme, listOf(run))
+            }
         }
 
-        compressionRuns(orderedIntervals, cells).maxWithOrNull(runComparator)?.let { run ->
-            return GuailiSignal(symbol, GuailiSignalKind.Compression, listOf(run))
+        if (GuailiSignalKind.Compression in enabledKinds) {
+            compressionRuns(orderedIntervals, cells).maxWithOrNull(runComparator)?.let { run ->
+                return GuailiSignal(symbol, GuailiSignalKind.Compression, listOf(run))
+            }
         }
 
         return null

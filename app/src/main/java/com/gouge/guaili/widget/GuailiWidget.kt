@@ -165,7 +165,11 @@ private fun GuailiWidgetContent(
     val signals = if (snapshot == null || config.mode != WidgetMode.Signals) {
         emptyList()
     } else {
-        GuailiSignalDetector.detect(snapshot.table, config.symbols)
+        GuailiSignalDetector.detect(
+            table = snapshot.table,
+            selectedSymbols = config.symbols,
+            enabledKinds = config.enabledSignalKinds,
+        )
     }
 
     val symbolCount = when {
@@ -224,7 +228,10 @@ private fun GuailiWidgetContent(
                     else -> 3
                 }
                 if (signals.isEmpty()) {
-                    NoSignalContent(config.symbols.size)
+                    NoSignalContent(
+                        monitoredSymbols = config.symbols.size,
+                        hasEnabledSignalKinds = config.enabledSignalKinds.isNotEmpty(),
+                    )
                 } else {
                     signals.take(signalCount).forEach { signal ->
                         SignalRow(signal)
@@ -652,14 +659,14 @@ private fun groupedTrendTextColor(cell: GuailiCell?): ColorProvider = when {
 }
 
 @Composable
-private fun NoSignalContent(monitoredSymbols: Int) {
+private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolean) {
     Column(
         modifier = GlanceModifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "暂无高优先级信号",
+            text = if (hasEnabledSignalKinds) "暂无高优先级信号" else "未启用信号类型",
             style = TextStyle(
                 color = PrimaryText,
                 fontSize = 12.sp,
@@ -667,7 +674,11 @@ private fun NoSignalContent(monitoredSymbols: Int) {
             ),
         )
         Text(
-            text = "正在监控 $monitoredSymbols 个品种",
+            text = if (hasEnabledSignalKinds) {
+                "正在监控 $monitoredSymbols 个品种"
+            } else {
+                "点击编辑开启信号"
+            },
             style = TextStyle(color = SecondaryText, fontSize = 10.sp),
         )
     }
