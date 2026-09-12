@@ -23,7 +23,7 @@ data class GuailiSettings(
 ) {
     companion object {
         fun defaults(): GuailiSettings = GuailiSettings(
-            baseUrl = "http://192.168.1.100:8080/",
+            baseUrl = "http://10.0.2.2:3005/",
             symbols = listOf(
                 "BTCUSDT",
                 "XAUUSDT",

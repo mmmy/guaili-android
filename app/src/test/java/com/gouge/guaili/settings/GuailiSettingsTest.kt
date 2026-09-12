@@ -9,7 +9,7 @@ class GuailiSettingsTest {
     fun defaultsMatchFirstRelease() {
         val settings = GuailiSettings.defaults()
 
-        assertEquals("http://192.168.1.100:8080/", settings.baseUrl)
+        assertEquals("http://10.0.2.2:3005/", settings.baseUrl)
         assertEquals(
             listOf(
                 "BTCUSDT",

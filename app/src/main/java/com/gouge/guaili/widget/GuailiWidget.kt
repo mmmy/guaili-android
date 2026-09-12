@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -47,7 +49,6 @@ import androidx.glance.currentState
 import com.gouge.guaili.MainActivity
 import com.gouge.guaili.data.GuailiSnapshot
 import com.gouge.guaili.data.GuailiSnapshotStore
-import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.domain.GuailiSignal
@@ -81,19 +82,26 @@ class GuailiWidget : GlanceAppWidget() {
     )
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val settings = SettingsStore(context).settings.first()
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
-        val config = WidgetConfigStore(context).read(appWidgetId, settings)
-        val snapshot = GuailiSnapshotStore(context).read()
+        val configuration = WidgetConfigStore(context).observe(appWidgetId, SettingsStore(context).settings)
+        val initialConfiguration = configuration.first()
+        val snapshotStore = GuailiSnapshotStore(context)
+        val initialSnapshot = snapshotStore.read()
+        val deliveryStatus = reminderDeliveryStatus(context)
 
         provideContent {
+            // updateAll does not restart provideGlance while its session is active.
+            // Observe saves so refresh feedback and signals use the same latest data.
+            val snapshot by snapshotStore.snapshots.collectAsState(initialSnapshot)
+            val currentConfiguration by configuration.collectAsState(initialConfiguration)
             val refreshStatus = currentState<Preferences>().widgetRefreshStatus()
             GuailiWidgetContent(
                 snapshot = snapshot,
-                config = config,
-                settings = settings,
+                config = currentConfiguration.config,
+                settings = currentConfiguration.settings,
                 refreshStatus = refreshStatus,
                 appWidgetId = appWidgetId,
+                deliveryStatus = deliveryStatus,
             )
         }
     }
@@ -153,37 +161,36 @@ private fun GuailiWidgetContent(
     settings: GuailiSettings,
     refreshStatus: WidgetRefreshStatus,
     appWidgetId: Int,
+    deliveryStatus: ReminderDeliveryStatus,
 ) {
     if (config.mode == WidgetMode.DecisionReminders) {
         DecisionReminderWidgetContent(
             reminders = config.reminders,
             appWidgetId = appWidgetId,
+            deliveryStatus = deliveryStatus,
         )
         return
     }
     val size = LocalSize.current
-    val signals = if (snapshot == null || config.mode != WidgetMode.Signals) {
+    val now = System.currentTimeMillis()
+    val dataStatus = snapshot?.let {
+        widgetDataStatus(it, config.symbols, now, if (config.mode == WidgetMode.Matrix) config.intervals else it.table.intervals)
+    }
+    val configIssue = widgetConfigurationIssue(config, settings.symbols, settings.intervals)
+    val signals = if (snapshot == null || config.mode != WidgetMode.Signals || dataStatus?.snapshotStale == true || configIssue != null) {
         emptyList()
     } else {
         GuailiSignalDetector.detect(
             table = snapshot.table,
             selectedSymbols = config.symbols,
             enabledKinds = config.enabledSignalKinds,
+            nowMillis = now,
+            timezone = snapshot.timezone,
         )
     }
 
-    val symbolCount = when {
-        size.height < 130.dp -> 1
-        size.height < 170.dp -> 2
-        else -> 3
-    }
-    val symbols = config.symbols.take(symbolCount)
-    val intervalCount = when {
-        size.width < 220.dp -> 2
-        size.width < 300.dp -> 3
-        else -> WidgetConfigStore.MaxIntervals
-    }
-    val intervals = config.intervals.take(intervalCount)
+    val symbols = config.symbols
+    val intervals = config.intervals
     val cellWidth = if (intervals.isEmpty()) {
         40.dp
     } else {
@@ -217,24 +224,34 @@ private fun GuailiWidgetContent(
             darkStyle = useGroupedStyle,
             darkHeaderHeight = singleSymbolDimensions.symbolHeaderHeight,
             refreshStatus = refreshStatus,
+            dataStatus = dataStatus,
         )
         Spacer(modifier = GlanceModifier.height(if (useGroupedStyle) 2.dp else 6.dp))
         when {
+            configIssue != null -> Text(
+                text = "$configIssue；点击编辑重新选择",
+                style = TextStyle(color = WarningText, fontSize = 11.sp),
+                modifier = GlanceModifier.clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))),
+            )
             snapshot == null || config.symbols.isEmpty() -> EmptyWidgetContent()
             config.mode == WidgetMode.Signals -> {
-                val signalCount = when {
-                    size.height < 130.dp -> 1
-                    size.height < 170.dp -> 2
-                    else -> 3
-                }
                 if (signals.isEmpty()) {
                     NoSignalContent(
                         monitoredSymbols = config.symbols.size,
                         hasEnabledSignalKinds = config.enabledSignalKinds.isNotEmpty(),
+                        dataStatus = dataStatus,
                     )
                 } else {
-                    signals.take(signalCount).forEach { signal ->
-                        SignalRow(signal)
+                    LazyColumn(modifier = GlanceModifier.defaultWeight().fillMaxWidth()) {
+                        item {
+                            Text(
+                                "${signals.size}条信号 · 上下滑动查看全部" + if (dataStatus?.incomplete == true) " · 数据不全" else "",
+                                style = TextStyle(color = SecondaryText, fontSize = 9.sp),
+                            )
+                        }
+                        items(signals) { signal ->
+                            SignalRow(signal, movingAverageLabel(snapshot))
+                        }
                     }
                 }
             }
@@ -256,14 +273,24 @@ private fun GuailiWidgetContent(
             }
             intervals.isEmpty() -> EmptyWidgetContent()
             else -> {
-                MatrixHeader(intervals, cellWidth)
-                symbols.forEach { symbol ->
-                    MatrixRow(
-                        symbol = symbol,
-                        intervals = intervals,
-                        cellWidth = cellWidth,
-                        snapshot = snapshot,
-                    )
+                val intervalGroups = matrixIntervalGroups(intervals, size.width.value.toInt())
+                LazyColumn(modifier = GlanceModifier.defaultWeight().fillMaxWidth()) {
+                    if (intervalGroups.size == 1) item { MatrixHeader(intervals, cellWidth) }
+                    items(symbols) { symbol ->
+                        Column {
+                            intervalGroups.forEach { group ->
+                                val groupCellWidth = (size.width - 20.dp - SymbolWidth) / group.size
+                                if (intervalGroups.size > 1) MatrixHeader(group, groupCellWidth)
+                                MatrixRow(
+                                    symbol = symbol,
+                                    intervals = group,
+                                    cellWidth = groupCellWidth,
+                                    snapshot = snapshot,
+                                )
+                            }
+                        }
+                    }
+                    item { Text("${symbols.size}个品种 · 上下滑动 · ·为未收线", style = TextStyle(color = SecondaryText, fontSize = 9.sp)) }
                 }
             }
         }
@@ -274,6 +301,7 @@ private fun GuailiWidgetContent(
 private fun DecisionReminderWidgetContent(
     reminders: List<DecisionReminder>,
     appWidgetId: Int,
+    deliveryStatus: ReminderDeliveryStatus,
 ) {
     val now = System.currentTimeMillis()
     val ordered = sortDecisionReminders(reminders, now)
@@ -314,7 +342,12 @@ private fun DecisionReminderWidgetContent(
                     .clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))),
             )
         }
-        Spacer(modifier = GlanceModifier.height(6.dp))
+        Text(
+            deliveryStatus.label,
+            style = TextStyle(color = if (deliveryStatus.notificationsEnabled && deliveryStatus.exactAlarms) SecondaryText else WarningText, fontSize = 9.sp),
+            modifier = GlanceModifier.clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))),
+        )
+        Spacer(modifier = GlanceModifier.height(4.dp))
         if (ordered.isEmpty()) {
             Column(
                 modifier = GlanceModifier.fillMaxSize(),
@@ -342,43 +375,22 @@ private fun DecisionReminderWidgetRow(
     nowEpochMillis: Long,
 ) {
     val expired = reminder.targetAtEpochMillis <= nowEpochMillis
-    Row(
+    Column(
         modifier = GlanceModifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
             .background(if (expired) ReminderDueBackground else SignalBackground)
             .padding(horizontal = 7.dp, vertical = 7.dp)
             .clickable(actionStartActivity(klineIntent(reminder.symbol, reminder.interval))),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = displaySymbol(reminder.symbol),
+            text = "${displaySymbol(reminder.symbol)} · ${displayInterval(reminder.interval)} · ${reminder.direction.glyph}${reminder.direction.label}",
             style = TextStyle(
                 color = PrimaryText,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
             ),
-            modifier = GlanceModifier.width(54.dp),
-            maxLines = 1,
-        )
-        Text(
-            text = displayInterval(reminder.interval),
-            style = TextStyle(color = SecondaryText, fontSize = 10.sp),
-            modifier = GlanceModifier.width(40.dp),
-            maxLines = 1,
-        )
-        Text(
-            text = "${reminder.direction.glyph}${reminder.direction.label}",
-            style = TextStyle(
-                color = if (reminder.direction == DecisionDirection.Long) {
-                    ReminderLongText
-                } else {
-                    ReminderShortText
-                },
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-            ),
-            modifier = GlanceModifier.width(48.dp),
+            modifier = GlanceModifier.fillMaxWidth(),
             maxLines = 1,
         )
         Text(
@@ -390,9 +402,9 @@ private fun DecisionReminderWidgetRow(
                 color = if (expired) WarningText else PrimaryText,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.End,
+                textAlign = TextAlign.Start,
             ),
-            modifier = GlanceModifier.defaultWeight(),
+            modifier = GlanceModifier.fillMaxWidth(),
             maxLines = 1,
         )
     }
@@ -406,9 +418,10 @@ private fun WidgetHeader(
     darkStyle: Boolean = false,
     darkHeaderHeight: androidx.compose.ui.unit.Dp? = null,
     refreshStatus: WidgetRefreshStatus = WidgetRefreshStatus(),
+    dataStatus: WidgetDataStatus? = null,
 ) {
-    val stale = snapshot != null && isGuailiSnapshotStale(snapshot.updatedAt)
-    val feedbackText = refreshFeedbackText(refreshStatus)
+    val feedbackText = refreshFeedbackText(refreshStatus, snapshotUpdatedAt = snapshot?.updatedAt)
+    val refreshing = refreshStatus.phase == WidgetRefreshPhase.Refreshing && feedbackText == "刷新中…"
     val headerModifier = if (darkStyle && darkHeaderHeight != null) {
         GlanceModifier
             .fillMaxWidth()
@@ -418,6 +431,7 @@ private fun WidgetHeader(
     } else {
         GlanceModifier.fillMaxWidth()
     }
+    Column {
     Row(
         modifier = headerModifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -435,25 +449,6 @@ private fun WidgetHeader(
             maxLines = 1,
         )
         Text(
-            text = feedbackText ?: when {
-                snapshot == null -> "暂无数据"
-                stale -> "已过期 ${formatTime(snapshot.updatedAt)}"
-                else -> formatTime(snapshot.updatedAt)
-            },
-            style = TextStyle(
-                color = when {
-                    refreshStatus.phase == WidgetRefreshPhase.Refreshing -> AccentText
-                    refreshStatus.phase == WidgetRefreshPhase.Success -> RefreshSuccessText
-                    refreshStatus.phase == WidgetRefreshPhase.Failure -> WarningText
-                    stale -> WarningText
-                    darkStyle -> GroupedSecondaryText
-                    else -> SecondaryText
-                },
-                fontSize = 10.sp,
-            ),
-        )
-        Spacer(modifier = GlanceModifier.width(6.dp))
-        Text(
             text = "编辑",
             style = TextStyle(
                 color = AccentText,
@@ -466,24 +461,67 @@ private fun WidgetHeader(
         )
         Spacer(modifier = GlanceModifier.width(8.dp))
         Text(
-            text = if (refreshStatus.phase == WidgetRefreshPhase.Refreshing) "…" else "↻",
+            text = if (refreshing) "刷新中…" else "↻ 刷新",
             style = TextStyle(
                 color = AccentText,
-                fontSize = 18.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
             ),
             modifier = GlanceModifier
-                .padding(horizontal = 4.dp)
-                .clickable(actionRunCallback<RefreshWidgetAction>()),
+                .padding(horizontal = 4.dp, vertical = 8.dp)
+                .then(if (refreshing) GlanceModifier else GlanceModifier.clickable(actionRunCallback<RefreshWidgetAction>())),
         )
+    }
+    Text(
+        text = widgetRefreshSummary(refreshStatus, snapshot?.updatedAt, dataStatus?.latestClosedAt),
+        style = TextStyle(color = when {
+            refreshing -> AccentText
+            feedbackText != null && refreshStatus.phase == WidgetRefreshPhase.Failure -> WarningText
+            feedbackText != null && refreshStatus.phase == WidgetRefreshPhase.Success -> RefreshSuccessText
+            feedbackText == "刷新超时，重试" -> WarningText
+            darkStyle -> GroupedSecondaryText
+            else -> SecondaryText
+        }, fontSize = 10.sp),
+        maxLines = 1,
+    )
+    dataStatus?.warning?.let { warning ->
+        Text(warning, style = TextStyle(color = WarningText, fontSize = 9.sp), maxLines = 2)
+    }
     }
 }
 
-internal fun refreshFeedbackText(status: WidgetRefreshStatus): String? = when (status.phase) {
+internal fun refreshFeedbackText(
+    status: WidgetRefreshStatus,
+    nowMillis: Long = System.currentTimeMillis(),
+    snapshotUpdatedAt: Long? = null,
+): String? {
+    val age = nowMillis - status.changedAt
+    if (status.phase != WidgetRefreshPhase.Refreshing && (snapshotUpdatedAt ?: 0L) > status.changedAt) return null
+    if (age < 0) return null
+    return when (status.phase) {
     WidgetRefreshPhase.Idle -> null
-    WidgetRefreshPhase.Refreshing -> "刷新中…"
-    WidgetRefreshPhase.Success -> "已刷新 ${formatTime(status.changedAt)}"
-    WidgetRefreshPhase.Failure -> "刷新失败"
+    WidgetRefreshPhase.Refreshing -> if (age in 0..60_000L) "刷新中…" else "刷新超时，重试"
+    WidgetRefreshPhase.Success -> "刷新成功"
+    WidgetRefreshPhase.Failure -> if (status.message?.contains("保存") == true) "保存失败，请重试" else "刷新失败，请重试"
+    }
+}
+
+internal fun widgetRefreshSummary(
+    status: WidgetRefreshStatus,
+    snapshotUpdatedAt: Long?,
+    latestClosedAt: Long?,
+    nowMillis: Long = System.currentTimeMillis(),
+): String {
+    val feedback = refreshFeedbackText(status, nowMillis, snapshotUpdatedAt)
+    val fetched = snapshotUpdatedAt?.let {
+        DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it))
+    }
+    return when {
+        feedback == "刷新成功" -> "$feedback ${fetched ?: ""} · 收线 ${latestClosedAt?.let(::formatTime) ?: "未知"}"
+        feedback != null -> feedback + (fetched?.let { " · 上次获取 $it" } ?: "")
+        fetched != null -> "获取 $fetched · 收线 ${latestClosedAt?.let(::formatTime) ?: "未知"}"
+        else -> "暂无数据，点击刷新"
+    }
 }
 
 @Composable
@@ -616,7 +654,7 @@ private fun SingleSymbolGridCell(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = cell?.value?.toString() ?: "-",
+                text = widgetCellValue(cell),
                 style = TextStyle(
                     color = if (cell?.rankFilter == false) GroupedFilteredText else GroupedValueText,
                     fontSize = dimensions.table.valueFontSize,
@@ -659,14 +697,18 @@ private fun groupedTrendTextColor(cell: GuailiCell?): ColorProvider = when {
 }
 
 @Composable
-private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolean) {
+private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolean, dataStatus: WidgetDataStatus?) {
     Column(
         modifier = GlanceModifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = if (hasEnabledSignalKinds) "暂无高优先级信号" else "未启用信号类型",
+            text = when {
+                !hasEnabledSignalKinds -> "未启用信号类型"
+                dataStatus?.incomplete == true -> "数据不足，无法完整判断"
+                else -> "暂无符合条件的信号"
+            },
             style = TextStyle(
                 color = PrimaryText,
                 fontSize = 12.sp,
@@ -675,7 +717,7 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
         )
         Text(
             text = if (hasEnabledSignalKinds) {
-                "正在监控 $monitoredSymbols 个品种"
+                "${monitoredSymbols}个品种快照 · ${dataStatus?.description.orEmpty()}"
             } else {
                 "点击编辑开启信号"
             },
@@ -685,7 +727,7 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
 }
 
 @Composable
-private fun SignalRow(signal: GuailiSignal) {
+private fun SignalRow(signal: GuailiSignal, maLabel: String) {
     Row(
         modifier = GlanceModifier
             .fillMaxWidth()
@@ -716,7 +758,7 @@ private fun SignalRow(signal: GuailiSignal) {
                 maxLines = 1,
             )
             Text(
-                text = signalSummary(signal),
+                text = signalSummary(signal, maLabel),
                 style = TextStyle(color = SecondaryText, fontSize = 9.sp),
                 maxLines = 1,
             )
@@ -734,7 +776,7 @@ private fun signalTitle(signal: GuailiSignal): String = when (signal.kind) {
     }
 }
 
-private fun signalSummary(signal: GuailiSignal): String = when (signal.kind) {
+private fun signalSummary(signal: GuailiSignal, maLabel: String): String = when (signal.kind) {
     GuailiSignalKind.Conflict -> "观察 · " + signal.runs.joinToString(" · ") { run ->
         "${runRange(run)}${directionShortName(run.direction)}"
     }
@@ -743,7 +785,7 @@ private fun signalSummary(signal: GuailiSignal): String = when (signal.kind) {
             "${runRange(signal.primaryRun)} · ${signal.primaryRun.levelCount}级${directionShortName(signal.primaryRun.direction)}"
     GuailiSignalKind.Compression ->
         signalEvidencePrefix(signal) +
-            "${runRange(signal.primaryRun)} · ${signal.primaryRun.levelCount}级接近EMA20"
+            "${runRange(signal.primaryRun)} · ${signal.primaryRun.levelCount}级接近$maLabel"
 }
 
 private fun signalEvidencePrefix(signal: GuailiSignal): String =
@@ -838,10 +880,8 @@ private fun MatrixCell(
     interval: String,
     cellWidth: androidx.compose.ui.unit.Dp,
 ) {
-    val value = cell?.value
-    val suffix = if (cell?.isClosed == false) "·" else ""
     Text(
-        text = value?.let { "$it$suffix" } ?: "--",
+        text = widgetCellValue(cell),
         style = TextStyle(
             color = cellTextColor(cell),
             fontSize = 12.sp,
@@ -908,9 +948,13 @@ private fun displayInterval(interval: String): String = when {
     else -> interval
 }
 
-private fun formatTime(epochMillis: Long): String = TimeFormatter.format(Instant.ofEpochMilli(epochMillis))
+private fun formatTime(epochMillis: Long): String {
+    val zone = ZoneId.systemDefault()
+    val value = Instant.ofEpochMilli(epochMillis).atZone(zone)
+    val pattern = if (value.toLocalDate() == java.time.LocalDate.now(zone)) "HH:mm" else "MM-dd HH:mm"
+    return DateTimeFormatter.ofPattern(pattern).format(value)
+}
 
-private val TimeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
 private const val MaxWeightedCellsPerRow = 5
 private val SymbolWidth = 54.dp
 private fun dayNightColor(day: Long, night: Long): ColorProvider =

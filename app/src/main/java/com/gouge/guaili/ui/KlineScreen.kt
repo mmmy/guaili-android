@@ -4,8 +4,7 @@ import android.graphics.Paint
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,11 +17,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -44,6 +57,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -67,11 +81,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.gouge.guaili.domain.ChannelTrend
 import com.gouge.guaili.domain.KlineChartRow
+import com.gouge.guaili.data.AlertDto
+import com.gouge.guaili.data.AlertPatchDto
+import com.gouge.guaili.data.AlertRequestDto
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.exp
@@ -111,6 +129,17 @@ fun KlineScreen(
     var channelVisible by rememberSaveable { mutableStateOf(true) }
     var amplitudeSignalVisible by rememberSaveable { mutableStateOf(true) }
     var selectedIndex by remember { mutableIntStateOf(-1) }
+    var cursorMode by rememberSaveable { mutableStateOf(false) }
+    var cursorIndex by remember { mutableIntStateOf(-1) }
+    var cursorPrice by remember { mutableStateOf<Double?>(null) }
+    var cursorX by remember { mutableFloatStateOf(0f) }
+    var selectedAlertId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var showAlertEditor by rememberSaveable { mutableStateOf(false) }
+    var editorPrice by rememberSaveable { mutableStateOf("") }
+    var editorDirection by rememberSaveable { mutableStateOf("cross_any") }
+    var editorExpiresAt by rememberSaveable { mutableStateOf("") }
+    var editorWebhook by rememberSaveable { mutableStateOf("") }
+    var editorMessage by rememberSaveable { mutableStateOf("{\"symbol\":\"{{ticker}}\",\"price\":\"{{price}}\"}") }
     val lifecycleOwner = LocalLifecycleOwner.current
     var isForeground by remember {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -131,6 +160,17 @@ fun KlineScreen(
     LaunchedEffect(symbol, interval, closedOnly) {
         viewModel.load(symbol, interval, closedOnly)
     }
+    val currentAlerts = state.alerts.filter { it.symbol.equals(symbol, true) && it.interval == interval }
+    val selectedAlert = currentAlerts.firstOrNull { it.id == selectedAlertId }
+    fun openEditor(alert: AlertDto?, price: Double) {
+        selectedAlertId = alert?.id
+        editorPrice = formatPrice(if (alert != null) alert.price else price)
+        editorDirection = alert?.direction ?: "cross_any"
+        editorExpiresAt = alert?.expiresAt?.let(::formatDeviceDateTime) ?: ""
+        editorWebhook = alert?.webhookUrl ?: ""
+        editorMessage = alert?.messageTemplate ?: "{\"symbol\":\"{{ticker}}\",\"price\":\"{{price}}\"}"
+        showAlertEditor = true
+    }
     LaunchedEffect(symbol, interval, closedOnly, refreshSeconds, isForeground) {
         if (!isForeground) return@LaunchedEffect
         while (true) {
@@ -140,9 +180,18 @@ fun KlineScreen(
     }
     LaunchedEffect(state.rows) {
         selectedIndex = state.rows.lastIndex
+        if (cursorIndex !in state.rows.indices) {
+            cursorMode = false
+            cursorIndex = -1
+            cursorPrice = null
+        }
     }
 
-    val selected = state.rows.getOrNull(selectedIndex) ?: state.rows.lastOrNull()
+    val selected = if (cursorMode) {
+        state.rows.getOrNull(cursorIndex) ?: state.rows.lastOrNull()
+    } else {
+        state.rows.getOrNull(selectedIndex) ?: state.rows.lastOrNull()
+    }
 
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { innerPadding ->
         Column(
@@ -161,6 +210,19 @@ fun KlineScreen(
                 onRefresh = { viewModel.load(symbol, interval, closedOnly, force = true) },
                 onBack = onBack,
             )
+            selectedAlert?.let { alert ->
+                AlertFloatingToolbar(
+                    alert = alert,
+                    onEdit = { openEditor(alert, alert.price) },
+                    onToggle = {
+                        viewModel.updateAlert(alert.id, AlertPatchDto(status = if (alert.status == "active") "disabled" else "active"))
+                    },
+                    onDelete = { viewModel.deleteAlert(alert.id) { if (it) selectedAlertId = null } },
+                    onHistory = { viewModel.loadAlertEvents(alert.id) },
+                    events = state.alertEvents[alert.id].orEmpty(),
+                    onDismiss = { selectedAlertId = null },
+                )
+            }
             if (state.isRefreshing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
             Row(
@@ -230,15 +292,85 @@ fun KlineScreen(
                     )
                     state.rows.isNotEmpty() -> KlineChart(
                         rows = state.rows,
+                        alerts = currentAlerts,
+                        selectedAlertId = selectedAlertId,
+                        cursorMode = cursorMode,
+                        cursorIndex = cursorIndex,
+                        cursorPrice = cursorPrice,
+                        cursorX = cursorX,
                         showChannel = channelVisible,
                         showAmplitudeSignal = amplitudeSignalVisible,
                         selectedIndex = selectedIndex,
                         onSelectedIndex = { selectedIndex = it },
+                        onAlertSelected = { selectedAlertId = it },
+                        onCursorModeChange = { enabled ->
+                            cursorMode = enabled
+                            if (!enabled) {
+                                cursorIndex = -1
+                                cursorPrice = null
+                            }
+                        },
+                        onCursorPosition = { index, price, x ->
+                            cursorIndex = index
+                            cursorPrice = price
+                            cursorX = x
+                        },
+                        onAlertDragEnd = { id, price ->
+                            currentAlerts.firstOrNull { it.id == id }?.let { alert ->
+                                selectedAlertId = id
+                                editorPrice = formatPrice(price)
+                                editorDirection = alert.direction
+                                editorExpiresAt = alert.expiresAt?.let(::formatDeviceDateTime) ?: ""
+                                editorWebhook = alert.webhookUrl
+                                editorMessage = alert.messageTemplate
+                                showAlertEditor = true
+                            }
+                        },
+                        onAddAlert = { price ->
+                            cursorMode = false
+                            cursorIndex = -1
+                            cursorPrice = null
+                            openEditor(null, price)
+                        },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
             }
         }
+    }
+
+    if (showAlertEditor) {
+        AlertEditorDialog(
+            existing = selectedAlert,
+            price = editorPrice,
+            direction = editorDirection,
+            expiresAt = editorExpiresAt,
+            webhookUrl = editorWebhook,
+            messageTemplate = editorMessage,
+            busy = state.isAlertBusy,
+            error = state.alertError,
+            onPriceChange = { editorPrice = it },
+            onDirectionChange = { editorDirection = it },
+            onExpiresAtChange = { editorExpiresAt = it },
+            onWebhookChange = { editorWebhook = it },
+            onMessageChange = { editorMessage = it },
+            onDismiss = { showAlertEditor = false },
+            onSave = {
+                val price = editorPrice.toDoubleOrNull()
+                val expires = editorExpiresAt.trim().takeIf { it.isNotEmpty() }?.let(::parseDeviceDateTime)
+                if (price != null && price > 0.0) {
+                    if (selectedAlert == null) {
+                        viewModel.createAlert(AlertRequestDto(symbol, interval, price, editorDirection, expires, editorWebhook, editorMessage)) {
+                            if (it != null) { showAlertEditor = false; selectedAlertId = it.id }
+                        }
+                    } else {
+                        viewModel.updateAlert(selectedAlert.id, AlertPatchDto(price, editorDirection, expires, editorWebhook, editorMessage, "active")) {
+                            if (it != null) showAlertEditor = false
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -285,6 +417,107 @@ private fun KlineToolbar(
             Icon(Icons.Outlined.Refresh, contentDescription = "Refresh K-line")
         }
     }
+}
+
+@Composable
+private fun AlertFloatingToolbar(
+    alert: AlertDto,
+    events: List<com.gouge.guaili.data.AlertEventDto>,
+    onEdit: () -> Unit,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+    onHistory: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var showHistory by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    Surface(
+        tonalElevation = 5.dp,
+        shadowElevation = 5.dp,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp)) {
+            Text("${formatPrice(alert.price)}  ${directionLabel(alert.direction)}", modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+            IconButton(onClick = onEdit) { Icon(Icons.Outlined.Edit, contentDescription = "Edit alert") }
+            IconButton(onClick = onToggle) { Icon(if (alert.status == "active") Icons.Outlined.Pause else Icons.Outlined.PlayArrow, contentDescription = "Toggle alert") }
+            IconButton(onClick = { onHistory(); showHistory = true }) { Icon(Icons.Outlined.History, contentDescription = "Alert history") }
+            IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Outlined.Delete, contentDescription = "Delete alert") }
+            IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = "Close") }
+        }
+    }
+    if (showHistory) {
+        AlertDialog(
+            onDismissRequest = { showHistory = false },
+            title = { Text("触发记录") },
+            text = {
+                Column {
+                    if (events.isEmpty()) Text("暂无触发记录")
+                    events.forEach { event ->
+                        Text("${formatDeviceDateTime(event.triggeredAt)}  ${formatPrice(event.triggerPrice)}  ${directionLabel(event.direction)}")
+                        Text(event.deliveryStatus ?: "等待投递", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        HorizontalDivider()
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showHistory = false }) { Text("关闭") } },
+        )
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除警报？") },
+            text = { Text("删除后，该警报的触发记录也会一并删除。") },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+            confirmButton = {
+                Button(onClick = { confirmDelete = false; onDelete() }) { Text("删除") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AlertEditorDialog(
+    existing: AlertDto?,
+    price: String,
+    direction: String,
+    expiresAt: String,
+    webhookUrl: String,
+    messageTemplate: String,
+    busy: Boolean,
+    error: String?,
+    onPriceChange: (String) -> Unit,
+    onDirectionChange: (String) -> Unit,
+    onExpiresAtChange: (String) -> Unit,
+    onWebhookChange: (String) -> Unit,
+    onMessageChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (existing == null) "设置警报" else "修改警报") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(price, onPriceChange, label = { Text("价格") }, singleLine = true)
+                Text("触发方向", style = MaterialTheme.typography.labelMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    listOf("cross_up" to "上穿", "cross_down" to "下穿", "cross_any" to "任意").forEach { (value, label) ->
+                        RadioButton(selected = direction == value, onClick = { onDirectionChange(value) })
+                        Text(label)
+                    }
+                }
+                OutlinedTextField(expiresAt, onExpiresAtChange, label = { Text("过期时间（设备时间，可空）") }, singleLine = true)
+                OutlinedTextField(webhookUrl, onWebhookChange, label = { Text("Webhook URL") }, singleLine = true)
+                OutlinedTextField(messageTemplate, onMessageChange, label = { Text("JSON 消息模板") }, minLines = 2, maxLines = 4)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {
+            Button(onClick = onSave, enabled = !busy) { Text(if (busy) "保存中" else "保存") }
+        },
+    )
 }
 
 @Composable
@@ -411,16 +644,29 @@ private fun SummaryValue(label: String, value: String, valueColor: Color? = null
 @Composable
 private fun KlineChart(
     rows: List<KlineChartRow>,
+    alerts: List<AlertDto>,
+    selectedAlertId: Long?,
+    cursorMode: Boolean,
+    cursorIndex: Int,
+    cursorPrice: Double?,
+    cursorX: Float,
     showChannel: Boolean,
     showAmplitudeSignal: Boolean,
     selectedIndex: Int,
     onSelectedIndex: (Int) -> Unit,
+    onAlertSelected: (Long?) -> Unit,
+    onCursorModeChange: (Boolean) -> Unit,
+    onCursorPosition: (Int, Double, Float) -> Unit,
+    onAlertDragEnd: (Long, Double) -> Unit,
+    onAddAlert: (Double) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val currentCursorMode by rememberUpdatedState(cursorMode)
     var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(12f)) }
     var rightOffsetBars by remember { mutableFloatStateOf(0f) }
     var verticalScale by remember { mutableFloatStateOf(1f) }
     var canvasWidth by remember { mutableIntStateOf(1) }
+    var canvasHeight by remember { mutableIntStateOf(1) }
     val density = androidx.compose.ui.platform.LocalDensity.current
     val leftPaddingPx = with(density) { 8.dp.toPx() }
     val rightPaddingPx = with(density) { 68.dp.toPx() }
@@ -431,53 +677,184 @@ private fun KlineChart(
         verticalScale = 1f
     }
 
+    Box(modifier = modifier) {
     Canvas(
-        modifier = modifier
-            .onSizeChanged { canvasWidth = it.width.coerceAtLeast(1) }
-            .pointerInput(rows.size, canvasWidth) {
-                detectTransformGestures { centroid, pan, zoom, _ ->
-                    val plotRight = canvasWidth - rightPaddingPx
-                    if (centroid.x >= plotRight) {
-                        // Dragging the price axis changes the vertical scale.
-                        if (abs(pan.y) > 0.01f) {
-                            val scaleFactor = exp((-pan.y / 220f).toDouble()).toFloat()
-                            verticalScale = (verticalScale * scaleFactor).coerceIn(.25f, 4f)
-                        }
-                        return@detectTransformGestures
-                    }
+        modifier = Modifier.fillMaxSize()
+            .onSizeChanged {
+                canvasWidth = it.width.coerceAtLeast(1)
+                canvasHeight = it.height.coerceAtLeast(1)
+            }
+            .pointerInput(rows.size, canvasWidth, canvasHeight, alerts) {
+                var lastAxisTapAt = 0L
 
-                    val plotWidth = (canvasWidth - leftPaddingPx - rightPaddingPx).coerceAtLeast(1f)
-                    val oldVisible = visibleBars
+                fun viewport() = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
+                fun bounds() = calculatePriceBounds(rows, viewport(), showChannel, verticalScale)
+                fun plotRight() = (canvasWidth - rightPaddingPx).coerceAtLeast(leftPaddingPx + 1f)
+                fun priceAt(y: Float): Double {
+                    val priceBounds = bounds()
+                    val top = 10.dp.toPx()
+                    val bottom = canvasHeight * .70f
+                    return priceBounds.priceMax - ((y - top) / (bottom - top)).coerceIn(0f, 1f) * priceBounds.priceRange
+                }
+                fun updateCursor(position: Offset) {
+                    val currentViewport = viewport()
+                    val right = plotRight()
+                    val x = position.x.coerceIn(leftPaddingPx, right)
+                    val slotWidth = (right - leftPaddingPx) / currentViewport.visibleSpan
+                    onCursorPosition(
+                        currentViewport.indexAtX(x, leftPaddingPx, slotWidth),
+                        priceAt(position.y),
+                        x,
+                    )
+                }
+                fun alertAt(position: Offset): AlertDto? {
+                    val priceBounds = bounds()
+                    val price = priceAt(position.y)
+                    return alerts.minByOrNull { abs(it.price - price) }
+                        ?.takeIf { abs(it.price - price) <= priceBounds.priceRange * .035 }
+                }
+                fun zoomBy(factor: Float) {
+                    if (!factor.isFinite() || factor <= 0f) return
                     val minimumVisible = min(12, rows.size).toFloat().coerceAtLeast(1f)
-                    visibleBars = (visibleBars / zoom).coerceIn(
+                    visibleBars = (visibleBars / factor).coerceIn(
                         minimumVisible,
                         rows.size.toFloat().coerceAtLeast(1f),
                     )
-                    val barsPerPixel = oldVisible / plotWidth
-                    rightOffsetBars = (rightOffsetBars + pan.x * barsPerPixel).coerceIn(
-                        -(visibleBars - 3f).coerceAtLeast(0f),
-                        (rows.size - visibleBars).coerceAtLeast(0f),
-                    )
+                }
+
+                awaitEachGesture {
+                    val firstEvent = awaitPointerEvent()
+                    val down = firstEvent.changes.firstOrNull { it.pressed }
+                        ?: return@awaitEachGesture
+                    val startedInCursorMode = currentCursorMode
+                    val alertCandidate = if (startedInCursorMode) null else alertAt(down.position)
+                    val downPosition = down.position
+                    var lastPosition = down.position
+                    var lastAlertPrice = alertCandidate?.price
+                    var previousPinchDistance: Float? = null
+                    var previousPinchCenter: Float? = null
+                    var mode = if (startedInCursorMode) 3 else 0
+                    var moved = false
+                    val deadline = android.os.SystemClock.uptimeMillis() + 500L
+
+                    while (true) {
+                        val event = if (mode == 0) {
+                            val remaining = (deadline - android.os.SystemClock.uptimeMillis()).coerceAtLeast(1L)
+                            withTimeoutOrNull(remaining) { awaitPointerEvent() } ?: run {
+                                mode = 3
+                                onCursorModeChange(true)
+                                updateCursor(lastPosition)
+                                null
+                            }
+                        } else {
+                            awaitPointerEvent()
+                        }
+                        if (event == null) continue
+
+                        val active = event.changes.filter { it.pressed }
+                        if (active.size >= 2) {
+                            mode = 4
+                            moved = true
+                            val first = active[0].position
+                            val second = active[1].position
+                            val dx = second.x - first.x
+                            val dy = second.y - first.y
+                            val distance = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                            val centerX = (first.x + second.x) / 2f
+                            previousPinchDistance?.let { previous ->
+                                if (previous > 0f) zoomBy(distance / previous)
+                            }
+                            if (!startedInCursorMode && !currentCursorMode) {
+                                previousPinchCenter?.let { previousCenter ->
+                                    val plotWidth = (plotRight() - leftPaddingPx).coerceAtLeast(1f)
+                                    rightOffsetBars = (rightOffsetBars + (centerX - previousCenter) * visibleBars / plotWidth).coerceIn(
+                                        -(visibleBars - 3f).coerceAtLeast(0f),
+                                        (rows.size - visibleBars).coerceAtLeast(0f),
+                                    )
+                                }
+                            }
+                            previousPinchDistance = distance
+                            previousPinchCenter = centerX
+                            event.changes.forEach { it.consume() }
+                            continue
+                        }
+                        if (mode == 4) {
+                            event.changes.forEach { it.consume() }
+                            if (active.isEmpty()) break
+                            continue
+                        }
+
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) {
+                            when (mode) {
+                                0 -> {
+                                    if (alertCandidate != null) {
+                                        onAlertSelected(alertCandidate.id)
+                                    } else if (downPosition.x >= plotRight()) {
+                                        val now = android.os.SystemClock.uptimeMillis()
+                                        if (now - lastAxisTapAt <= 300L) verticalScale = 1f
+                                        lastAxisTapAt = now
+                                    } else {
+                                        val currentViewport = viewport()
+                                        val slotWidth = (plotRight() - leftPaddingPx) / currentViewport.visibleSpan
+                                        onSelectedIndex(currentViewport.indexAtX(downPosition.x, leftPaddingPx, slotWidth))
+                                    }
+                                }
+                                2 -> if (alertCandidate != null && lastAlertPrice != null) {
+                                    onAlertDragEnd(alertCandidate.id, lastAlertPrice)
+                                }
+                                3 -> if (startedInCursorMode && !moved) {
+                                    onCursorModeChange(false)
+                                }
+                            }
+                            break
+                        }
+
+                        val dx = change.position.x - lastPosition.x
+                        val dy = change.position.y - lastPosition.y
+                        val totalDx = change.position.x - downPosition.x
+                        val totalDy = change.position.y - downPosition.y
+                        val passedSlop = abs(totalDx) > 8.dp.toPx() || abs(totalDy) > 8.dp.toPx()
+                        if (mode == 0 && passedSlop) {
+                            mode = when {
+                                alertCandidate != null -> 2
+                                downPosition.x >= plotRight() -> 5
+                                else -> 1
+                            }
+                        }
+
+                        when (mode) {
+                            1 -> {
+                                moved = true
+                                val plotWidth = (plotRight() - leftPaddingPx).coerceAtLeast(1f)
+                                rightOffsetBars = (rightOffsetBars + dx * visibleBars / plotWidth).coerceIn(
+                                    -(visibleBars - 3f).coerceAtLeast(0f),
+                                    (rows.size - visibleBars).coerceAtLeast(0f),
+                                )
+                                change.consume()
+                            }
+                            2 -> {
+                                moved = true
+                                lastAlertPrice = priceAt(change.position.y)
+                                change.consume()
+                            }
+                            3 -> {
+                                if (passedSlop || !startedInCursorMode) {
+                                    moved = true
+                                    updateCursor(change.position)
+                                    change.consume()
+                                }
+                            }
+                            5 -> {
+                                moved = true
+                                verticalScale = (verticalScale * exp((-dy / 220f).toDouble()).toFloat()).coerceIn(.25f, 4f)
+                                change.consume()
+                            }
+                        }
+                        lastPosition = change.position
+                    }
                 }
             }
-            .pointerInput(rows.size, canvasWidth) {
-                detectTapGestures(
-                    onDoubleTap = { position ->
-                        if (position.x >= canvasWidth - rightPaddingPx) {
-                            verticalScale = 1f
-                        }
-                    },
-                    onTap = { position ->
-                        if (position.x >= canvasWidth - rightPaddingPx) return@detectTapGestures
-                        val viewport = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
-                        val plotWidth = (canvasWidth - leftPaddingPx - rightPaddingPx).coerceAtLeast(1f)
-                        val slotWidth = plotWidth / viewport.visibleSpan
-                        onSelectedIndex(
-                            viewport.indexAtX(position.x, leftPaddingPx, slotWidth),
-                        )
-                    },
-                )
-            },
     ) {
         if (rows.isEmpty()) return@Canvas
 
@@ -522,6 +899,30 @@ private fun KlineChart(
         )
         fun yAt(price: Double): Float = priceBottom -
             (((price - priceMin) / priceRange).toFloat() * (priceBottom - priceTop))
+
+        alerts.forEach { alert ->
+            val y = yAt(alert.price)
+            if (y in priceTop..priceBottom) {
+                val selected = alert.id == selectedAlertId
+                val color = when {
+                    selected -> Color(0xFF60A5FA)
+                    alert.status == "disabled" -> Color(0xFF64748B)
+                    alert.status == "triggered" -> Color(0xFFF59E0B)
+                    else -> Color(0xFFA78BFA)
+                }
+                drawLine(
+                    color,
+                    Offset(plotLeft, y),
+                    Offset(plotRight + 58.dp.toPx(), y),
+                    strokeWidth = if (selected) 2.5.dp.toPx() else 1.5.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 5.dp.toPx())),
+                )
+                drawChartText(
+                    formatPrice(alert.price),
+                    plotRight + 5.dp.toPx(), y + 4.dp.toPx(), color,
+                )
+            }
+        }
 
         repeat(5) { gridIndex ->
             val fraction = gridIndex / 4f
@@ -568,9 +969,8 @@ private fun KlineChart(
                 color = color,
                 topLeft = Offset(x - bodyWidth / 2f, top),
                 size = Size(bodyWidth, height),
-            )
-        }
-
+                )
+            }
         if (showChannel) {
             visible.windowed(2).forEachIndexed { index, pair ->
                 val first = pair[0].channel.ema20
@@ -642,11 +1042,9 @@ private fun KlineChart(
             drawChartText(text, x - 18.dp.toPx(), size.height - 7.dp.toPx(), labelColor)
         }
 
-        val selectedLocal = selectedIndex - viewport.drawStart
-        if (selectedLocal in visible.indices) {
-            val selected = visible[selectedLocal]
-            val x = xAt(selectedLocal)
-            val y = yAt(selected.candle.close)
+        if (cursorMode && cursorPrice != null && cursorIndex in rows.indices) {
+            val x = cursorX.coerceIn(plotLeft, plotRight)
+            val y = yAt(cursorPrice)
             val dash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 5.dp.toPx()))
             drawLine(
                 Color(0xFF94A3B8),
@@ -662,7 +1060,27 @@ private fun KlineChart(
                 strokeWidth = 1.dp.toPx(),
                 pathEffect = dash,
             )
+            drawChartText(formatPrice(cursorPrice), plotRight + 5.dp.toPx(), y + 4.dp.toPx(), Color(0xFF60A5FA))
         }
+    }
+    if (cursorMode && cursorPrice != null && canvasHeight > 0) {
+        val viewport = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
+        val bounds = calculatePriceBounds(rows, viewport, showChannel, verticalScale)
+        val chartTop = with(density) { 10.dp.toPx() }
+        val chartBottom = canvasHeight * .70f
+        val y = chartBottom - (((cursorPrice - bounds.priceMin) / bounds.priceRange).toFloat() * (chartBottom - chartTop))
+        val buttonHalf = with(density) { 24.dp.toPx() }
+        IconButton(
+            onClick = { onAddAlert(cursorPrice) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset { androidx.compose.ui.unit.IntOffset(0, (y - buttonHalf).toInt()) },
+        ) {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+                Icon(Icons.Outlined.Add, contentDescription = "Add alert")
+            }
+        }
+    }
     }
 }
 
@@ -813,3 +1231,47 @@ private fun formatChartAxisTime(epochMillis: Long): String =
     Instant.ofEpochMilli(epochMillis).atZone(ZoneId.of("Asia/Shanghai")).format(
         DateTimeFormatter.ofPattern("MM-dd HH:mm"),
     )
+
+private fun formatDeviceDateTime(epochMillis: Long): String =
+    Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).format(
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
+    )
+
+private fun parseDeviceDateTime(value: String): Long? = runCatching {
+    java.time.LocalDateTime.parse(value.trim(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+}.getOrNull()
+
+private fun directionLabel(direction: String): String = when (direction) {
+    "cross_up" -> "上穿"
+    "cross_down" -> "下穿"
+    else -> "任意"
+}
+
+private data class PriceBounds(val priceMin: Double, val priceMax: Double, val priceRange: Double)
+
+private fun calculatePriceBounds(
+    rows: List<KlineChartRow>,
+    viewport: KlineViewport,
+    showChannel: Boolean,
+    verticalScale: Float,
+): PriceBounds {
+    val visible = rows.subList(viewport.drawStart, viewport.endExclusive)
+    val values = buildList {
+        visible.forEach { row ->
+            add(row.candle.high)
+            add(row.candle.low)
+            if (showChannel) {
+                row.channel.upper?.let(::add)
+                row.channel.lower?.let(::add)
+            }
+        }
+    }
+    val rawMin = values.minOrNull() ?: 0.0
+    val rawMax = values.maxOrNull() ?: 1.0
+    val rawRange = (rawMax - rawMin).coerceAtLeast(0.0000001)
+    val padding = (rawRange * .06).coerceAtLeast(0.0000001)
+    val scaledRange = ((rawRange + padding * 2.0) / verticalScale.toDouble()).coerceAtLeast(0.0000001)
+    val center = (rawMax + rawMin) / 2.0
+    return PriceBounds(center - scaledRange / 2.0, center + scaledRange / 2.0, scaledRange)
+}

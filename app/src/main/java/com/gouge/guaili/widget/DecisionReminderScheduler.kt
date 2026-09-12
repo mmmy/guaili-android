@@ -30,8 +30,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object DecisionReminderScheduler {
+    private val notificationMutex = Mutex()
     private const val PeriodicWidgetUpdateWorkName = "decision-reminder-widget-update"
     private const val ActionFire = "com.gouge.guaili.DECISION_REMINDER_FIRE"
     private const val ActionComplete = "com.gouge.guaili.DECISION_REMINDER_COMPLETE"
@@ -39,6 +42,15 @@ object DecisionReminderScheduler {
     private const val ExtraWidgetId = "decision_reminder_widget_id"
     private const val ExtraReminderId = "decision_reminder_id"
     private const val NotificationChannelId = "decision_reminders"
+
+    suspend fun saveConfiguration(context: Context, appWidgetId: Int, config: WidgetConfig, baseline: WidgetConfig): WidgetConfig =
+        notificationMutex.withLock {
+            val store = WidgetConfigStore(context)
+            val previous = store.read(appWidgetId, SettingsStore(context).settings.first())
+            val saved = store.save(appWidgetId, config, baseline)
+            replace(context, appWidgetId, previous.reminders, if (saved.mode == WidgetMode.DecisionReminders) saved.reminders else emptyList())
+            saved
+        }
 
     fun createNotificationChannel(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -59,7 +71,8 @@ object DecisionReminderScheduler {
         previous: List<DecisionReminder>,
         current: List<DecisionReminder>,
     ) {
-        previous.forEach { cancel(context, appWidgetId, it.id) }
+        previous.filter { old -> current.none { it.copy(notifiedTargetAtEpochMillis = null) == old.copy(notifiedTargetAtEpochMillis = null) } }
+            .forEach { cancel(context, appWidgetId, it.id) }
         current.forEach { schedule(context, appWidgetId, it) }
     }
 
@@ -77,7 +90,11 @@ object DecisionReminderScheduler {
         ids.forEach { appWidgetId ->
             val config = WidgetConfigStore(context).read(appWidgetId, settings)
             if (config.mode == WidgetMode.DecisionReminders) {
-                config.reminders.forEach { schedule(context, appWidgetId, it) }
+                config.reminders.forEach {
+                    if (it.targetAtEpochMillis <= System.currentTimeMillis()) {
+                        fireNotification(context, appWidgetId, it.id)
+                    } else schedule(context, appWidgetId, it)
+                }
             }
         }
         GuailiWidget().updateAll(context)
@@ -120,6 +137,7 @@ object DecisionReminderScheduler {
     }
 
     internal fun cancel(context: Context, appWidgetId: Int, reminderId: String) {
+        context.getSystemService(NotificationManager::class.java).cancel(notificationId(appWidgetId, reminderId))
         val intent = baseIntent(context, ActionFire, appWidgetId, reminderId)
         val operation = PendingIntent.getBroadcast(
             context,
@@ -147,18 +165,14 @@ object DecisionReminderScheduler {
         context: Context,
         appWidgetId: Int,
         reminderId: String,
-    ) {
+    ) = notificationMutex.withLock {
         val settings = SettingsStore(context).settings.first()
         val config = WidgetConfigStore(context).read(appWidgetId, settings)
-        if (config.mode != WidgetMode.DecisionReminders) return
-        val reminder = config.reminders.firstOrNull { it.id == reminderId } ?: return
-        if (reminder.targetAtEpochMillis > System.currentTimeMillis()) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+        if (config.mode != WidgetMode.DecisionReminders) return@withLock
+        val reminder = config.reminders.firstOrNull { it.id == reminderId } ?: return@withLock
+        val now = System.currentTimeMillis()
+        if (!shouldNotifyReminder(reminder, now)) return@withLock
+        if (!reminderDeliveryStatus(context).notificationsEnabled) return@withLock
 
         createNotificationChannel(context)
         val notification = Notification.Builder(context, NotificationChannelId)
@@ -168,7 +182,8 @@ object DecisionReminderScheduler {
                     "${formatReminderIntervalForNotification(reminder.interval)} · " +
                     reminder.direction.label,
             )
-            .setContentText("已到决策时间，请重新检查行情后再做决定。")
+            .setContentText(if (now - reminder.targetAtEpochMillis >= 60_000L) "你错过了一次复查：${formatDecisionReminderDisplay(reminder.targetAtEpochMillis, now)}" else "已到决策时间，请重新检查行情后再做决定。")
+            .setOnlyAlertOnce(true)
             .setContentIntent(
                 klinePendingIntent(
                     context,
@@ -197,6 +212,12 @@ object DecisionReminderScheduler {
             .build()
         context.getSystemService(NotificationManager::class.java)
             .notify(notificationId(appWidgetId, reminderId), notification)
+        WidgetConfigStore(context).updateReminders(appWidgetId) { reminders ->
+            reminders.map {
+                if (it.id == reminderId && it.targetAtEpochMillis == reminder.targetAtEpochMillis)
+                    it.copy(notifiedTargetAtEpochMillis = reminder.targetAtEpochMillis) else it
+            }
+        }
     }
 
     private suspend fun mutateReminder(
@@ -204,20 +225,20 @@ object DecisionReminderScheduler {
         appWidgetId: Int,
         reminderId: String,
         snooze: Boolean,
-    ) {
+    ) = notificationMutex.withLock {
         val settings = SettingsStore(context).settings.first()
         val store = WidgetConfigStore(context)
         val config = store.read(appWidgetId, settings)
-        val existing = config.reminders.firstOrNull { it.id == reminderId } ?: return
-        val updated = if (snooze) {
-            existing.copy(
-                targetAtEpochMillis = alignedDecisionReminderTime(15L).toEpochMilli(),
-            )
-        } else {
-            null
+        if (config.mode != WidgetMode.DecisionReminders) return@withLock
+        var updated: DecisionReminder? = null
+        store.updateReminders(appWidgetId) { reminders ->
+            val existing = reminders.firstOrNull { it.id == reminderId } ?: return@updateReminders reminders
+            updated = if (snooze) existing.copy(
+                targetAtEpochMillis = decisionReminderAfter(15L).toEpochMilli(),
+                notifiedTargetAtEpochMillis = null,
+            ) else null
+            reminders.filterNot { it.id == reminderId } + listOfNotNull(updated)
         }
-        val reminders = config.reminders.filterNot { it.id == reminderId } + listOfNotNull(updated)
-        store.save(appWidgetId, config.copy(reminders = reminders))
         cancel(context, appWidgetId, reminderId)
         updated?.let { schedule(context, appWidgetId, it) }
         context.getSystemService(NotificationManager::class.java)
@@ -299,7 +320,7 @@ class DecisionReminderWidgetUpdateWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
-        GuailiWidget().updateAll(applicationContext)
+        DecisionReminderScheduler.rescheduleAllNow(applicationContext)
         return Result.success()
     }
 }
@@ -339,6 +360,7 @@ class DecisionReminderRescheduleReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED,
             Intent.ACTION_TIME_CHANGED,
             Intent.ACTION_TIMEZONE_CHANGED,
+            AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED,
         )
     }
 }

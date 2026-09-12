@@ -38,11 +38,11 @@ class GuailiWidgetTest {
         assertEquals(null, refreshFeedbackText(WidgetRefreshStatus()))
         assertEquals(
             "刷新中…",
-            refreshFeedbackText(WidgetRefreshStatus(WidgetRefreshPhase.Refreshing, changedAt = 1L)),
+            refreshFeedbackText(WidgetRefreshStatus(WidgetRefreshPhase.Refreshing, changedAt = 1L), nowMillis = 2L),
         )
         assertEquals(
-            "刷新失败",
-            refreshFeedbackText(WidgetRefreshStatus(WidgetRefreshPhase.Failure, changedAt = 1L)),
+            "刷新失败，请重试",
+            refreshFeedbackText(WidgetRefreshStatus(WidgetRefreshPhase.Failure, changedAt = 1L), nowMillis = 2L),
         )
     }
 }

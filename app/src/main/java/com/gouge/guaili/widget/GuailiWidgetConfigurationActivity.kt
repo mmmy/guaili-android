@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -41,9 +43,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.updateAll
@@ -58,26 +64,44 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import android.widget.Toast
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import com.gouge.guaili.data.GuailiSnapshotStore
+import com.gouge.guaili.data.parseGuailiTime
+import com.gouge.guaili.data.isGuailiSnapshotStale
 
 class GuailiWidgetConfigurationActivity : ComponentActivity() {
     private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
-    private var configAwaitingNotificationPermission: WidgetConfig? = null
+    private var deliveryStatus by mutableStateOf(ReminderDeliveryStatus(false, false))
+    private var saving by mutableStateOf(false)
+    private var saveError by mutableStateOf<String?>(null)
+    private var notificationPermissionDeclined = false
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) {
-        configAwaitingNotificationPermission?.let(::requestExactAlarmAccessOrPersist)
-        configAwaitingNotificationPermission = null
+    ) { granted ->
+        notificationPermissionDeclined = !granted
+        deliveryStatus = reminderDeliveryStatus(this)
     }
-    private var configAwaitingExactAlarmAccess: WidgetConfig? = null
     private val exactAlarmAccessLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
-        configAwaitingExactAlarmAccess?.let(::persistAndFinish)
-        configAwaitingExactAlarmAccess = null
+        deliveryStatus = reminderDeliveryStatus(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        deliveryStatus = reminderDeliveryStatus(this)
+        DecisionReminderScheduler.rescheduleAll(this)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationPermissionDeclined = savedInstanceState?.getBoolean("notification_declined") ?: false
         setResult(Activity.RESULT_CANCELED)
         appWidgetId = intent?.getIntExtra(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
@@ -97,69 +121,77 @@ class GuailiWidgetConfigurationActivity : ComponentActivity() {
                         settings = settings,
                         initialConfig = config,
                         onSave = ::saveAndFinish,
+                        onDiscard = ::finish,
+                        deliveryStatus = deliveryStatus,
+                        onNotifications = ::requestNotifications,
+                        onExactAlarms = ::requestExactAlarms,
+                        saving = saving,
+                        saveError = saveError,
                     )
                 }
             }
         }
     }
 
-    private fun saveAndFinish(config: WidgetConfig) {
-        if (config.mode == WidgetMode.DecisionReminders &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("notification_declined", notificationPermissionDeclined)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun saveAndFinish(config: WidgetConfig, baseline: WidgetConfig) {
+        if (!saving) persistAndFinish(config, baseline)
+    }
+
+    private fun requestNotifications() {
+        if (!notificationPermissionDeclined && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            configAwaitingNotificationPermission = config
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            return
+        } else {
+            exactAlarmAccessLauncher.launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
-        requestExactAlarmAccessOrPersist(config)
     }
 
-    private fun requestExactAlarmAccessOrPersist(config: WidgetConfig) {
-        val alarmManager = getSystemService(AlarmManager::class.java)
-        if (config.mode == WidgetMode.DecisionReminders &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            !alarmManager.canScheduleExactAlarms()
-        ) {
-            configAwaitingExactAlarmAccess = config
+    private fun requestExactAlarms() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val requestIntent = Intent(
                 Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
                 Uri.parse("package:$packageName"),
             )
             runCatching { exactAlarmAccessLauncher.launch(requestIntent) }
                 .onFailure {
-                    configAwaitingExactAlarmAccess = null
-                    persistAndFinish(config)
+                    saveError = "无法打开定时权限设置，当前提醒可能延迟"
                 }
-            return
         }
-        persistAndFinish(config)
     }
 
-    private fun persistAndFinish(config: WidgetConfig) {
+    private fun persistAndFinish(config: WidgetConfig, baseline: WidgetConfig) {
+        saving = true
+        saveError = null
         lifecycleScope.launch {
-            val store = WidgetConfigStore(applicationContext)
-            val settings = SettingsStore(applicationContext).settings.first()
-            val previous = store.read(appWidgetId, settings)
-            store.save(appWidgetId, config)
-            DecisionReminderScheduler.replace(
-                context = applicationContext,
-                appWidgetId = appWidgetId,
-                previous = previous.reminders,
-                current = if (config.mode == WidgetMode.DecisionReminders) {
-                    config.reminders
-                } else {
-                    emptyList()
-                },
-            )
+            try {
+            DecisionReminderScheduler.saveConfiguration(applicationContext, appWidgetId, config, baseline)
+            if (config.mode == WidgetMode.DecisionReminders) {
+                DecisionReminderScheduler.rescheduleAllNow(applicationContext)
+            }
             GuailiWidget().updateAll(applicationContext)
             if (config.mode != WidgetMode.DecisionReminders) {
                 GuailiWidgetScheduler.refreshNow(applicationContext)
             }
             val result = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
             setResult(Activity.RESULT_OK, result)
+            if (config.mode == WidgetMode.DecisionReminders) {
+                Toast.makeText(applicationContext, "已保存 · ${reminderDeliveryStatus(applicationContext).label}", Toast.LENGTH_LONG).show()
+            }
             finish()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                saveError = "保存或调度失败，请重试：${error.message.orEmpty()}"
+            } finally {
+                saving = false
+            }
         }
     }
 }
@@ -169,34 +201,58 @@ class GuailiWidgetConfigurationActivity : ComponentActivity() {
 private fun WidgetConfigurationScreen(
     settings: GuailiSettings,
     initialConfig: WidgetConfig,
-    onSave: (WidgetConfig) -> Unit,
+    onSave: (WidgetConfig, WidgetConfig) -> Unit,
+    onDiscard: () -> Unit,
+    deliveryStatus: ReminderDeliveryStatus,
+    onNotifications: () -> Unit,
+    onExactAlarms: () -> Unit,
+    saving: Boolean,
+    saveError: String?,
 ) {
-    var selectedSymbols by remember { mutableStateOf(initialConfig.symbols) }
-    var selectedSingleSymbol by remember {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var selectedSymbols by rememberSaveable(stateSaver = configurationSaver<List<String>>()) { mutableStateOf(initialConfig.symbols) }
+    var selectedSingleSymbol by rememberSaveable {
         mutableStateOf(
-            initialConfig.symbols.firstOrNull(settings.symbols::contains)
+            initialConfig.symbols.firstOrNull()
                 ?: settings.symbols.firstOrNull(),
         )
     }
-    var selectedIntervals by remember { mutableStateOf(initialConfig.intervals) }
-    var mode by remember { mutableStateOf(initialConfig.mode) }
-    var enabledSignalKinds by remember { mutableStateOf(initialConfig.enabledSignalKinds) }
-    var singleSymbolColumns by remember { mutableStateOf(initialConfig.singleSymbolColumns) }
-    var reminders by remember { mutableStateOf(initialConfig.reminders) }
-    var editingReminderId by remember { mutableStateOf<String?>(null) }
-    var reminderSymbol by remember {
+    var selectedIntervals by rememberSaveable(stateSaver = configurationSaver<List<String>>()) { mutableStateOf(initialConfig.intervals) }
+    var mode by rememberSaveable { mutableStateOf(initialConfig.mode) }
+    var enabledSignalKinds by rememberSaveable(stateSaver = configurationSaver<Set<GuailiSignalKind>>()) { mutableStateOf(initialConfig.enabledSignalKinds) }
+    var singleSymbolColumns by rememberSaveable { mutableStateOf(initialConfig.singleSymbolColumns) }
+    var reminders by rememberSaveable(stateSaver = configurationSaver<List<DecisionReminder>>()) { mutableStateOf(initialConfig.reminders) }
+    var editingReminderId by rememberSaveable { mutableStateOf<String?>(null) }
+    var reminderSymbol by rememberSaveable {
         mutableStateOf(initialConfig.reminders.firstOrNull()?.symbol ?: settings.symbols.firstOrNull())
     }
-    var reminderInterval by remember {
+    var reminderInterval by rememberSaveable {
         mutableStateOf(
             initialConfig.reminders.firstOrNull()?.interval
                 ?: settings.intervals.firstOrNull { it == "15" }
                 ?: settings.intervals.firstOrNull(),
         )
     }
-    var reminderDirection by remember { mutableStateOf(DecisionDirection.Long) }
-    var reminderTargetAt by remember {
-        mutableLongStateOf(alignedDecisionReminderTime(15L).toEpochMilli())
+    var reminderDirection by rememberSaveable { mutableStateOf(DecisionDirection.Long) }
+    var reminderTargetAt by rememberSaveable {
+        mutableLongStateOf(decisionReminderAfter(15L).toEpochMilli())
+    }
+    var editorDirty by rememberSaveable { mutableStateOf(false) }
+    var exitDialog by remember { mutableStateOf(false) }
+    var formError by remember { mutableStateOf<String?>(null) }
+    val baseline by rememberSaveable(stateSaver = configurationSaver<WidgetConfig>()) { mutableStateOf(initialConfig) }
+    val draft = buildWidgetConfig(mode, selectedSymbols, selectedSingleSymbol, selectedIntervals, singleSymbolColumns, reminders, enabledSignalKinds)
+    val dirty = normalizeWidgetConfig(draft) != normalizeWidgetConfig(baseline) || editorDirty
+    BackHandler(enabled = dirty || saving) { if (!saving) exitDialog = true }
+    if (exitDialog) {
+        AlertDialog(
+            onDismissRequest = { exitDialog = false },
+            title = { Text("有未保存修改") },
+            text = { Text("返回继续编辑，或放弃本次修改。") },
+            confirmButton = { TextButton(onClick = { exitDialog = false }) { Text("继续编辑") } },
+            dismissButton = { TextButton(onClick = onDiscard) { Text("放弃修改") } },
+        )
     }
 
     Surface(
@@ -218,7 +274,7 @@ private fun WidgetConfigurationScreen(
                 WidgetMode.Signals ->
                     "监控最多 10 个品种，可分别启用回撤风险、均线压缩和级别冲突。"
                 WidgetMode.Matrix ->
-                    "选择最多 5 个品种和 4 个周期；组件根据尺寸显示前几个品种。"
+                    "选择最多 5 个品种和 4 个周期；上下滑动查看全部品种。"
                 WidgetMode.SingleSymbol ->
                     "选择 1 个品种和每行列数，按全局设置的顺序查看全部周期。"
                 WidgetMode.DecisionReminders ->
@@ -257,9 +313,9 @@ private fun WidgetConfigurationScreen(
                 item {
                     SectionTitle("品种（单选）")
                 }
-                items(settings.symbols, key = { "single-symbol-$it" }) { symbol ->
+                items((listOfNotNull(selectedSingleSymbol) + settings.symbols).distinct(), key = { "single-symbol-$it" }) { symbol ->
                     SingleSelectionRow(
-                        text = symbol,
+                        text = symbol + if (symbol !in settings.symbols) "（已移除，请重新选择）" else "",
                         selected = symbol == selectedSingleSymbol,
                         onSelect = { selectedSingleSymbol = symbol },
                     )
@@ -281,6 +337,14 @@ private fun WidgetConfigurationScreen(
             }
             WidgetMode.DecisionReminders -> {
                 item {
+                    Text(deliveryStatus.label, color = MaterialTheme.colorScheme.primary)
+                    Row {
+                        TextButton(onClick = onNotifications) { Text("通知设置") }
+                        TextButton(onClick = onExactAlarms) { Text("定时权限") }
+                    }
+                    Text("到期未处理的提醒会保留；恢复通知后补发一次。", style = MaterialTheme.typography.bodySmall)
+                }
+                item {
                     SectionTitle("提醒（${reminders.size}/${WidgetConfigStore.MaxReminders}）")
                 }
                 items(
@@ -296,10 +360,12 @@ private fun WidgetConfigurationScreen(
                             reminderInterval = reminder.interval
                             reminderDirection = reminder.direction
                             reminderTargetAt = reminder.targetAtEpochMillis
+                            editorDirty = false
                         },
                         onDelete = {
                             reminders = reminders.filterNot { it.id == reminder.id }
                             if (editingReminderId == reminder.id) editingReminderId = null
+                            editorDirty = false
                         },
                     )
                 }
@@ -311,7 +377,7 @@ private fun WidgetConfigurationScreen(
                         settings.symbols.forEach { symbol ->
                             FilterChip(
                                 selected = reminderSymbol == symbol,
-                                onClick = { reminderSymbol = symbol },
+                                onClick = { reminderSymbol = symbol; editorDirty = true },
                                 label = { Text(symbol) },
                                 modifier = Modifier.padding(end = 7.dp),
                             )
@@ -326,7 +392,7 @@ private fun WidgetConfigurationScreen(
                         settings.intervals.forEach { interval ->
                             FilterChip(
                                 selected = reminderInterval == interval,
-                                onClick = { reminderInterval = interval },
+                                onClick = { reminderInterval = interval; editorDirty = true },
                                 label = { Text(formatReminderInterval(interval)) },
                                 modifier = Modifier.padding(end = 7.dp),
                             )
@@ -341,14 +407,14 @@ private fun WidgetConfigurationScreen(
                         DecisionDirection.entries.forEach { direction ->
                             FilterChip(
                                 selected = reminderDirection == direction,
-                                onClick = { reminderDirection = direction },
+                                onClick = { reminderDirection = direction; editorDirty = true },
                                 label = { Text("${direction.glyph} ${direction.label}") },
                                 modifier = Modifier.padding(end = 7.dp),
                             )
                         }
                     }
                     Text(
-                        "倒计时（先加时长，再向未来取整）",
+                        "从现在起（精确增加所选时长）",
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -357,14 +423,39 @@ private fun WidgetConfigurationScreen(
                             FilterChip(
                                 selected = false,
                                 onClick = {
-                                    reminderTargetAt = alignedDecisionReminderTime(preset.minutes)
+                                    reminderTargetAt = decisionReminderAfter(preset.minutes)
                                         .toEpochMilli()
+                                    editorDirty = true
                                 },
                                 label = { Text(preset.label) },
                                 modifier = Modifier.padding(end = 7.dp),
                             )
                         }
                     }
+                    TextButton(onClick = {
+                        val current = Instant.ofEpochMilli(reminderTargetAt).atZone(ZoneId.systemDefault())
+                        DatePickerDialog(context, { _, year, month, day ->
+                            TimePickerDialog(context, { _, hour, minute ->
+                                reminderTargetAt = java.time.LocalDateTime.of(year, month + 1, day, hour, minute)
+                                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                                editorDirty = true
+                            }, current.hour, current.minute, true).show()
+                        }, current.year, current.monthValue - 1, current.dayOfMonth).show()
+                    }) { Text("选择日期和时间") }
+                    TextButton(onClick = {
+                        scope.launch {
+                            val snapshot = GuailiSnapshotStore(context).read()
+                            val cell = snapshot?.table?.cells?.get(reminderSymbol)?.get(reminderInterval)
+                            val target = parseGuailiTime(cell?.closeTime, snapshot?.timezone)
+                            if (snapshot == null || isGuailiSnapshotStale(snapshot.updatedAt) || cell?.isClosed != false || target == null || target <= System.currentTimeMillis()) {
+                                formError = "没有可用的当前 K 线收线时间，请先刷新行情或手动选择时间"
+                            } else {
+                                reminderTargetAt = target + 1L
+                                editorDirty = true
+                                formError = null
+                            }
+                        }
+                    }) { Text("当前周期下一次收线") }
                     Text(
                         "提醒时间：${formatReminderTarget(reminderTargetAt)} · ${formatDecisionCountdown(reminderTargetAt)}",
                         color = MaterialTheme.colorScheme.primary,
@@ -373,6 +464,10 @@ private fun WidgetConfigurationScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = {
+                                if (reminderTargetAt <= System.currentTimeMillis()) {
+                                    formError = "提醒时间已过，请重新选择未来时间"
+                                    return@Button
+                                }
                                 val id = editingReminderId ?: UUID.randomUUID().toString()
                                 val reminder = DecisionReminder(
                                     id = id,
@@ -384,16 +479,18 @@ private fun WidgetConfigurationScreen(
                                 reminders = (reminders.filterNot { it.id == id } + reminder)
                                     .take(WidgetConfigStore.MaxReminders)
                                 editingReminderId = null
-                                reminderTargetAt = alignedDecisionReminderTime(15L).toEpochMilli()
+                                reminderTargetAt = decisionReminderAfter(15L).toEpochMilli()
+                                editorDirty = false
+                                formError = null
                             },
                             enabled = reminderSymbol != null &&
                                 reminderInterval != null &&
                                 (editingReminderId != null || reminders.size < WidgetConfigStore.MaxReminders),
                         ) {
-                            Text(if (editingReminderId == null) "添加提醒" else "保存修改")
+                            Text(if (editingReminderId == null) "加入待保存列表" else "更新待保存列表")
                         }
-                        if (editingReminderId != null) {
-                            TextButton(onClick = { editingReminderId = null }) {
+                        if (editingReminderId != null || editorDirty) {
+                            TextButton(onClick = { editingReminderId = null; editorDirty = false }) {
                                 Text("取消修改")
                             }
                         }
@@ -425,10 +522,10 @@ private fun WidgetConfigurationScreen(
                         "品种（${selectedSymbols.size}/${WidgetConfigStore.maxSymbols(mode)}）",
                     )
                 }
-                items(settings.symbols, key = { "symbol-$it" }) { symbol ->
+                items((selectedSymbols + settings.symbols).distinct(), key = { "symbol-$it" }) { symbol ->
                     val symbolLimit = WidgetConfigStore.maxSymbols(mode)
                     SelectionRow(
-                        text = symbol,
+                        text = symbol + if (symbol !in settings.symbols) "（已移除，取消选择）" else "",
                         selected = symbol in selectedSymbols,
                         enabled = symbol in selectedSymbols || selectedSymbols.size < symbolLimit,
                         onToggle = {
@@ -439,6 +536,9 @@ private fun WidgetConfigurationScreen(
                             )
                         },
                     )
+                    if (symbol in selectedSymbols) {
+                        SelectionOrderControls(symbol, selectedSymbols) { selectedSymbols = it }
+                    }
                 }
             }
             }
@@ -447,9 +547,9 @@ private fun WidgetConfigurationScreen(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     SectionTitle("周期（${selectedIntervals.size}/${WidgetConfigStore.MaxIntervals}）")
                 }
-                items(settings.intervals, key = { "interval-$it" }) { interval ->
+                items((selectedIntervals + settings.intervals).distinct(), key = { "interval-$it" }) { interval ->
                     SelectionRow(
-                        text = interval,
+                        text = interval + if (interval !in settings.intervals) "（已移除，取消选择）" else "",
                         selected = interval in selectedIntervals,
                         enabled = interval in selectedIntervals || selectedIntervals.size < WidgetConfigStore.MaxIntervals,
                         onToggle = {
@@ -460,11 +560,17 @@ private fun WidgetConfigurationScreen(
                             )
                         },
                     )
+                    if (interval in selectedIntervals) {
+                        SelectionOrderControls(interval, selectedIntervals) { selectedIntervals = it }
+                    }
                 }
             }
         }
 
             Spacer(modifier = Modifier.height(12.dp))
+            if (dirty) Text("有未保存修改", color = MaterialTheme.colorScheme.primary)
+            if (editorDirty) Text("请先将提醒加入待保存列表", style = MaterialTheme.typography.bodySmall)
+            (saveError ?: formError)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
                 onClick = {
                     onSave(
@@ -477,20 +583,41 @@ private fun WidgetConfigurationScreen(
                             reminders = reminders,
                             enabledSignalKinds = enabledSignalKinds,
                         ),
+                        baseline,
                     )
                 },
-                enabled = when (mode) {
+                enabled = !saving && !(mode == WidgetMode.DecisionReminders && editorDirty) && when (mode) {
                     WidgetMode.Signals -> selectedSymbols.isNotEmpty()
                     WidgetMode.Matrix -> selectedSymbols.isNotEmpty() && selectedIntervals.isNotEmpty()
                     WidgetMode.SingleSymbol -> selectedSingleSymbol != null
-                    WidgetMode.DecisionReminders -> reminders.isNotEmpty()
+                    WidgetMode.DecisionReminders -> true
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("保存小组件")
+                Text(if (saving) "保存中…" else "保存小组件")
             }
         }
     }
+}
+
+private inline fun <reified T : Any> configurationSaver(): Saver<T, String> = Saver(
+    save = { Json.encodeToString(it) },
+    restore = { Json.decodeFromString<T>(it) },
+)
+
+@Composable
+private fun SelectionOrderControls(value: String, values: List<String>, onChange: (List<String>) -> Unit) {
+    val index = values.indexOf(value)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("第 ${index + 1} 位", style = MaterialTheme.typography.bodySmall)
+        TextButton(enabled = index > 0, onClick = { onChange(moveWidgetSelection(values, index, -1)) }) { Text("上移") }
+        TextButton(enabled = index < values.lastIndex, onClick = { onChange(moveWidgetSelection(values, index, 1)) }) { Text("下移") }
+    }
+}
+
+internal fun moveWidgetSelection(values: List<String>, index: Int, offset: Int): List<String> {
+    if (index !in values.indices || index + offset !in values.indices) return values
+    return values.toMutableList().apply { add(index + offset, removeAt(index)) }
 }
 
 internal fun buildWidgetConfig(

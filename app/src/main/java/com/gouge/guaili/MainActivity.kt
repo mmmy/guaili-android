@@ -21,6 +21,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class MainActivity : ComponentActivity() {
     private val requestedKline = MutableStateFlow<KlineTarget?>(null)
 
+    override fun onResume() {
+        super.onResume()
+        com.gouge.guaili.widget.DecisionReminderScheduler.rescheduleAll(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleWidgetIntent(intent)

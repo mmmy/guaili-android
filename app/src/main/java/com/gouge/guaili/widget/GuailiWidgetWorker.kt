@@ -33,8 +33,8 @@ class GuailiWidgetWorker(
         val settings = SettingsStore(applicationContext).settings.first()
         val result = GuailiRefreshUseCase(
             snapshotSink = GuailiSnapshotStore(applicationContext),
-        ).refresh(settings)
-        if (showFeedback) {
+        ).refresh(settings, requirePersistence = true)
+        run {
             setAllWidgetRefreshStatuses(
                 context = applicationContext,
                 phase =
@@ -42,6 +42,7 @@ class GuailiWidgetWorker(
                     is GuailiResult.Success -> WidgetRefreshPhase.Success
                     is GuailiResult.Failure -> WidgetRefreshPhase.Failure
                 },
+                message = (result as? GuailiResult.Failure)?.message,
             )
         }
         GuailiWidget().updateAll(applicationContext)
@@ -84,6 +85,14 @@ object GuailiWidgetScheduler {
             ImmediateWorkPolicy,
             work,
         )
+        scheduleFeedbackExpiry(context, 65)
+    }
+
+    fun scheduleFeedbackExpiry(context: Context, seconds: Long) {
+        WorkManager.getInstance(context).enqueue(
+            OneTimeWorkRequestBuilder<WidgetFeedbackExpiryWorker>()
+                .setInitialDelay(seconds, TimeUnit.SECONDS).build(),
+        )
     }
 
     fun cancelPeriodic(context: Context) {
@@ -92,3 +101,10 @@ object GuailiWidgetScheduler {
 }
 
 internal const val ShowRefreshFeedbackKey = "show_refresh_feedback"
+
+class WidgetFeedbackExpiryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        GuailiWidget().updateAll(applicationContext)
+        return Result.success()
+    }
+}

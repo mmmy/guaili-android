@@ -10,6 +10,11 @@ data class DecisionReminderPreset(
     val minutes: Long,
 )
 
+fun decisionReminderAfter(minutes: Long, now: Instant = Instant.now()): Instant {
+    require(minutes > 0)
+    return now.plusSeconds(Math.multiplyExact(minutes, 60L))
+}
+
 internal val DecisionReminderPresets = listOf(
     DecisionReminderPreset("15 分钟", 15L),
     DecisionReminderPreset("30 分钟", 30L),
@@ -60,19 +65,19 @@ internal fun formatDecisionCountdown(
         val hours = elapsedMinutes / 60L
         val minutes = elapsedMinutes % 60L
         return when {
+            hours >= 24L -> "已到${hours / 24L}天${hours % 24L}时"
             hours == 0L -> "已到${minutes}分"
             minutes == 0L -> "已到${hours}时"
             else -> "已到${hours}时${minutes}分"
         }
     }
 
-    // Match xbot-android: the compact widget uses whole hours/days instead of
-    // HH:mm, while the stored target remains the exact aligned boundary.
-    val remainingHours = Duration.ofMillis(deltaMillis).toHours()
+    val remainingMinutes = (deltaMillis + 59_999L) / 60_000L
+    val remainingHours = remainingMinutes / 60L
     return when {
-        remainingHours < 1L -> "<1小时"
-        remainingHours < 24L -> "${remainingHours}小时"
-        else -> "${remainingHours / 24L}天"
+        remainingHours < 1L -> "${remainingMinutes}分"
+        remainingHours < 24L -> "${remainingHours}时${remainingMinutes % 60L}分"
+        else -> "${remainingHours / 24L}天${remainingHours % 24L}时"
     }
 }
 

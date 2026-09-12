@@ -20,7 +20,7 @@ class GuailiSignalsTest {
         assertEquals(listOf("1", "2", "3", "5", "8"), signal.primaryRun.intervals)
         assertEquals("8", signal.anchorInterval)
         assertFalse(signal.isStrong)
-        assertTrue(signal.isEvidenceBacked)
+        assertFalse(signal.isEvidenceBacked)
     }
 
     @Test
@@ -34,7 +34,7 @@ class GuailiSignalsTest {
         assertEquals(GuailiSignalDirection.Negative, signal.primaryRun.direction)
         assertEquals(6, signal.primaryRun.levelCount)
         assertTrue(signal.isStrong)
-        assertTrue(signal.isEvidenceBacked)
+        assertFalse(signal.isEvidenceBacked)
     }
 
     @Test
@@ -64,7 +64,7 @@ class GuailiSignalsTest {
         assertEquals(2, signal.runs.size)
         assertEquals(GuailiSignalDirection.Negative, signal.runs[0].direction)
         assertEquals(GuailiSignalDirection.Positive, signal.runs[1].direction)
-        assertEquals("8", signal.anchorInterval)
+        assertEquals("60", signal.anchorInterval)
         assertFalse(signal.isEvidenceBacked)
     }
 
@@ -143,7 +143,7 @@ class GuailiSignalsTest {
         shortTrend = false,
         isClosed = true,
         openTime = null,
-        closeTime = null,
+        closeTime = java.time.Instant.now().minusSeconds(1).toString(),
     )
 
     companion object {

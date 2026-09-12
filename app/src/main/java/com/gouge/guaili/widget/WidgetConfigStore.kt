@@ -1,12 +1,17 @@
 package com.gouge.guaili.widget
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.GuailiSettings
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -14,6 +19,7 @@ import kotlinx.serialization.json.Json
 
 private val Context.widgetConfigDataStore by preferencesDataStore(name = "guaili_widget_config")
 
+@Serializable
 data class WidgetConfig(
     val symbols: List<String>,
     val intervals: List<String>,
@@ -26,6 +32,7 @@ data class WidgetConfig(
 internal val DefaultWidgetSignalKinds: Set<GuailiSignalKind> =
     GuailiSignalKind.entries.toSet()
 
+@Serializable
 enum class WidgetMode(val label: String) {
     Signals("信号模式"),
     Matrix("数据矩阵"),
@@ -40,6 +47,7 @@ data class DecisionReminder(
     val interval: String,
     val direction: DecisionDirection,
     val targetAtEpochMillis: Long,
+    val notifiedTargetAtEpochMillis: Long? = null,
 )
 
 @Serializable
@@ -48,6 +56,7 @@ enum class DecisionDirection(val label: String, val glyph: String) {
     Short("看空", "↓"),
 }
 
+@Serializable
 enum class WidgetColumnCount(val label: String, val count: Int?) {
     Auto("自动", null),
     Five("5 列", 5),
@@ -56,11 +65,20 @@ enum class WidgetColumnCount(val label: String, val count: Int?) {
     Ten("10 列", 10),
 }
 
-class WidgetConfigStore(context: Context) {
-    private val context = context.applicationContext
+internal data class WidgetConfigurationState(val config: WidgetConfig, val settings: GuailiSettings)
 
-    suspend fun read(appWidgetId: Int, settings: GuailiSettings): WidgetConfig {
-        val preferences = context.widgetConfigDataStore.data.first()
+class WidgetConfigStore internal constructor(private val dataStore: DataStore<Preferences>) {
+    constructor(context: Context) : this(context.applicationContext.widgetConfigDataStore)
+
+    internal fun observe(appWidgetId: Int, settings: Flow<GuailiSettings>): Flow<WidgetConfigurationState> =
+        dataStore.data.combine(settings) { preferences, currentSettings ->
+            WidgetConfigurationState(decode(preferences, appWidgetId, currentSettings), currentSettings)
+        }.distinctUntilChanged()
+
+    suspend fun read(appWidgetId: Int, settings: GuailiSettings): WidgetConfig =
+        decode(dataStore.data.first(), appWidgetId, settings)
+
+    private fun decode(preferences: Preferences, appWidgetId: Int, settings: GuailiSettings): WidgetConfig {
         val savedSymbols = parse(preferences[stringPreferencesKey(symbolsKey(appWidgetId))])
         val savedIntervals = parse(preferences[stringPreferencesKey(intervalsKey(appWidgetId))])
         val savedMode = preferences[stringPreferencesKey(modeKey(appWidgetId))]
@@ -75,11 +93,11 @@ class WidgetConfigStore(context: Context) {
         val symbols = if (savedMode == null) {
             settings.symbols.take(maxSymbols(mode))
         } else {
-            savedSymbols.ifEmpty { settings.symbols.take(maxSymbols(mode)) }
+            savedSymbols
         }
         return WidgetConfig(
             symbols = reconcileWidgetSymbols(symbols, settings.symbols, mode),
-            intervals = savedIntervals.ifEmpty { defaultIntervals(settings.intervals) },
+            intervals = if (savedMode == null) defaultIntervals(settings.intervals) else savedIntervals,
             mode = mode,
             singleSymbolColumns = savedColumnCount
                 ?.let { saved -> WidgetColumnCount.entries.firstOrNull { it.name == saved } }
@@ -89,9 +107,20 @@ class WidgetConfigStore(context: Context) {
         )
     }
 
-    suspend fun save(appWidgetId: Int, config: WidgetConfig) {
+    suspend fun save(appWidgetId: Int, config: WidgetConfig, baseline: WidgetConfig? = null): WidgetConfig {
         val normalizedConfig = normalizeWidgetConfig(config)
-        context.widgetConfigDataStore.edit { preferences ->
+        var savedConfig = normalizedConfig
+        dataStore.edit { preferences ->
+            val liveReminders = decodeReminders(preferences[stringPreferencesKey(remindersKey(appWidgetId))])
+            val previousReminders = liveReminders.associateBy(DecisionReminder::id)
+            val merged = baseline?.let { mergeReminderDraft(it.reminders, normalizedConfig.reminders, liveReminders) }
+                ?: normalizedConfig.reminders
+            val reminders = merged.map { reminder ->
+                val previous = previousReminders[reminder.id]
+                if (previous?.targetAtEpochMillis == reminder.targetAtEpochMillis && previous.notifiedTargetAtEpochMillis != null) {
+                    reminder.copy(notifiedTargetAtEpochMillis = previous.notifiedTargetAtEpochMillis)
+                } else reminder
+            }
             preferences[stringPreferencesKey(symbolsKey(appWidgetId))] =
                 normalizedConfig.symbols.joinToString(",")
             preferences[stringPreferencesKey(intervalsKey(appWidgetId))] =
@@ -100,20 +129,29 @@ class WidgetConfigStore(context: Context) {
             preferences[stringPreferencesKey(columnCountKey(appWidgetId))] =
                 normalizedConfig.singleSymbolColumns.name
             preferences[stringPreferencesKey(remindersKey(appWidgetId))] =
-                ReminderJson.encodeToString(normalizedConfig.reminders)
+                ReminderJson.encodeToString(reminders)
             preferences[stringPreferencesKey(signalKindsKey(appWidgetId))] =
                 normalizedConfig.enabledSignalKinds.joinToString(",") { it.name }
+            savedConfig = normalizedConfig.copy(reminders = reminders)
         }
+        return savedConfig
     }
 
     suspend fun delete(appWidgetId: Int) {
-        context.widgetConfigDataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences.remove(stringPreferencesKey(symbolsKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(intervalsKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(modeKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(columnCountKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(remindersKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(signalKindsKey(appWidgetId)))
+        }
+    }
+
+    suspend fun updateReminders(appWidgetId: Int, transform: (List<DecisionReminder>) -> List<DecisionReminder>) {
+        dataStore.edit { preferences ->
+            val key = stringPreferencesKey(remindersKey(appWidgetId))
+            preferences[key] = ReminderJson.encodeToString(transform(decodeReminders(preferences[key])))
         }
     }
 
@@ -184,16 +222,15 @@ internal fun reconcileWidgetSymbols(
     available: List<String>,
     mode: WidgetMode,
 ): List<String> {
-    val availableSet = available.toSet()
-    val current = configured.filter(availableSet::contains)
-    return normalizeWidgetSymbols(current.ifEmpty { available }, mode)
+    // Keep the user's targets. The UI exposes removed entries for explicit replacement.
+    return normalizeWidgetSymbols(configured, mode)
 }
 
 internal fun normalizeWidgetConfig(config: WidgetConfig): WidgetConfig = config.copy(
     symbols = normalizeWidgetSymbols(config.symbols, config.mode),
-    intervals = config.intervals.take(WidgetConfigStore.MaxIntervals),
+    intervals = config.intervals.distinct().take(WidgetConfigStore.MaxIntervals),
     reminders = config.reminders
-        .filter { it.symbol.isNotBlank() && it.interval.isNotBlank() && it.targetAtEpochMillis > 0L }
+        .filter { it.id.isNotBlank() && it.symbol.isNotBlank() && it.interval.isNotBlank() && it.targetAtEpochMillis > 0L }
         .distinctBy(DecisionReminder::id)
         .take(WidgetConfigStore.MaxReminders),
 )

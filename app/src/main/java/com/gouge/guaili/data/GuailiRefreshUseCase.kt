@@ -4,6 +4,7 @@ import com.gouge.guaili.domain.toTable
 import com.gouge.guaili.settings.GuailiSettings
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 
 fun interface GuailiFetcher {
     suspend fun fetch(settings: GuailiSettings): GuailiResult<GuailiResponse>
@@ -24,12 +25,12 @@ class GuailiRefreshUseCase(
     private var fetcher: GuailiFetcher? = null
     private var fetcherBaseUrl: String? = null
 
-    suspend fun refresh(settings: GuailiSettings): GuailiResult<GuailiSnapshot> =
+    suspend fun refresh(settings: GuailiSettings, requirePersistence: Boolean = false): GuailiResult<GuailiSnapshot> =
         RefreshCoordinator.mutex.withLock {
-            refreshLocked(settings)
+            refreshLocked(settings, requirePersistence)
         }
 
-    private suspend fun refreshLocked(settings: GuailiSettings): GuailiResult<GuailiSnapshot> {
+    private suspend fun refreshLocked(settings: GuailiSettings, requirePersistence: Boolean): GuailiResult<GuailiSnapshot> {
         val currentFetcher = try {
             fetcherFor(settings.baseUrl)
         } catch (error: Exception) {
@@ -42,8 +43,21 @@ class GuailiRefreshUseCase(
                 val snapshot = GuailiSnapshot(
                     table = result.value.toTable(settings.symbols, settings.intervals),
                     updatedAt = nowMillis(),
+                    timezone = result.value.timezone,
+                    maType = settings.maType,
+                    maLength = settings.maLength,
                 )
-                snapshotSink.saveIgnoringStorageFailure(snapshot)
+                if (requirePersistence) {
+                    try {
+                        snapshotSink.save(snapshot)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        return GuailiResult.Failure("行情已获取，但无法保存到小组件，请重试", error)
+                    }
+                } else {
+                    snapshotSink.saveIgnoringStorageFailure(snapshot)
+                }
                 GuailiResult.Success(snapshot)
             }
         }

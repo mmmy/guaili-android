@@ -73,11 +73,11 @@ fun GuailiSignalHelpScreen(onBack: () -> Unit) {
                     title = "回调风险 ↓ / 反弹风险 ↑",
                     accent = MaterialTheme.colorScheme.error,
                 ) {
-                    HelpBullet("连续至少 5 个相邻级别全部 ≥ 10：价格整体远离 EMA20 上方，提示回调风险。")
-                    HelpBullet("连续至少 5 个相邻级别全部 ≤ -10：价格整体远离 EMA20 下方，提示反弹风险。")
+                    HelpBullet("连续至少 5 个相邻级别全部 ≥ 10：价格整体远离当前配置的均线上方，提示回调风险。")
+                    HelpBullet("连续至少 5 个相邻级别全部 ≤ -10：价格整体远离当前配置的均线下方，提示反弹风险。")
                     HelpBullet("连续 6 个或更多级别显示为“强”风险；只展示连续区间中时长最大的级别。")
-                    HelpBullet("历史验证支持的是回撤概率上升，不代表趋势已经结束，也不是确认反转。")
-                    HelpBullet("当前统计证据主要适用于最大级别 8–60 分钟；更大级别仍需更多样本。")
+                    HelpBullet("这是规则观察，不代表趋势已经结束，也不是确认反转。")
+                    HelpBullet("应用尚未附带与品种、均线参数和规则版本对应的验证报告，因此所有信号均标记为“观察”。周期处于 8–60 分钟不自动代表经过验证。")
                 }
             }
             item {
@@ -86,7 +86,7 @@ fun GuailiSignalHelpScreen(onBack: () -> Unit) {
                     accent = MaterialTheme.colorScheme.primary,
                 ) {
                     HelpBullet("连续至少 5 个相邻级别满足 |乖离值| ≤ 2。")
-                    HelpBullet("表示多个级别的 K 线正在触碰或跨越 EMA20，状态更偏震荡和均线附近运行。")
+                    HelpBullet("表示多个级别的 K 线正在触碰或跨越当前配置的均线，信号文案显示该快照实际使用的均线类型和长度。")
                     HelpBullet("压缩本身不预测突破方向；只有较小级别同向离开零值区间后，才值得继续观察扩张。")
                 }
             }
@@ -108,8 +108,9 @@ fun GuailiSignalHelpScreen(onBack: () -> Unit) {
                     HelpBullet("只使用已收线 K 线，未收线值不会形成小组件信号。")
                     HelpBullet("未通过 ATR rank 过滤、缺失或过期的级别会中断连续区间。")
                     HelpBullet("秒级历史只保存在服务内存中，长期统计的可信度低于分钟级。")
-                    HelpBullet("服务健康表示数据及时连续，不等于超长周期已经拥有足够的 EMA20 历史。")
-                    HelpBullet("“观察”表示级别冲突或最大级别不在主要历史验证区间内，可信度低于普通信号。")
+                    HelpBullet("收线时间缺失或无法解析时不生成信号。最近已收线数据超过一个周期加传输宽限即视为过期。暂未接入交易日历，休市数据也会保守标记为过期。")
+                    HelpBullet("获取时间只表示接口响应时间；收线时间表示行情时间。桌面为定期更新的快照，后台更新可能受系统限制而延迟。")
+                    HelpBullet("“观察”表示尚未关联适用当前品种与参数的统计验证，不能当作收益或反转概率承诺。")
                 }
             }
             item {
@@ -123,7 +124,7 @@ fun GuailiSignalHelpScreen(onBack: () -> Unit) {
                     LegendLine(ShortTrendTextColor, "空头趋势周期")
                     LegendLine(ConflictTrendTextColor, "趋势方向冲突")
                     Text(
-                        text = "灰暗单元格表示未通过 ATR rank 过滤。可在小组件编辑页切换回“数据矩阵”模式。",
+                        text = "灰暗单元格表示未通过 ATR rank 过滤。数值后的 · 表示尚未确认收线，矩阵与单品种模式使用相同标识。上下滑动查看全部内容。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -1,7 +1,11 @@
 package com.gouge.guaili.domain
 
 import kotlin.math.abs
+import com.gouge.guaili.data.CellAvailability
+import com.gouge.guaili.data.signalCellAvailability
+import kotlinx.serialization.Serializable
 
+@Serializable
 enum class GuailiSignalKind {
     Extreme,
     Compression,
@@ -30,15 +34,11 @@ data class GuailiSignal(
     val runs: List<GuailiSignalRun>,
 ) {
     val primaryRun: GuailiSignalRun get() = runs.first()
-    val anchorInterval: String get() = primaryRun.endInterval
+    val anchorInterval: String get() = runs.maxBy { guailiIntervalDurationMillis(it.endInterval) }.endInterval
     val totalLevelCount: Int get() = runs.sumOf(GuailiSignalRun::levelCount)
     val isStrong: Boolean get() = kind == GuailiSignalKind.Extreme && primaryRun.levelCount >= 6
-    val isEvidenceBacked: Boolean
-        get() {
-            if (kind == GuailiSignalKind.Conflict) return false
-            val anchorMillis = guailiIntervalDurationMillis(anchorInterval)
-            return anchorMillis in (8L * 60_000L)..(60L * 60_000L)
-        }
+    // No versioned validation dataset is bundled. A timeframe alone is not evidence.
+    val isEvidenceBacked: Boolean get() = false
 
     internal val priority: Int
         get() = when (kind) {
@@ -57,13 +57,15 @@ object GuailiSignalDetector {
         table: GuailiTable,
         selectedSymbols: List<String> = table.symbols,
         enabledKinds: Set<GuailiSignalKind> = GuailiSignalKind.entries.toSet(),
+        nowMillis: Long = System.currentTimeMillis(),
+        timezone: String? = null,
     ): List<GuailiSignal> {
         val orderedIntervals = table.intervals
             .distinct()
             .sortedBy(::guailiIntervalDurationMillis)
 
         return selectedSymbols.distinct().mapNotNull { symbol ->
-            detectForSymbol(table, symbol, orderedIntervals, enabledKinds)
+            detectForSymbol(table, symbol, orderedIntervals, enabledKinds, nowMillis, timezone)
         }.sortedWith(
             compareByDescending<GuailiSignal> { it.priority }
                 .thenBy { selectedSymbols.indexOf(it.symbol).let { index -> if (index < 0) Int.MAX_VALUE else index } },
@@ -75,9 +77,12 @@ object GuailiSignalDetector {
         symbol: String,
         orderedIntervals: List<String>,
         enabledKinds: Set<GuailiSignalKind>,
+        nowMillis: Long,
+        timezone: String?,
     ): GuailiSignal? {
-        val cells = table.closedCells[symbol]
-            ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true }
+        val cells = (table.closedCells[symbol]
+            ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true })
+            .filterValues { signalCellAvailability(it, nowMillis, timezone) == CellAvailability.Ready }
         if (cells.isEmpty()) return null
 
         val extremeRuns = extremeRuns(orderedIntervals, cells)

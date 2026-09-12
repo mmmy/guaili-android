@@ -46,12 +46,12 @@ class WidgetConfigStoreTest {
     }
 
     @Test
-    fun unavailableSavedSymbolsDoNotConsumeSelectionSlots() {
+    fun unavailableSavedSymbolsArePreservedForExplicitReplacement() {
         val configured = listOf("OLDUSDT", "BTCUSDT", "ETHUSDT")
         val available = listOf("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
         assertEquals(
-            listOf("BTCUSDT", "ETHUSDT"),
+            configured,
             reconcileWidgetSymbols(configured, available, WidgetMode.Signals),
         )
     }

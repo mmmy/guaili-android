@@ -54,15 +54,15 @@ class DecisionReminderTimeTest {
     fun countdownUsesCompactSingleLineText() {
         val now = Instant.parse("2026-08-10T02:14:00Z").toEpochMilli()
 
-        assertEquals("1小时", formatDecisionCountdown(
+        assertEquals("1时46分", formatDecisionCountdown(
             Instant.parse("2026-08-10T04:00:00Z").toEpochMilli(),
             now,
         ))
-        assertEquals("2天", formatDecisionCountdown(
+        assertEquals("2天3时", formatDecisionCountdown(
             Instant.parse("2026-08-12T05:14:00Z").toEpochMilli(),
             now,
         ))
-        assertEquals("<1小时", formatDecisionCountdown(
+        assertEquals("1时0分", formatDecisionCountdown(
             Instant.parse("2026-08-10T03:13:59Z").toEpochMilli(),
             now,
         ))
@@ -77,7 +77,7 @@ class DecisionReminderTimeTest {
         val now = Instant.parse("2026-08-10T02:14:00Z").toEpochMilli()
 
         assertEquals(
-            "12:00 · 1小时",
+            "12:00 · 1时46分",
             formatDecisionReminderDisplay(
                 targetAtEpochMillis = Instant.parse("2026-08-10T04:00:00Z").toEpochMilli(),
                 nowEpochMillis = now,
@@ -85,7 +85,7 @@ class DecisionReminderTimeTest {
             ),
         )
         assertEquals(
-            "08-11 12:00 · 1天",
+            "08-11 12:00 · 1天1时",
             formatDecisionReminderDisplay(
                 targetAtEpochMillis = Instant.parse("2026-08-11T04:00:00Z").toEpochMilli(),
                 nowEpochMillis = now,

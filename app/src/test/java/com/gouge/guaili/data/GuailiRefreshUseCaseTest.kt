@@ -10,6 +10,29 @@ import org.junit.Test
 
 class GuailiRefreshUseCaseTest {
     @Test
+    fun widgetRefreshReportsCacheFailureInsteadOfClaimingSuccess() = runTest {
+        val settings = GuailiSettings.defaults()
+        val useCase = GuailiRefreshUseCase(
+            fetcherFactory = GuailiFetcherFactory { GuailiFetcher { GuailiResult.Success(response(settings, 8)) } },
+            snapshotSink = GuailiSnapshotSink { error("disk full") },
+        )
+        val result = useCase.refresh(settings, requirePersistence = true)
+        assertTrue(result is GuailiResult.Failure)
+        assertTrue((result as GuailiResult.Failure).message.contains("保存"))
+    }
+
+    @Test
+    fun snapshotRecordsActualIndicatorParameters() = runTest {
+        val settings = GuailiSettings.defaults().copy(maType = "SMA", maLength = 50)
+        val useCase = GuailiRefreshUseCase(
+            fetcherFactory = GuailiFetcherFactory { GuailiFetcher { GuailiResult.Success(response(settings, 8).copy(timezone = "Asia/Shanghai")) } },
+        )
+        val snapshot = (useCase.refresh(settings) as GuailiResult.Success).value
+        assertEquals("SMA", snapshot.maType)
+        assertEquals(50, snapshot.maLength)
+        assertEquals("Asia/Shanghai", snapshot.timezone)
+    }
+    @Test
     fun successfulRefreshMapsAndPersistsSnapshot() = runTest {
         val settings = GuailiSettings.defaults().copy(
             symbols = listOf("BTCUSDT"),
