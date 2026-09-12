@@ -290,7 +290,7 @@ private fun GuailiWidgetContent(
                             }
                         }
                     }
-                    item { Text("${symbols.size}个品种 · 上下滑动 · ·为未收线", style = TextStyle(color = SecondaryText, fontSize = 9.sp)) }
+                    item { Text("${symbols.size}个品种 · 上下滑动", style = TextStyle(color = SecondaryText, fontSize = 9.sp)) }
                 }
             }
         }

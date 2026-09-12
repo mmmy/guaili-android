@@ -240,9 +240,9 @@ class WidgetBusinessRulesTest {
         assertEquals("均线（参数未知）", movingAverageLabel(snapshot()))
     }
 
-    @Test fun unclosedAndUnknownClosureValuesAreMarkedInEveryMode() {
-        assertEquals("12·", widgetCellValue(cell().copy(isClosed = false)))
-        assertEquals("12·", widgetCellValue(cell().copy(isClosed = null)))
+    @Test fun closureStateDoesNotChangeDisplayedWidgetValue() {
+        assertEquals("12", widgetCellValue(cell().copy(isClosed = false)))
+        assertEquals("12", widgetCellValue(cell().copy(isClosed = null)))
         assertEquals("12", widgetCellValue(cell()))
     }
 
