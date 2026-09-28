@@ -19,6 +19,7 @@ fun GuailiResponse.toTable(
                 interval = interval,
                 longTrend = previous?.longTrend,
                 shortTrend = previous?.shortTrend,
+                previousAtr14 = previous?.atr14,
             )
         }.toMap()
     }
@@ -38,6 +39,7 @@ fun GuailiResponse.toTable(
                 interval = interval,
                 longTrend = previousClosed?.longTrend,
                 shortTrend = previousClosed?.shortTrend,
+                previousAtr14 = previousClosed?.atr14,
             )
         }.toMap()
     }
@@ -55,6 +57,7 @@ private fun GuailiPoint.toCell(
     interval: String,
     longTrend: Boolean?,
     shortTrend: Boolean?,
+    previousAtr14: Double?,
 ): GuailiCell =
     GuailiCell(
         symbol = symbol,
@@ -70,4 +73,7 @@ private fun GuailiPoint.toCell(
         isClosed = isClosed,
         openTime = openTime,
         closeTime = closeTime,
+        signalLongTrend = this.longTrend,
+        signalShortTrend = this.shortTrend,
+        signalAtrReady = previousAtr14?.let { it.isFinite() && it > 0.0 },
     )

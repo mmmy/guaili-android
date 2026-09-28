@@ -272,7 +272,7 @@ private fun WidgetConfigurationScreen(
         Text(
             text = when (mode) {
                 WidgetMode.Signals ->
-                    "监控最多 10 个品种，可分别启用回撤风险、均线压缩和级别冲突。"
+                    "监控最多 10 个品种，显示乖离共振、近均线、长短周期分歧及其收线变化。"
                 WidgetMode.Matrix ->
                     "选择最多 5 个品种和 4 个周期；上下滑动查看全部品种。"
                 WidgetMode.SingleSymbol ->
@@ -737,9 +737,9 @@ private fun SignalKindSwitchRow(
 }
 
 private fun signalKindLabel(kind: GuailiSignalKind): String = when (kind) {
-    GuailiSignalKind.Extreme -> "回撤 / 反弹风险"
-    GuailiSignalKind.Compression -> "均线压缩"
-    GuailiSignalKind.Conflict -> "级别冲突"
+    GuailiSignalKind.Extreme -> "上方 / 下方乖离共振"
+    GuailiSignalKind.Compression -> "多周期近均线"
+    GuailiSignalKind.Conflict -> "长短周期分歧"
 }
 
 @Composable

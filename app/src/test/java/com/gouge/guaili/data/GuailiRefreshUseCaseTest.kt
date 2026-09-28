@@ -1,6 +1,10 @@
 package com.gouge.guaili.data
 
 import com.gouge.guaili.settings.GuailiSettings
+import com.gouge.guaili.domain.GuailiSignalPhase
+import com.gouge.guaili.domain.guailiIntervalDurationMillis
+import java.time.Instant
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
@@ -9,6 +13,104 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GuailiRefreshUseCaseTest {
+    @Test
+    fun refreshAndPersistedEvolutionUseServerTimeAfterDeviceClockJumps() = runTest {
+        val settings = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"),
+            intervals = listOf("1", "2", "3", "5", "8"))
+        var serverTime = Instant.parse("2026-09-28T00:00:01Z").toEpochMilli()
+        var device = GuailiDeviceTime(serverTime - 86_000L, 100_000L, 7)
+        var stored: GuailiSnapshot? = null
+        val sink = object : GuailiSnapshotSink {
+            override fun currentDeviceTime() = device
+            override suspend fun read() = stored
+            override suspend fun save(snapshot: GuailiSnapshot) { stored = snapshot }
+        }
+        fun useCase() = GuailiRefreshUseCase(
+            fetcherFactory = GuailiFetcherFactory { GuailiFetcher {
+                device = device.copy(elapsedMillis = device.elapsedMillis + 300L)
+                GuailiResult.Success(GuailiResponse(settings.symbols, settings.intervals, 3, 500, true,
+                    timezone = "UTC", serverTime = serverTime,
+                    results = listOf(GuailiSymbolResult("BTCUSDT", settings.intervals.map { interval ->
+                        val duration = guailiIntervalDurationMillis(interval)
+                        val closedAt = serverTime / duration * duration - 1
+                        val closed = GuailiPoint(value = 12, guaili = 1.2, atr14 = 1.0, isClosed = true,
+                            rankFilter = true, longTrend = true, shortTrend = false,
+                            closeTime = Instant.ofEpochMilli(closedAt).toString())
+                        GuailiSeries(interval, latest = closed, data = listOf(closed.copy(
+                            closeTime = Instant.ofEpochMilli(closedAt - duration).toString()), closed))
+                    }))))
+            } }, snapshotSink = sink, nowMillis = { device.wallMillis },
+        )
+        val first = (useCase().refresh(settings) as GuailiResult.Success).value
+        assertEquals(serverTime, first.signals.single().observedAt)
+        assertEquals(300L, first.serverClock!!.requestDurationMillis)
+        val status = com.gouge.guaili.widget.widgetDataStatus(first, settings.symbols,
+            time = assessGuailiTime(first, device))
+        assertEquals(0, status.stale)
+        assertEquals(5, status.ready)
+        serverTime += 60_000L
+        device = device.copy(wallMillis = serverTime + 16 * 86_400_000L,
+            elapsedMillis = device.elapsedMillis + 60_000L)
+        val next = (useCase().refresh(settings) as GuailiResult.Success).value
+        assertEquals(GuailiSignalPhase.Ongoing, next.signals.single().phase)
+        assertEquals(serverTime, next.signals.single().observedAt)
+        assertEquals(next, stored)
+    }
+
+    @Test
+    fun persistedObservationSurvivesNewUseCaseAndResetsForIndicatorSettings() = runTest {
+        val settings = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"), intervals = listOf("1", "2", "3", "5", "8"))
+        val midnight = Instant.parse("2026-09-28T00:00:00Z").toEpochMilli()
+        var clock = midnight - 1_000
+        var value = 7
+        var stored: GuailiSnapshot? = null
+        val sink = object : GuailiSnapshotSink {
+            override suspend fun read() = stored
+            override suspend fun save(snapshot: GuailiSnapshot) {
+                stored = Json.decodeFromString<GuailiSnapshot>(Json.encodeToString(GuailiSnapshot.serializer(), snapshot))
+            }
+        }
+        fun useCase() = GuailiRefreshUseCase(
+            fetcherFactory = GuailiFetcherFactory { GuailiFetcher {
+                GuailiResult.Success(GuailiResponse(settings.symbols, settings.intervals, 3, 500, true, timezone = "UTC",
+                    results = listOf(GuailiSymbolResult("BTCUSDT", settings.intervals.map { interval ->
+                        val duration = guailiIntervalDurationMillis(interval)
+                        val closed = GuailiPoint(value = value, guaili = value / 10.0, atr14 = 1.0,
+                            isClosed = true, rankFilter = true, longTrend = true, shortTrend = false,
+                            closeTime = Instant.ofEpochMilli(clock / duration * duration - 1).toString())
+                        GuailiSeries(interval, latest = closed, data = listOf(closed.copy(
+                            closeTime = Instant.ofEpochMilli(clock / duration * duration - duration - 1).toString()), closed))
+                    }))))
+            } }, snapshotSink = sink, nowMillis = { clock },
+        )
+        useCase().refresh(settings)
+        assertTrue(stored!!.signals.isEmpty())
+        clock = midnight + 1_000
+        value = 12
+        useCase().refresh(settings)
+        assertEquals(GuailiSignalPhase.Formed, stored!!.signals.single().phase)
+        val eventTime = stored!!.signals.single().observedAt
+        clock += 5_000
+        useCase().refresh(settings.copy(autoRefreshSeconds = 10))
+        assertEquals(GuailiSignalPhase.Formed, stored!!.signals.single().phase)
+        assertEquals(eventTime, stored!!.signals.single().observedAt)
+        useCase().refresh(settings.copy(maLength = 50))
+        assertEquals(GuailiSignalPhase.FirstObserved, stored!!.signals.single().phase)
+    }
+
+    @Test fun profileIncludesEveryCalculationInputButNotPresentationChoices() {
+        val settings = GuailiSettings.defaults()
+        assertEquals(settings.signalProfile(), settings.copy(autoRefreshSeconds = 30,
+            intervals = settings.intervals.reversed()).signalProfile())
+        for (other in listOf(settings.copy(maType = "SMA"), settings.copy(maLength = 50),
+            settings.copy(atrLen = 14), settings.copy(atrPercentLen = 30), settings.copy(maxAtrRank = 50.0),
+            settings.copy(slopeMul = 0.3), settings.copy(useSlope = false), settings.copy(calcLimit = 1000),
+            settings.copy(closedOnly = true), settings.copy(baseUrl = "http://localhost:3005/"),
+            settings.copy(limit = 1000), settings.copy(intervals = listOf("1")))) {
+            assertTrue(settings.signalProfile() != other.signalProfile())
+        }
+    }
+
     @Test
     fun widgetRefreshReportsCacheFailureInsteadOfClaimingSuccess() = runTest {
         val settings = GuailiSettings.defaults()

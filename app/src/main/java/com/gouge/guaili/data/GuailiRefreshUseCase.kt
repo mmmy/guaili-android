@@ -1,6 +1,7 @@
 package com.gouge.guaili.data
 
 import com.gouge.guaili.domain.toTable
+import com.gouge.guaili.domain.GuailiSignalEvolution
 import com.gouge.guaili.settings.GuailiSettings
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,16 +38,60 @@ class GuailiRefreshUseCase(
             return GuailiResult.Failure(error.message ?: "Invalid base URL", error)
         }
 
+        val requestStarted = snapshotSink.currentDeviceTime()
         return when (val result = currentFetcher.fetch(settings)) {
             is GuailiResult.Failure -> result
             is GuailiResult.Success -> {
-                val snapshot = GuailiSnapshot(
+                val received = snapshotSink.currentDeviceTime()
+                val serverClock = result.value.serverTime?.let { serverTime ->
+                    if (received == null || requestStarted == null) null else GuailiServerClock(
+                        serverTimeMillis = serverTime,
+                        receivedElapsedMillis = received.elapsedMillis,
+                        bootCount = received.bootCount,
+                        requestDurationMillis = if (requestStarted.bootCount == received.bootCount) {
+                            received.elapsedMillis - requestStarted.elapsedMillis
+                        } else -1L,
+                    )
+                }
+                val baseSnapshot = GuailiSnapshot(
                     table = result.value.toTable(settings.symbols, settings.intervals),
                     updatedAt = nowMillis(),
                     timezone = result.value.timezone,
                     maType = settings.maType,
                     maLength = settings.maLength,
+                    signalProfile = settings.signalProfile(),
+                    signalRuleVersion = GuailiSignalEvolution.RuleVersion,
+                    serverClock = serverClock,
                 )
+                val time = received?.let { assessGuailiTime(baseSnapshot, it) }
+                val evaluatedAt = time?.nowMillis ?: baseSnapshot.updatedAt
+                val previous = try {
+                    snapshotSink.read()
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    null
+                }?.takeIf {
+                    it.signalProfile == baseSnapshot.signalProfile &&
+                        it.signalRuleVersion == baseSnapshot.signalRuleVersion &&
+                        it.timezone == baseSnapshot.timezone &&
+                        if (received == null) {
+                            !isGuailiSnapshotStale(it.updatedAt, baseSnapshot.updatedAt)
+                        } else {
+                            val priorTime = assessGuailiTime(it, received)
+                            time?.available == true && priorTime.available &&
+                                priorTime.cacheAgeMillis!! < GUAILI_STALE_AFTER_MILLIS &&
+                                it.serverClock!!.serverTimeMillis <= evaluatedAt
+                        }
+                }
+                val snapshot = baseSnapshot.copy(signals = if (time != null && !time.available) emptyList() else GuailiSignalEvolution.evaluate(
+                    table = baseSnapshot.table,
+                    nowMillis = evaluatedAt,
+                    timezone = baseSnapshot.timezone,
+                    previousTable = previous?.table,
+                    previousSignals = previous?.signals.orEmpty(),
+                    previousAt = previous?.serverClock?.serverTimeMillis ?: previous?.updatedAt ?: 0,
+                ))
                 if (requirePersistence) {
                     try {
                         snapshotSink.save(snapshot)
@@ -76,4 +121,13 @@ class GuailiRefreshUseCase(
     private object RefreshCoordinator {
         val mutex = Mutex()
     }
+}
+
+/** Presentation preferences don't reset observations; every indicator input does. */
+internal fun GuailiSettings.signalProfile(): String {
+    val inputs = listOf(baseUrl.trimEnd('/'), symbols.sorted(), intervals.sorted(), closedOnly,
+        limit.coerceAtLeast(3), calcLimit, maType.uppercase(), maLength, atrLen, atrPercentLen, maxAtrRank, slopeMul, useSlope)
+    return java.security.MessageDigest.getInstance("SHA-256")
+        .digest(inputs.joinToString("\u0000").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }

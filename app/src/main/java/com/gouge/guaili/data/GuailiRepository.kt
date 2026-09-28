@@ -24,7 +24,8 @@ class GuailiRepository(
                 api.getGuaili(
                     symbols = settings.symbols.joinToString(","),
                     intervals = settings.intervals.joinToString(","),
-                    limit = settings.limit.coerceAtLeast(2),
+                    // Live point + latest closed point + its ATR denominator.
+                    limit = settings.limit.coerceAtLeast(3),
                     calcLimit = settings.calcLimit,
                     closedOnly = settings.closedOnly,
                     maLength = settings.maLength,

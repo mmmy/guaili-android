@@ -32,7 +32,7 @@ class GuailiRepositoryTest {
             GuailiCall(
                 symbols = "BTCUSDT,ETHUSDT",
                 intervals = "1,5",
-                limit = 2,
+                limit = 3,
                 calcLimit = 300,
                 closedOnly = true,
                 maLength = 34,
@@ -48,13 +48,13 @@ class GuailiRepositoryTest {
     }
 
     @Test
-    fun fetchRequestsAtLeastTwoPointsForPreviousCandleTrend() = runTest {
+    fun fetchRequestsThreePointsForLiveClosedAndPreviousAtr() = runTest {
         val api = RecordingGuailiApiService()
         val repository = GuailiRepository(api)
 
         repository.fetch(GuailiSettings.defaults().copy(limit = 1))
 
-        assertEquals(2, api.calls.single().limit)
+        assertEquals(3, api.calls.single().limit)
     }
 
     @Test

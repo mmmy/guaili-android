@@ -7,7 +7,7 @@ import org.junit.Test
 
 class GuailiSignalsTest {
     @Test
-    fun detectsFiveLevelPositiveExtremeAsPullbackRisk() {
+    fun detectsFiveLevelPositiveDeviationStructure() {
         val table = table(
             values = mapOf("1" to 12, "2" to 11, "3" to 14, "5" to 10, "8" to 16),
             intervalOrder = listOf("8", "5", "3", "2", "1"),
@@ -19,12 +19,12 @@ class GuailiSignalsTest {
         assertEquals(GuailiSignalDirection.Positive, signal.primaryRun.direction)
         assertEquals(listOf("1", "2", "3", "5", "8"), signal.primaryRun.intervals)
         assertEquals("8", signal.anchorInterval)
-        assertFalse(signal.isStrong)
+        assertEquals(5, signal.totalLevelCount)
         assertFalse(signal.isEvidenceBacked)
     }
 
     @Test
-    fun sixLevelNegativeExtremeIsStrong() {
+    fun sixLevelsReportCoverageWithoutImplyingEvidence() {
         val table = table(
             values = mapOf("1" to -11, "2" to -12, "3" to -14, "5" to -10, "8" to -18, "10" to -13),
         )
@@ -33,7 +33,6 @@ class GuailiSignalsTest {
 
         assertEquals(GuailiSignalDirection.Negative, signal.primaryRun.direction)
         assertEquals(6, signal.primaryRun.levelCount)
-        assertTrue(signal.isStrong)
         assertFalse(signal.isEvidenceBacked)
     }
 
@@ -116,6 +115,45 @@ class GuailiSignalsTest {
         assertTrue(
             guailiIntervalDurationMillis("W") < guailiIntervalDurationMillis("10D"),
         )
+    }
+
+    @Test
+    fun nearMeanPrefersTightestRunAndUsesRawPrecisionForTies() {
+        val values = linkedMapOf("1" to 2, "2" to 2, "3" to 2, "5" to 2, "8" to 2,
+            "10" to 6, "15" to 0, "20" to 0, "30" to 0, "45" to 0, "60" to 0)
+        assertEquals("15", GuailiSignalDetector.detect(table(values)).single().primaryRun.startInterval)
+        val base = table(values.mapValues { if (it.key == "10") 6 else 0 })
+        val cells = base.closedCells.getValue(Symbol).mapValues { (interval, value) ->
+            value.copy(guaili = if (interval.toInt() < 10) 0.01 else 0.09)
+        }
+        assertEquals("1", GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to cells)))
+            .single().primaryRun.startInterval)
+    }
+
+    @Test
+    fun thresholdsRetainIntegerTruncationContract() {
+        for ((value, expected) in listOf(9 to null, 10 to GuailiSignalKind.Extreme,
+            -9 to null, -10 to GuailiSignalKind.Extreme, 2 to GuailiSignalKind.Compression,
+            -2 to GuailiSignalKind.Compression, 3 to null, -3 to null)) {
+            val result = GuailiSignalDetector.detect(table(listOf("1", "2", "3", "5", "8").associateWith { value }))
+            assertEquals("value=$value", expected, result.firstOrNull()?.kind)
+        }
+        val base = table(listOf("1", "2", "3", "5", "8").associateWith { 2 })
+        val raw = base.closedCells.getValue(Symbol).mapValues { it.value.copy(guaili = 0.299) }
+        assertEquals(GuailiSignalKind.Compression,
+            GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to raw))).single().kind)
+        assertTrue(GuailiSignalDetector.detect(table(listOf("1", "2", "3", "5").associateWith { 10 })).isEmpty())
+    }
+
+    @Test
+    fun invalidNumbersOrAtrDoNotMasqueradeAsNearMean() {
+        val base = table(listOf("1", "2", "3", "5", "8").associateWith { 0 })
+        val cell = base.closedCells.getValue(Symbol).getValue("3")
+        for (invalid in listOf(cell.copy(guaili = Double.NaN), cell.copy(atr14 = 0.0),
+            cell.copy(signalAtrReady = false), cell.copy(rankFilter = null))) {
+            val cells = base.closedCells.getValue(Symbol) + ("3" to invalid)
+            assertTrue(GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to cells))).isEmpty())
+        }
     }
 
     private fun table(

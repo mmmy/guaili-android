@@ -55,6 +55,8 @@ class GuailiTableMapperTest {
         assertEquals(0.0, cell?.guaili)
         assertEquals(true, cell?.longTrend)
         assertEquals(false, cell?.shortTrend)
+        assertEquals(false, cell?.signalLongTrend)
+        assertEquals(false, cell?.signalShortTrend)
         assertNull(table.cells["BTCUSDT"]?.get("5"))
     }
 
@@ -119,5 +121,21 @@ class GuailiTableMapperTest {
         assertEquals(4, table.cells["BTCUSDT"]?.get("1")?.value)
         assertEquals(-12, table.closedCells["BTCUSDT"]?.get("1")?.value)
         assertEquals(true, table.closedCells["BTCUSDT"]?.get("1")?.isClosed)
+    }
+
+    @Test
+    fun closedSignalUsesItsOwnTrendAndPrecedingAtrNotLiveOrLaggedTrend() {
+        val previous = GuailiPoint(value = 0, atr14 = 0.0, isClosed = true, longTrend = false, shortTrend = true)
+        val closed = GuailiPoint(value = 0, atr14 = 5.0, isClosed = true, longTrend = true, shortTrend = false)
+        val live = GuailiPoint(value = -15, atr14 = 2.0, isClosed = false, longTrend = false, shortTrend = true)
+        val response = GuailiResponse(listOf("BTCUSDT"), listOf("1"), 3, 500, false,
+            results = listOf(GuailiSymbolResult("BTCUSDT", listOf(
+                GuailiSeries("1", latest = live, data = listOf(previous, closed, live))))))
+        val cell = response.toTable(listOf("BTCUSDT"), listOf("1")).closedCells.getValue("BTCUSDT").getValue("1")
+        assertEquals(true, cell.signalLongTrend)
+        assertEquals(false, cell.signalShortTrend)
+        assertEquals(false, cell.longTrend)
+        assertEquals(true, cell.shortTrend)
+        assertEquals(false, cell.signalAtrReady)
     }
 }

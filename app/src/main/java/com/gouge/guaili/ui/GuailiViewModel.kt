@@ -7,6 +7,8 @@ import com.gouge.guaili.data.GuailiResult
 import com.gouge.guaili.data.GuailiSnapshotSink
 import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
 import com.gouge.guaili.data.isGuailiSnapshotStale
+import com.gouge.guaili.data.GuailiSnapshot
+import com.gouge.guaili.data.assessGuailiTime
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.GuailiSettingsSource
@@ -36,7 +38,7 @@ class GuailiViewModel(
         val repository = com.gouge.guaili.data.GuailiRepository.create(baseUrl)
         GuailiFetcher(repository::fetch)
     },
-    snapshotSink: GuailiSnapshotSink = GuailiSnapshotSink { },
+    private val snapshotSink: GuailiSnapshotSink = GuailiSnapshotSink { },
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val autoRefreshEnabled: Boolean = true,
     private val onSnapshotUpdated: suspend () -> Unit = { },
@@ -52,6 +54,7 @@ class GuailiViewModel(
     private val refresher = GuailiRefreshUseCase(fetcherFactory, snapshotSink, nowMillis)
     private var isForeground: Boolean = true
     private var hasObservedSettings = false
+    private var latestSnapshot: GuailiSnapshot? = null
 
     init {
         viewModelScope.launch {
@@ -150,6 +153,7 @@ class GuailiViewModel(
                 if (!sameDataRequest(_state.value.settings, settings)) return
 
                 val snapshot = result.value
+                latestSnapshot = snapshot
                 val table = snapshot.table
                 _state.value = _state.value.copy(
                     symbols = table.symbols,
@@ -157,7 +161,7 @@ class GuailiViewModel(
                     cells = table.cells,
                     isLoading = false,
                     isRefreshing = false,
-                    lastUpdatedAt = snapshot.updatedAt,
+                    lastUpdatedAt = snapshot.serverClock?.serverTimeMillis?.takeIf { it > 0 } ?: snapshot.updatedAt,
                     errorMessage = null,
                     isStale = false,
                 )
@@ -191,7 +195,12 @@ class GuailiViewModel(
 
     private fun updateStaleStatus(): Boolean {
         val updatedAt = _state.value.lastUpdatedAt ?: return false
-        val stale = isGuailiSnapshotStale(updatedAt, nowMillis())
+        val deviceTime = snapshotSink.currentDeviceTime()
+        val snapshot = latestSnapshot
+        val stale = if (deviceTime != null && snapshot?.serverClock != null) {
+            val time = assessGuailiTime(snapshot, deviceTime)
+            !time.available || time.cacheAgeMillis!! >= GUAILI_STALE_AFTER_MILLIS
+        } else isGuailiSnapshotStale(updatedAt, nowMillis())
         if (_state.value.isStale != stale) {
             _state.value = _state.value.copy(isStale = stale)
         }
@@ -205,7 +214,12 @@ class GuailiViewModel(
         if (!isForeground || !autoRefreshEnabled || _state.value.isStale) return
 
         val updatedAt = _state.value.lastUpdatedAt ?: return
-        val remainingMillis = (GUAILI_STALE_AFTER_MILLIS - (nowMillis() - updatedAt)).coerceAtLeast(1L)
+        val deviceTime = snapshotSink.currentDeviceTime()
+        val snapshot = latestSnapshot
+        val cacheAge = if (deviceTime != null && snapshot?.serverClock != null) {
+            assessGuailiTime(snapshot, deviceTime).cacheAgeMillis ?: GUAILI_STALE_AFTER_MILLIS
+        } else nowMillis() - updatedAt
+        val remainingMillis = (GUAILI_STALE_AFTER_MILLIS - cacheAge).coerceAtLeast(1L)
         staleStatusJob = viewModelScope.launch {
             delay(remainingMillis)
             updateStaleStatus()

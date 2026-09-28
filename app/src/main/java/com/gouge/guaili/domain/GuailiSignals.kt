@@ -12,38 +12,46 @@ enum class GuailiSignalKind {
     Conflict,
 }
 
+@Serializable
 enum class GuailiSignalDirection {
     Positive,
     Negative,
     Neutral,
 }
 
+@Serializable
 data class GuailiSignalRun(
     val direction: GuailiSignalDirection,
     val intervals: List<String>,
     val minAbsValue: Int,
+    val meanAbsGuaili: Double = minAbsValue / 10.0,
+    val maxAbsGuaili: Double = minAbsValue / 10.0,
 ) {
     val startInterval: String get() = intervals.first()
     val endInterval: String get() = intervals.last()
     val levelCount: Int get() = intervals.size
 }
 
+@Serializable
 data class GuailiSignal(
     val symbol: String,
     val kind: GuailiSignalKind,
     val runs: List<GuailiSignalRun>,
+    val phase: GuailiSignalPhase = GuailiSignalPhase.FirstObserved,
+    val trend: GuailiSignalTrend = GuailiSignalTrend.Unknown,
+    val transitionOnly: Boolean = false,
+    val observedAt: Long? = null,
 ) {
     val primaryRun: GuailiSignalRun get() = runs.first()
     val anchorInterval: String get() = runs.maxBy { guailiIntervalDurationMillis(it.endInterval) }.endInterval
     val totalLevelCount: Int get() = runs.sumOf(GuailiSignalRun::levelCount)
-    val isStrong: Boolean get() = kind == GuailiSignalKind.Extreme && primaryRun.levelCount >= 6
     // No versioned validation dataset is bundled. A timeframe alone is not evidence.
     val isEvidenceBacked: Boolean get() = false
 
     internal val priority: Int
         get() = when (kind) {
             GuailiSignalKind.Conflict -> 400
-            GuailiSignalKind.Extreme -> if (isStrong) 300 else 200
+            GuailiSignalKind.Extreme -> 200
             GuailiSignalKind.Compression -> 100
         } + totalLevelCount
 }
@@ -60,51 +68,38 @@ object GuailiSignalDetector {
         nowMillis: Long = System.currentTimeMillis(),
         timezone: String? = null,
     ): List<GuailiSignal> {
-        val orderedIntervals = table.intervals
-            .distinct()
-            .sortedBy(::guailiIntervalDurationMillis)
-
-        return selectedSymbols.distinct().mapNotNull { symbol ->
-            detectForSymbol(table, symbol, orderedIntervals, enabledKinds, nowMillis, timezone)
-        }.sortedWith(
+        return candidates(table, selectedSymbols, nowMillis, timezone)
+            .filter { it.kind in enabledKinds }
+            .groupBy { it.symbol }.values.map { signals -> signals.maxBy { it.priority } }.sortedWith(
             compareByDescending<GuailiSignal> { it.priority }
                 .thenBy { selectedSymbols.indexOf(it.symbol).let { index -> if (index < 0) Int.MAX_VALUE else index } },
         )
     }
 
-    private fun detectForSymbol(
+    fun candidates(
         table: GuailiTable,
-        symbol: String,
-        orderedIntervals: List<String>,
-        enabledKinds: Set<GuailiSignalKind>,
-        nowMillis: Long,
-        timezone: String?,
-    ): GuailiSignal? {
-        val cells = (table.closedCells[symbol]
-            ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true })
-            .filterValues { signalCellAvailability(it, nowMillis, timezone) == CellAvailability.Ready }
-        if (cells.isEmpty()) return null
-
-        val extremeRuns = extremeRuns(orderedIntervals, cells)
-        if (GuailiSignalKind.Conflict in enabledKinds) {
-            conflictRuns(extremeRuns)?.let { runs ->
-                return GuailiSignal(symbol, GuailiSignalKind.Conflict, runs)
+        selectedSymbols: List<String> = table.symbols,
+        nowMillis: Long = System.currentTimeMillis(),
+        timezone: String? = null,
+    ): List<GuailiSignal> {
+        val intervals = table.intervals.distinct().sortedBy(::guailiIntervalDurationMillis)
+        return selectedSymbols.distinct().flatMap { symbol ->
+            val cells = signalCells(table, symbol).filterValues {
+                signalCellAvailability(it, nowMillis, timezone) == CellAvailability.Ready && eligibleCell(it)
             }
+            val extremes = extremeRuns(intervals, cells)
+            buildList {
+                conflictRuns(extremes)?.let { add(GuailiSignal(symbol, GuailiSignalKind.Conflict, it)) }
+                extremes.groupBy { it.direction }.values.forEach { sameDirection ->
+                    sameDirection.maxWithOrNull(runComparator)?.let {
+                        add(GuailiSignal(symbol, GuailiSignalKind.Extreme, listOf(it)))
+                    }
+                }
+                compressionRuns(intervals, cells).maxWithOrNull(compressionComparator)?.let {
+                    add(GuailiSignal(symbol, GuailiSignalKind.Compression, listOf(it)))
+                }
+            }.map { it.copy(trend = signalTrend(cells[it.anchorInterval])) }
         }
-
-        if (GuailiSignalKind.Extreme in enabledKinds) {
-            extremeRuns.maxWithOrNull(runComparator)?.let { run ->
-                return GuailiSignal(symbol, GuailiSignalKind.Extreme, listOf(run))
-            }
-        }
-
-        if (GuailiSignalKind.Compression in enabledKinds) {
-            compressionRuns(orderedIntervals, cells).maxWithOrNull(runComparator)?.let { run ->
-                return GuailiSignal(symbol, GuailiSignalKind.Compression, listOf(run))
-            }
-        }
-
-        return null
     }
 
     private fun extremeRuns(
@@ -122,6 +117,8 @@ object GuailiSignalDetector {
             direction = direction,
             intervals = runIntervals,
             minAbsValue = runIntervals.minOf { abs(cells.getValue(it).value ?: 0) },
+            meanAbsGuaili = runIntervals.map { abs(signalGuaili(cells.getValue(it))) }.average(),
+            maxAbsGuaili = runIntervals.maxOf { abs(signalGuaili(cells.getValue(it))) },
         )
     }
 
@@ -140,6 +137,8 @@ object GuailiSignalDetector {
             direction = GuailiSignalDirection.Neutral,
             intervals = runIntervals,
             minAbsValue = runIntervals.minOf { abs(cells.getValue(it).value ?: 0) },
+            meanAbsGuaili = runIntervals.map { abs(signalGuaili(cells.getValue(it))) }.average(),
+            maxAbsGuaili = runIntervals.maxOf { abs(signalGuaili(cells.getValue(it))) },
         )
     }
 
@@ -189,12 +188,36 @@ object GuailiSignalDetector {
     }
 
     private fun eligibleCell(cell: GuailiCell): Boolean =
-        cell.value != null && cell.isClosed == true && cell.rankFilter == true
+        cell.value != null && cell.isClosed == true && cell.rankFilter == true &&
+            cell.signalAtrReady != false && (cell.guaili == null || cell.guaili.isFinite()) &&
+            (cell.atr14 == null || (cell.atr14.isFinite() && cell.atr14 > 0.0))
 
     private val runComparator =
         compareBy<GuailiSignalRun> { it.levelCount }
             .thenBy { it.minAbsValue }
             .thenBy { guailiIntervalDurationMillis(it.endInterval) }
+
+    private val compressionComparator =
+        compareBy<GuailiSignalRun> { it.levelCount }
+            .thenByDescending { it.maxAbsGuaili }
+            .thenByDescending { it.meanAbsGuaili }
+            .thenBy { guailiIntervalDurationMillis(it.endInterval) }
+}
+
+internal fun signalCells(table: GuailiTable, symbol: String): Map<String, GuailiCell> =
+    table.closedCells[symbol] ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true }
+
+internal fun signalGuaili(cell: GuailiCell): Double = cell.guaili ?: (cell.value ?: 0) / 10.0
+
+@Serializable
+enum class GuailiSignalTrend { Up, Down, Flat, Unknown }
+
+internal fun signalTrend(cell: GuailiCell?): GuailiSignalTrend = when {
+    cell?.signalLongTrend == null || cell.signalShortTrend == null -> GuailiSignalTrend.Unknown
+    cell.signalLongTrend && !cell.signalShortTrend -> GuailiSignalTrend.Up
+    cell.signalShortTrend && !cell.signalLongTrend -> GuailiSignalTrend.Down
+    !cell.signalLongTrend && !cell.signalShortTrend -> GuailiSignalTrend.Flat
+    else -> GuailiSignalTrend.Unknown
 }
 
 internal fun guailiIntervalDurationMillis(interval: String): Long {

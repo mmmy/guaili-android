@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.gouge.guaili.domain.GuailiTable
+import com.gouge.guaili.domain.GuailiSignal
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -27,16 +28,26 @@ data class GuailiSnapshot(
     val timezone: String? = null,
     val maType: String? = null,
     val maLength: Int? = null,
+    val signalProfile: String? = null,
+    val signalRuleVersion: String? = null,
+    val signals: List<GuailiSignal> = emptyList(),
+    val serverClock: GuailiServerClock? = null,
 )
 
 fun interface GuailiSnapshotSink {
     suspend fun save(snapshot: GuailiSnapshot)
+    suspend fun read(): GuailiSnapshot? = null
+    fun currentDeviceTime(): GuailiDeviceTime? = null
 }
 
 class GuailiSnapshotStore internal constructor(
     private val dataStore: DataStore<Preferences>,
+    private val deviceTime: () -> GuailiDeviceTime? = { null },
 ) : GuailiSnapshotSink {
-    constructor(context: Context) : this(context.applicationContext.guailiSnapshotDataStore)
+    constructor(context: Context) : this(context.applicationContext.guailiSnapshotDataStore,
+        { readGuailiDeviceTime(context.applicationContext) })
+
+    override fun currentDeviceTime(): GuailiDeviceTime? = deviceTime()
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -51,7 +62,7 @@ class GuailiSnapshotStore internal constructor(
         }
         .distinctUntilChanged()
 
-    suspend fun read(): GuailiSnapshot? = snapshots.first()
+    override suspend fun read(): GuailiSnapshot? = snapshots.first()
 
     override suspend fun save(snapshot: GuailiSnapshot) {
         val encoded = json.encodeToString(GuailiSnapshot.serializer(), snapshot)

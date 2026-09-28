@@ -15,6 +15,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.LocalSize
+import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
@@ -52,10 +53,9 @@ import com.gouge.guaili.data.GuailiSnapshotStore
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.domain.GuailiSignal
-import com.gouge.guaili.domain.GuailiSignalDetector
-import com.gouge.guaili.domain.GuailiSignalDirection
+import com.gouge.guaili.data.assessGuailiTime
+import com.gouge.guaili.data.readGuailiDeviceTime
 import com.gouge.guaili.domain.GuailiSignalKind
-import com.gouge.guaili.domain.GuailiSignalRun
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.SettingsStore
 import com.gouge.guaili.ui.GroupedLayoutDimensions
@@ -172,21 +172,19 @@ private fun GuailiWidgetContent(
         return
     }
     val size = LocalSize.current
-    val now = System.currentTimeMillis()
+    val deviceTime = readGuailiDeviceTime(LocalContext.current)
+    val time = snapshot?.let { assessGuailiTime(it, deviceTime) }
+    val now = time?.nowMillis ?: deviceTime.wallMillis
     val dataStatus = snapshot?.let {
-        widgetDataStatus(it, config.symbols, now, if (config.mode == WidgetMode.Matrix) config.intervals else it.table.intervals)
+        widgetDataStatus(it, config.symbols, now,
+            if (config.mode == WidgetMode.Matrix) config.intervals else it.table.intervals, time)
     }
     val configIssue = widgetConfigurationIssue(config, settings.symbols, settings.intervals)
-    val signals = if (snapshot == null || config.mode != WidgetMode.Signals || dataStatus?.snapshotStale == true || configIssue != null) {
+    val signals = if (snapshot == null || config.mode != WidgetMode.Signals || dataStatus?.snapshotStale == true ||
+        dataStatus?.timeUncertain == true || configIssue != null) {
         emptyList()
     } else {
-        GuailiSignalDetector.detect(
-            table = snapshot.table,
-            selectedSymbols = config.symbols,
-            enabledKinds = config.enabledSignalKinds,
-            nowMillis = now,
-            timezone = snapshot.timezone,
-        )
+        widgetSignals(snapshot, config, now)
     }
 
     val symbols = config.symbols
@@ -225,8 +223,9 @@ private fun GuailiWidgetContent(
             darkHeaderHeight = singleSymbolDimensions.symbolHeaderHeight,
             refreshStatus = refreshStatus,
             dataStatus = dataStatus,
+            signalCount = if (config.mode == WidgetMode.Signals) signals.size else null,
         )
-        Spacer(modifier = GlanceModifier.height(if (useGroupedStyle) 2.dp else 6.dp))
+        Spacer(modifier = GlanceModifier.height(if (useGroupedStyle) 2.dp else if (config.mode == WidgetMode.Signals) 3.dp else 6.dp))
         when {
             configIssue != null -> Text(
                 text = "$configIssue；点击编辑重新选择",
@@ -243,12 +242,6 @@ private fun GuailiWidgetContent(
                     )
                 } else {
                     LazyColumn(modifier = GlanceModifier.defaultWeight().fillMaxWidth()) {
-                        item {
-                            Text(
-                                "${signals.size}条信号 · 上下滑动查看全部" + if (dataStatus?.incomplete == true) " · 数据不全" else "",
-                                style = TextStyle(color = SecondaryText, fontSize = 9.sp),
-                            )
-                        }
                         items(signals) { signal ->
                             SignalRow(signal, movingAverageLabel(snapshot))
                         }
@@ -419,7 +412,12 @@ private fun WidgetHeader(
     darkHeaderHeight: androidx.compose.ui.unit.Dp? = null,
     refreshStatus: WidgetRefreshStatus = WidgetRefreshStatus(),
     dataStatus: WidgetDataStatus? = null,
+    signalCount: Int? = null,
 ) {
+    if (signalCount != null) {
+        SignalWidgetHeader(snapshot, appWidgetId, refreshStatus, dataStatus, signalCount)
+        return
+    }
     val feedbackText = refreshFeedbackText(refreshStatus, snapshotUpdatedAt = snapshot?.updatedAt)
     val refreshing = refreshStatus.phase == WidgetRefreshPhase.Refreshing && feedbackText == "刷新中…"
     val headerModifier = if (darkStyle && darkHeaderHeight != null) {
@@ -473,7 +471,8 @@ private fun WidgetHeader(
         )
     }
     Text(
-        text = widgetRefreshSummary(refreshStatus, snapshot?.updatedAt, dataStatus?.latestClosedAt),
+        text = widgetRefreshSummary(refreshStatus, snapshot?.updatedAt, dataStatus?.latestClosedAt,
+            fetchedDisplayAt = dataStatus?.fetchedAtMillis ?: snapshot?.updatedAt),
         style = TextStyle(color = when {
             refreshing -> AccentText
             feedbackText != null && refreshStatus.phase == WidgetRefreshPhase.Failure -> WarningText
@@ -487,8 +486,56 @@ private fun WidgetHeader(
     dataStatus?.warning?.let { warning ->
         Text(warning, style = TextStyle(color = WarningText, fontSize = 9.sp), maxLines = 2)
     }
+    dataStatus?.clockCorrection?.let { correction ->
+        Text(correction, style = TextStyle(color = if (darkStyle) GroupedSecondaryText else SecondaryText,
+            fontSize = 9.sp), maxLines = 1)
+    }
     }
 }
+
+@Composable
+internal fun SignalWidgetHeader(snapshot: GuailiSnapshot?, appWidgetId: Int, refreshStatus: WidgetRefreshStatus,
+    dataStatus: WidgetDataStatus?, signalCount: Int) {
+    val width = LocalSize.current.width
+    val narrow = width < 250.dp
+    val wide = width >= 320.dp
+    val feedback = refreshFeedbackText(refreshStatus, snapshotUpdatedAt = snapshot?.updatedAt)
+    val refreshing = feedback == "刷新中…"
+    Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = when { wide -> "乖离信号 · ${signalCount}条"; narrow -> "信号·${signalCount}条"; else -> "信号 · ${signalCount}条" },
+            style = TextStyle(color = PrimaryText, fontSize = if (wide) 13.sp else if (narrow) 11.sp else 12.sp,
+                fontWeight = FontWeight.Bold),
+            modifier = GlanceModifier.defaultWeight().padding(end = 4.dp)
+                .clickable(actionStartActivity(mainActivityIntent())), maxLines = 1,
+        )
+        Text(
+            text = singleLineRefreshLabel(refreshStatus, snapshot, dataStatus, wide, narrow),
+            style = TextStyle(color = if (feedback?.contains("失败") == true || feedback?.contains("超时") == true)
+                WarningText else if (feedback == "刷新成功") RefreshSuccessText else SecondaryText, fontSize = 9.sp),
+            modifier = GlanceModifier.padding(horizontal = if (narrow) 3.dp else 4.dp, vertical = 3.dp)
+                .clickable(actionStartActivity(widgetStatusIntent(appWidgetId))), maxLines = 1,
+        )
+        Text(
+            text = singleLineStatusLabel(dataStatus, narrow),
+            style = TextStyle(color = if (dataStatus?.incomplete == true) WarningText else AccentText, fontSize = 9.sp),
+            modifier = GlanceModifier.padding(horizontal = if (narrow) 3.dp else 4.dp, vertical = 3.dp)
+                .clickable(actionStartActivity(widgetStatusIntent(appWidgetId))), maxLines = 1,
+        )
+        Text("编辑", style = TextStyle(color = AccentText, fontSize = if (narrow) 9.sp else 10.sp),
+            modifier = GlanceModifier.padding(horizontal = 2.dp, vertical = 3.dp)
+                .clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))), maxLines = 1)
+        Text(if (refreshing) "⟳" else if (narrow) "↻" else "↻刷新",
+            style = TextStyle(color = AccentText, fontSize = 11.sp),
+            modifier = GlanceModifier.padding(horizontal = 4.dp, vertical = 3.dp)
+                .then(if (refreshing) GlanceModifier else GlanceModifier.clickable(actionRunCallback<RefreshWidgetAction>())),
+            maxLines = 1)
+    }
+}
+
+private fun widgetStatusIntent(appWidgetId: Int): Intent =
+    Intent().setClassName("com.gouge.guaili", GuailiWidgetStatusActivity::class.java.name)
+        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
 
 internal fun refreshFeedbackText(
     status: WidgetRefreshStatus,
@@ -511,9 +558,10 @@ internal fun widgetRefreshSummary(
     snapshotUpdatedAt: Long?,
     latestClosedAt: Long?,
     nowMillis: Long = System.currentTimeMillis(),
+    fetchedDisplayAt: Long? = snapshotUpdatedAt,
 ): String {
     val feedback = refreshFeedbackText(status, nowMillis, snapshotUpdatedAt)
-    val fetched = snapshotUpdatedAt?.let {
+    val fetched = fetchedDisplayAt?.let {
         DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it))
     }
     return when {
@@ -706,6 +754,8 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
         Text(
             text = when {
                 !hasEnabledSignalKinds -> "未启用信号类型"
+                dataStatus?.timeUncertain == true -> "时间暂不可确认"
+                (dataStatus?.future ?: 0) > 0 -> "行情时间异常"
                 dataStatus?.incomplete == true -> "数据不足，无法完整判断"
                 else -> "暂无符合条件的信号"
             },
@@ -727,77 +777,103 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
 }
 
 @Composable
-private fun SignalRow(signal: GuailiSignal, maLabel: String) {
-    Row(
+internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
+    val narrow = LocalSize.current.width < 250.dp
+    val wide = LocalSize.current.width >= 320.dp
+    Column(modifier = GlanceModifier.fillMaxWidth()) {
+    Column(
         modifier = GlanceModifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp)
             .background(SignalBackground)
-            .padding(horizontal = 7.dp, vertical = 5.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
             .clickable(actionStartActivity(klineIntent(signal.symbol, signal.anchorInterval))),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = displaySymbol(signal.symbol),
             style = TextStyle(
                 color = PrimaryText,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
             ),
-            modifier = GlanceModifier.width(50.dp),
+            modifier = if (narrow) GlanceModifier.defaultWeight() else GlanceModifier.width(52.dp),
             maxLines = 1,
         )
-        Column(modifier = GlanceModifier.defaultWeight()) {
+        if (!narrow) {
+            Spacer(modifier = GlanceModifier.width(6.dp))
             Text(
                 text = signalTitle(signal),
                 style = TextStyle(
                     color = signalTitleColor(signal),
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                 ),
-                maxLines = 1,
-            )
-            Text(
-                text = signalSummary(signal, maLabel),
-                style = TextStyle(color = SecondaryText, fontSize = 9.sp),
+                modifier = GlanceModifier.defaultWeight(),
                 maxLines = 1,
             )
         }
+        Spacer(modifier = GlanceModifier.width(6.dp))
+        Text(
+            text = "${signal.totalLevelCount}级" + if (narrow && signal.transitionOnly) " · 变化" else "",
+            style = TextStyle(color = SecondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            modifier = GlanceModifier.background(SignalBadgeBackground).padding(horizontal = 4.dp, vertical = 2.dp),
+            maxLines = 1,
+        )
+        }
+        Spacer(modifier = GlanceModifier.height(2.dp))
+        if (narrow) {
+            Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(signalTitle(signal).removeSuffix(" · 变化"),
+                    style = TextStyle(color = signalTitleColor(signal), fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                    modifier = GlanceModifier.defaultWeight(), maxLines = 1)
+                Spacer(modifier = GlanceModifier.width(4.dp))
+                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = 9.sp), maxLines = 1)
+            }
+            Spacer(modifier = GlanceModifier.height(2.dp))
+        }
+        if (signal.kind == GuailiSignalKind.Conflict) {
+            if (wide) {
+            Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                signal.runs.forEachIndexed { index, run ->
+                    if (index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
+                    Text(signalRunLabel(run, index == 0, signal.transitionOnly),
+                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp,
+                            textAlign = if (index == 0) TextAlign.Start else TextAlign.End),
+                        modifier = GlanceModifier.defaultWeight(), maxLines = 1)
+                }
+            }
+            } else {
+                signal.runs.forEachIndexed { index, run ->
+                    Text(signalRunLabel(run, index == 0, signal.transitionOnly),
+                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
+                        modifier = GlanceModifier.fillMaxWidth(), maxLines = 1)
+                }
+            }
+            Spacer(modifier = GlanceModifier.height(2.dp))
+        }
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (signal.kind != GuailiSignalKind.Conflict) {
+                Text(signalRangeLabel(signal), style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
+                    modifier = GlanceModifier.defaultWeight(), maxLines = 1)
+                Spacer(modifier = GlanceModifier.width(8.dp))
+            }
+            Text(
+                text = signalCompactTrend(signal, maLabel),
+                style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp,
+                    textAlign = if (wide && signal.kind != GuailiSignalKind.Conflict) TextAlign.Center else TextAlign.Start),
+                modifier = if (signal.kind == GuailiSignalKind.Conflict || wide) GlanceModifier.defaultWeight() else GlanceModifier,
+                maxLines = if (narrow && signal.kind == GuailiSignalKind.Conflict) 2 else 1,
+            )
+            if (!narrow) {
+                Spacer(modifier = GlanceModifier.width(8.dp))
+                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = 10.sp,
+                    textAlign = TextAlign.End), modifier = if (wide && signal.kind != GuailiSignalKind.Conflict)
+                        GlanceModifier.defaultWeight() else GlanceModifier, maxLines = 1)
+            }
+        }
     }
-}
-
-private fun signalTitle(signal: GuailiSignal): String = when (signal.kind) {
-    GuailiSignalKind.Conflict -> "级别冲突"
-    GuailiSignalKind.Compression -> "均线压缩"
-    GuailiSignalKind.Extreme -> when (signal.primaryRun.direction) {
-        GuailiSignalDirection.Positive -> if (signal.isStrong) "强回调风险 ↓" else "回调风险 ↓"
-        GuailiSignalDirection.Negative -> if (signal.isStrong) "强反弹风险 ↑" else "反弹风险 ↑"
-        GuailiSignalDirection.Neutral -> "极端风险"
+    Spacer(modifier = GlanceModifier.height(5.dp))
     }
-}
-
-private fun signalSummary(signal: GuailiSignal, maLabel: String): String = when (signal.kind) {
-    GuailiSignalKind.Conflict -> "观察 · " + signal.runs.joinToString(" · ") { run ->
-        "${runRange(run)}${directionShortName(run.direction)}"
-    }
-    GuailiSignalKind.Extreme ->
-        signalEvidencePrefix(signal) +
-            "${runRange(signal.primaryRun)} · ${signal.primaryRun.levelCount}级${directionShortName(signal.primaryRun.direction)}"
-    GuailiSignalKind.Compression ->
-        signalEvidencePrefix(signal) +
-            "${runRange(signal.primaryRun)} · ${signal.primaryRun.levelCount}级接近$maLabel"
-}
-
-private fun signalEvidencePrefix(signal: GuailiSignal): String =
-    if (signal.isEvidenceBacked) "" else "观察 · "
-
-private fun runRange(run: GuailiSignalRun): String =
-    "${displayInterval(run.startInterval)}–${displayInterval(run.endInterval)}"
-
-private fun directionShortName(direction: GuailiSignalDirection): String = when (direction) {
-    GuailiSignalDirection.Positive -> "正极端"
-    GuailiSignalDirection.Negative -> "负极端"
-    GuailiSignalDirection.Neutral -> "近零"
 }
 
 private fun signalTitleColor(signal: GuailiSignal): ColorProvider = when (signal.kind) {
@@ -972,6 +1048,7 @@ private val GroupedShortTrendText = ColorProvider(Color(0xFFFF8A80))
 private val GroupedConflictTrendText = ColorProvider(Color(0xFFFFD740))
 private val GroupedNeutralTrendText = ColorProvider(Color(0xFFD1D5DB))
 private val SignalBackground = dayNightColor(0xFFF1F3F5, 0xFF24272D)
+private val SignalBadgeBackground = dayNightColor(0xFFE3E7EC, 0xFF343B45)
 private val PrimaryText = dayNightColor(0xFF17191D, 0xFFF3F4F6)
 private val SecondaryText = dayNightColor(0xFF62666D, 0xFFB7BBC3)
 private val AccentText = dayNightColor(0xFF315EFB, 0xFF9DB2FF)

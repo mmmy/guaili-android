@@ -40,6 +40,9 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/guaili_widget_info" />
         </receiver>
+        <activity
+            android:name=".widget.GuailiWidgetStatusActivity"
+            android:exported="false" />
         <receiver
             android:name=".widget.DecisionReminderReceiver"
             android:exported="false" />

@@ -21,7 +21,7 @@ fun parseGuailiTime(value: String?, timezone: String? = null): Long? {
         }.getOrNull()
 }
 
-enum class CellAvailability { Ready, Missing, Unclosed, Filtered, UnknownTime, Stale }
+enum class CellAvailability { Ready, Missing, Unclosed, Filtered, UnknownTime, Stale, Invalid, Future }
 
 fun signalCellAvailability(
     cell: GuailiCell?,
@@ -36,9 +36,13 @@ fun signalCellAvailability(
     // A last closed candle is naturally up to one period old. Do not infer exchange
     // sessions from a symbol name: without a calendar, stopped data is conservatively stale.
     val grace = (period / 10).coerceIn(5_000L, 60_000L)
-    if (closedAt > nowMillis + 2_000L || nowMillis - closedAt > period + grace) {
+    if (closedAt > nowMillis + 2_000L) return CellAvailability.Future
+    if (nowMillis - closedAt > period + grace) {
         return CellAvailability.Stale
     }
-    if (cell.rankFilter != true) return CellAvailability.Filtered
+    if (cell.signalAtrReady == false || cell.guaili?.isFinite() == false ||
+        cell.atr14?.let { !it.isFinite() || it <= 0.0 } == true) return CellAvailability.Invalid
+    if (cell.rankFilter == null) return CellAvailability.Invalid
+    if (!cell.rankFilter) return CellAvailability.Filtered
     return CellAvailability.Ready
 }

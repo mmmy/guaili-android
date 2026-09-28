@@ -115,7 +115,7 @@ class WidgetBusinessRulesTest {
     }
 
     @Test fun futureTimestampAndUnsupportedPeriodAreRejected() {
-        assertEquals(CellAvailability.Stale, signalCellAvailability(cell(age = -60_000L), now))
+        assertEquals(CellAvailability.Future, signalCellAvailability(cell(age = -60_000L), now))
         assertEquals(CellAvailability.UnknownTime, signalCellAvailability(cell("nonsense"), now))
     }
 
