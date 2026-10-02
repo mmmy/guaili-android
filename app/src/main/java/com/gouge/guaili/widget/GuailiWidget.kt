@@ -53,6 +53,7 @@ import com.gouge.guaili.data.GuailiSnapshotStore
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.domain.GuailiSignal
+import com.gouge.guaili.domain.GuailiSignalDirection
 import com.gouge.guaili.data.assessGuailiTime
 import com.gouge.guaili.data.readGuailiDeviceTime
 import com.gouge.guaili.domain.GuailiSignalKind
@@ -878,9 +879,12 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
 
 private fun signalTitleColor(signal: GuailiSignal): ColorProvider = when (signal.kind) {
     GuailiSignalKind.Compression -> AccentText
-    GuailiSignalKind.Extreme,
-    GuailiSignalKind.Conflict,
-    -> WarningText
+    GuailiSignalKind.Extreme -> when (signal.primaryRun.direction) {
+        GuailiSignalDirection.Positive -> SignalPositiveText
+        GuailiSignalDirection.Negative -> SignalNegativeText
+        GuailiSignalDirection.Neutral -> SecondaryText
+    }
+    GuailiSignalKind.Conflict -> WarningText
 }
 
 @Composable
@@ -1048,6 +1052,8 @@ private val GroupedShortTrendText = ColorProvider(Color(0xFFFF8A80))
 private val GroupedConflictTrendText = ColorProvider(Color(0xFFFFD740))
 private val GroupedNeutralTrendText = ColorProvider(Color(0xFFD1D5DB))
 private val SignalBackground = dayNightColor(0xFFF1F3F5, 0xFF24272D)
+private val SignalPositiveText = dayNightColor(0xFF06722D, 0xFF69F0AE)
+private val SignalNegativeText = dayNightColor(0xFFB0003A, 0xFFFF8A80)
 private val SignalBadgeBackground = dayNightColor(0xFFE3E7EC, 0xFF343B45)
 private val PrimaryText = dayNightColor(0xFF17191D, 0xFFF3F4F6)
 private val SecondaryText = dayNightColor(0xFF62666D, 0xFFB7BBC3)

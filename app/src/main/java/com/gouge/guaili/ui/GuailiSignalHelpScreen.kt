@@ -73,6 +73,7 @@ fun GuailiSignalHelpScreen(onBack: () -> Unit) {
                     title = "上方 / 下方乖离共振",
                     accent = MaterialTheme.colorScheme.error,
                 ) {
+                    HelpBullet("上方乖离共振用绿色，下方用红色，与矩阵正负乖离的颜色一致；颜色表示乖离方向。")
                     HelpBullet("连续至少 5 个相邻级别的整数值全部 ≥ 10 或全部 ≤ -10。表示整根 K 线在各自均线上方或下方，最近边缘距均线至少为前一根 ATR14 的 1 倍。")
                     HelpBullet("展示实际级别数和覆盖区间；6 级表示覆盖更多周期，不标注为更强的反转概率。相邻周期共享行情，不是独立确认。")
                     HelpBullet("乖离值为整根 K 线最近边缘到均线的距离，除以前一根 ATR14；整数值由原始乖离乘 10 后向零截断，不是百分比。")
