@@ -96,4 +96,73 @@ class ServerSignalsPresentationTest {
         assertEquals("多周期近均线", signalTitle(displayed))
         assertEquals("持续近零", signalPhaseLabel(displayed))
     }
+
+    private fun unavailable(availability: String, reason: String?, dataStatus: String = availability): ServerSymbolSignals =
+        row.copy(dataStatus = dataStatus, perIntervalQuality = row.perIntervalQuality.map {
+            it.copy(availability = availability, reason = reason, historyCount = 12)
+        })
+
+    @Test fun expired_market_is_not_described_as_history_warmup_or_a_quiet_market() {
+        val expired = unavailable("stale", "live market updates are stale")
+        val shown = state(snapshot(response.copy(status = "degraded", results = listOf(expired))))
+        assertTrue(shown.signals.isEmpty())
+        assertEquals("实时行情已过期，暂无法判断信号", shown.message)
+        assertEquals("行情过期", serverWidgetStatusLabel(shown, false))
+        assertFalse(shown.warning!!.contains("预热"))
+        assertTrue(serverSignalQualityLines(expired).single().contains("等待新的实时行情"))
+    }
+
+    @Test fun recovering_connection_is_distinct_from_waiting_for_history_or_first_market_snapshot() {
+        val recovering = unavailable("recovering", "market stream is recovering")
+        val recovery = state(snapshot(response.copy(status = "degraded", results = listOf(recovering))))
+        assertEquals("连接恢复中", serverWidgetStatusLabel(recovery, false))
+        assertEquals("行情连接恢复中，暂无法判断信号", recovery.message)
+        val waiting = unavailable("warming_up", "waiting for a live trade snapshot")
+        val waitingState = state(snapshot(response.copy(status = "degraded", results = listOf(waiting))))
+        assertEquals("等待行情", serverWidgetStatusLabel(waitingState, false))
+        assertFalse(waitingState.warning!!.contains("历史"))
+    }
+
+    @Test fun history_shortage_lists_actual_contiguous_count_and_indicator_warmup_is_separate() {
+        val history = unavailable("warming_up", "insufficient contiguous closed history")
+        val shown = state(snapshot(response.copy(status = "degraded", results = listOf(history))))
+        assertEquals("历史预热", serverWidgetStatusLabel(shown, false))
+        assertTrue(serverSignalQualityLines(history).single().contains("3m（连续历史12根）"))
+        val indicator = unavailable("warming_up", "volatility rank is unavailable")
+        assertEquals("指标预热", serverWidgetStatusLabel(state(snapshot(
+            response.copy(status = "degraded", results = listOf(indicator)))), false))
+    }
+
+    @Test fun partial_market_expiry_and_history_shortage_preserve_unaffected_signals_and_list_both_causes() {
+        val partial = row.copy(dataStatus = "degraded", perIntervalQuality = row.perIntervalQuality + listOf(
+            ServerIntervalEvidence("D", "stale", "live market updates are stale"),
+            ServerIntervalEvidence("W", "warming_up", "insufficient contiguous closed history", historyCount = 7)))
+        val shown = state(snapshot(response.copy(status = "degraded", results = listOf(partial))))
+        assertEquals(1, shown.signals.size)
+        assertEquals("部分过期", serverWidgetStatusLabel(shown, false))
+        assertTrue(shown.warning!!.contains("1个周期实时行情过期"))
+        assertTrue(shown.warning!!.contains("1个周期连续历史不足"))
+        assertEquals(2, serverSignalQualityLines(partial).size)
+    }
+
+    @Test fun sampling_timeout_and_phone_cache_expiry_are_different_messages() {
+        val sampler = state(snapshot(response.copy(evaluatedAt = now - 20_000)))
+        assertEquals("采样超时", serverWidgetStatusLabel(sampler, false))
+        assertTrue(sampler.message.contains("服务器采样结果"))
+        val cache = state(current = device.copy(elapsedMillis = 22_000))
+        assertEquals("快照过期", serverWidgetStatusLabel(cache, false))
+        assertTrue(cache.message.contains("手机快照"))
+        val future = state(snapshot(response.copy(evaluatedAt = now + 10_000)))
+        assertEquals("时间异常", serverWidgetStatusLabel(future, false))
+    }
+
+    @Test fun filtered_periods_are_not_mislabeled_as_a_data_failure() {
+        val filtered = row.copy(perIntervalQuality = row.perIntervalQuality.map { it.copy(availability = "filtered") })
+        val shown = state(snapshot(response.copy(results = listOf(filtered))))
+        assertTrue(shown.signals.isEmpty())
+        assertEquals("ready", shown.status)
+        assertEquals("校时✓", serverWidgetStatusLabel(shown, false))
+        assertNull(shown.warning)
+        assertTrue(serverSignalQualityLines(filtered).isEmpty())
+    }
 }

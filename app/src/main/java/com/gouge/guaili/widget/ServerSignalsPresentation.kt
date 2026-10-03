@@ -21,7 +21,74 @@ internal data class ServerSignalsWidgetState(
     val fetchedAt: Long? = null,
     val nowMillis: Long? = null,
     val evaluationIntervalMs: Long = 5_000L,
+    val qualityLabel: String? = null,
+    val compactQualityLabel: String? = null,
 )
+
+internal enum class ServerSignalDataIssue(val label: String, val compactLabel: String,
+    val description: String, val emptyMessage: String) {
+    Recovering("连接恢复中", "恢复中", "行情连接恢复中", "行情连接恢复中，暂无法判断信号"),
+    SamplingStale("采样超时", "采样旧", "服务器采样结果过期", "服务器采样结果已过期，暂无法判断信号"),
+    MarketStale("行情过期", "行情旧", "实时行情过期", "实时行情已过期，暂无法判断信号"),
+    Invalid("数据异常", "异常", "行情或计算数据异常", "行情或计算数据异常，暂无法判断信号"),
+    Gap("历史断档", "断档", "连续历史存在缺口", "连续历史存在缺口，暂无法判断信号"),
+    Missing("动态K缺失", "缺K", "当前动态K缺失", "当前动态K缺失，暂无法判断信号"),
+    WaitingMarket("等待行情", "待行情", "等待实时行情快照", "尚未收到实时行情，暂无法判断信号"),
+    HistoryWarmup("历史预热", "预热", "连续历史不足", "连续历史不足，暂无法判断信号"),
+    IndicatorWarmup("指标预热", "预热", "指标尚未完成预热", "指标尚未完成预热，暂无法判断信号"),
+    Unknown("等待数据", "待数据", "数据状态待确认", "数据状态待确认，暂无法判断信号"),
+}
+
+internal fun serverSignalDataIssue(evidence: ServerIntervalEvidence): ServerSignalDataIssue? =
+    when (evidence.availability) {
+        "ready", "filtered" -> null
+        "recovering" -> ServerSignalDataIssue.Recovering
+        "stale" -> if (evidence.reason == "signal sampling result is stale")
+            ServerSignalDataIssue.SamplingStale else ServerSignalDataIssue.MarketStale
+        "invalid" -> ServerSignalDataIssue.Invalid
+        "gap" -> ServerSignalDataIssue.Gap
+        "missing" -> ServerSignalDataIssue.Missing
+        "warming_up" -> when (evidence.reason) {
+            "insufficient contiguous closed history" -> ServerSignalDataIssue.HistoryWarmup
+            "volatility rank is unavailable" -> ServerSignalDataIssue.IndicatorWarmup
+            "waiting for a live trade snapshot" -> ServerSignalDataIssue.WaitingMarket
+            else -> ServerSignalDataIssue.Unknown
+        }
+        else -> ServerSignalDataIssue.Unknown
+    }
+
+internal fun serverSignalQualityGroups(row: ServerSymbolSignals): Map<ServerSignalDataIssue, List<ServerIntervalEvidence>> {
+    val groups = row.perIntervalQuality.mapNotNull { evidence ->
+        serverSignalDataIssue(evidence)?.let { it to evidence }
+    }.groupBy({ it.first }, { it.second }).toSortedMap(compareBy { it.ordinal })
+    if (groups.isEmpty() && row.dataStatus !in setOf("ready", "degraded")) {
+        val fallback = serverSignalDataIssue(ServerIntervalEvidence("", row.dataStatus))
+        if (fallback != null) groups[fallback] = emptyList()
+    } else if (groups.isEmpty() && row.dataStatus == "degraded") {
+        groups[ServerSignalDataIssue.Unknown] = emptyList()
+    }
+    return groups
+}
+
+internal fun serverSignalQualityLines(row: ServerSymbolSignals): List<String> =
+    serverSignalQualityGroups(row).map { (issue, evidence) ->
+        val periods = evidence.joinToString("、") {
+            serverDisplayInterval(it.interval) + if (issue == ServerSignalDataIssue.HistoryWarmup)
+                "（连续历史${it.historyCount}根）" else ""
+        }
+        val reason = when (issue) {
+            ServerSignalDataIssue.Recovering -> "等待行情连接和数据恢复"
+            ServerSignalDataIssue.SamplingStale -> "等待服务器恢复采样"
+            ServerSignalDataIssue.MarketStale -> "等待新的实时行情"
+            ServerSignalDataIssue.WaitingMarket -> "尚未收到实时行情快照"
+            ServerSignalDataIssue.Missing -> if (evidence.any {
+                it.reason == "current candle does not cover this market time"
+            }) "动态K尚未覆盖最新行情时间" else null
+            else -> null
+        }
+        listOfNotNull(issue.description + if (periods.isNotBlank()) "：$periods" else "", reason)
+            .joinToString("；")
+    }
 
 internal fun serverSignalsWidgetState(
     snapshot: ServerSignalsSnapshot?,
@@ -56,8 +123,16 @@ internal fun serverSignalsWidgetState(
     val evaluatedAt = response.evaluatedAt
     if (time.cacheAgeMillis == null || time.cacheAgeMillis > lifetime ||
         evaluatedAt != null && (evaluatedAt > now + 2_000L || now - evaluatedAt > lifetime)) {
-        return ServerSignalsWidgetState("stale", "服务器快照已过期，请刷新", "桌面更新受系统限制，可手动刷新",
-            sampledAt = evaluatedAt, fetchedAt = time.fetchedAtMillis, nowMillis = now)
+        val cached = time.cacheAgeMillis == null || time.cacheAgeMillis > lifetime
+        val future = evaluatedAt != null && evaluatedAt > now + 2_000L
+        return ServerSignalsWidgetState("stale",
+            when { future -> "服务器采样时间异常，暂无法判断信号";
+                cached -> "手机快照已过期，请刷新"; else -> "服务器采样结果已过期，暂无法判断信号" },
+            when { future -> "采样时间晚于服务器校准时间";
+                cached -> "桌面更新受系统限制，可手动刷新"; else -> "等待服务器恢复采样" },
+            warning = failureMessage, sampledAt = evaluatedAt, fetchedAt = time.fetchedAtMillis, nowMillis = now,
+            qualityLabel = when { future -> "时间异常"; cached -> "快照过期"; else -> "采样超时" },
+            compactQualityLabel = when { future -> "时间异常"; cached -> "缓存旧"; else -> "采样旧" })
     }
     if (response.candleMode != "live" || response.status !in setOf("ready", "degraded", "warming_up")) {
         return ServerSignalsWidgetState("unknown", "服务器状态暂不可判断", "刷新或检查服务器版本",
@@ -76,10 +151,18 @@ internal fun serverSignalsWidgetState(
         }.distinctBy { it.id }).map { ServerWidgetSignal(row.symbol, it) }
     }.sortedWith(compareByDescending<ServerWidgetSignal> { serverWidgetPriority(it.signal) }
         .thenBy { config.symbols.indexOf(it.symbol) })
-    val incomplete = selected.any { it.dataStatus != "ready" } || missing.isNotEmpty()
+    val qualityGroups = selected.map { serverSignalQualityGroups(it) }
+    val issues = qualityGroups.flatMap { it.keys }.distinct().sortedBy { it.ordinal }
+    val hasReady = selected.any { row -> row.perIntervalQuality.any { it.availability == "ready" } }
+    val incomplete = selected.any { it.dataStatus != "ready" } || issues.isNotEmpty() || missing.isNotEmpty()
+    val qualitySummary = issues.map { issue ->
+        val count = qualityGroups.sumOf { it[issue]?.size ?: 0 }
+        val affectedSymbols = qualityGroups.count { issue in it }
+        (if (count > 0) "${count}个周期" else "${affectedSymbols}个品种") + issue.description
+    }
     val warning = listOfNotNull(
         missing.takeIf { it.isNotEmpty() }?.let { "服务器未计算：${it.joinToString("、") { symbol -> symbol.removeSuffix("USDT") }}" },
-        if (incomplete && selected.isNotEmpty()) "部分周期正在预热或暂不可用" else null,
+        qualitySummary.takeIf { it.isNotEmpty() }?.joinToString(" · "),
         failureMessage,
     ).joinToString(" · ").takeIf { it.isNotBlank() }
     val warming = evaluatedAt == null || response.status == "warming_up" ||
@@ -87,9 +170,10 @@ internal fun serverSignalsWidgetState(
     val message = when {
         config.symbols.isEmpty() -> "请先选择监控品种"
         config.enabledSignalKinds.isEmpty() -> "未启用信号类型"
-        warming -> "服务器正在准备实时信号"
+        evaluatedAt == null -> "服务器尚未完成首次采样"
         selected.isEmpty() -> "所选品种暂无服务器数据"
-        selected.all { it.dataStatus in setOf("stale", "recovering", "invalid") } -> "服务器行情暂不可判断"
+        !hasReady && issues.isNotEmpty() -> issues.first().emptyMessage
+        incomplete -> "可用周期暂无符合条件的信号"
         else -> "暂无符合条件的服务器信号"
     }
     return ServerSignalsWidgetState(
@@ -97,6 +181,13 @@ internal fun serverSignalsWidgetState(
         message = message, detail = "实时动态K · 服务器采样${response.evaluationIntervalMs / 1000}秒",
         signals = signals, warning = warning, sampledAt = evaluatedAt, fetchedAt = time.fetchedAtMillis,
         nowMillis = now, evaluationIntervalMs = response.evaluationIntervalMs,
+        qualityLabel = when {
+            missing.isNotEmpty() -> "品种未计算"
+            hasReady && issues.firstOrNull() == ServerSignalDataIssue.MarketStale -> "部分过期"
+            hasReady && issues.firstOrNull() == ServerSignalDataIssue.HistoryWarmup -> "部分预热"
+            else -> issues.firstOrNull()?.label
+        },
+        compactQualityLabel = if (missing.isNotEmpty()) "缺品种" else issues.firstOrNull()?.compactLabel,
     )
 }
 
@@ -208,12 +299,13 @@ internal fun serverMovingAverageLabel(response: ServerSignalsResponse): String {
         "${indicator.maType.uppercase()}${indicator.maLength}" else "均线（参数未知）"
 }
 
-internal fun serverWidgetStatusLabel(state: ServerSignalsWidgetState, narrow: Boolean): String = when (state.status) {
+internal fun serverWidgetStatusLabel(state: ServerSignalsWidgetState, narrow: Boolean): String =
+    (if (narrow) state.compactQualityLabel else state.qualityLabel) ?: when (state.status) {
     "ready" -> if (narrow) "✓" else "校时✓"
-    "degraded" -> if (narrow) "不全" else "数据不全"
+    "degraded" -> if (narrow) "待数据" else "数据待确认"
     "stale" -> if (narrow) "缓存旧" else "快照过期"
     "disabled" -> "已关闭"
-    "warming_up" -> if (narrow) "预热" else "预热中"
+    "warming_up" -> if (narrow) "待数据" else "等待数据"
     "time_uncertain" -> if (narrow) "待校时" else "待校时"
     else -> "详情"
 }

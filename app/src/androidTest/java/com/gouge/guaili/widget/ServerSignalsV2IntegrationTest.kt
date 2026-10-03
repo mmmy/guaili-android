@@ -201,7 +201,7 @@ class ServerSignalsV2IntegrationTest {
             assertTrue("Screenshot must follow the actual refresh within 15 seconds",
                 SystemClock.elapsedRealtime() - fetchedElapsed < 15_000L)
 
-            val detailSelector = By.text(java.util.regex.Pattern.compile("校时✓|✓|数据不全|不全|快照过期|缓存旧|已关闭|预热中|预热|待校时|详情"))
+            val detailSelector = By.text(java.util.regex.Pattern.compile("校时✓|✓|部分过期|行情过期|行情旧|采样超时|采样旧|快照过期|缓存旧|已关闭|连接恢复中|恢复中|部分预热|历史预热|指标预热|预热|历史断档|断档|动态K缺失|缺K|数据异常|异常|等待行情|待行情|等待数据|待数据|数据待确认|品种未计算|缺品种|时间异常|待校时|详情"))
             val titleBounds = visibleTitle(titleSelector).visibleBounds
             val detail = device.findObjects(detailSelector).firstOrNull { candidate ->
                 val bounds = candidate.visibleBounds

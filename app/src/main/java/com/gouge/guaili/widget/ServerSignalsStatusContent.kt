@@ -36,6 +36,7 @@ internal fun ServerSignalsStatusContent(
                 state.warning?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("来源：$baseUrl")
                 Text("服务器每${state.evaluationIntervalMs / 1000}秒采样当前动态K，小组件显示最近获取的快照。")
+                Text("采样频率不代表行情每次都有更新；行情过期或连接恢复时，相关周期暂不参与信号判断。")
                 Text("服务器采样时间：${format(state.sampledAt)}")
                 Text("手机获取时间：${format(state.fetchedAt)}")
                 Text(time?.unavailableReason ?: time?.correctionMessage ?: "已按服务器时间校准")
@@ -44,9 +45,9 @@ internal fun ServerSignalsStatusContent(
                     HorizontalDivider()
                     Text(row.symbol.removeSuffix("USDT"), style = MaterialTheme.typography.titleMedium)
                     val ready = row.perIntervalQuality.count { it.availability == "ready" }
-                    val waiting = row.perIntervalQuality.count { it.availability !in setOf("ready", "filtered") }
-                    Text("${ready}个周期可判断 · ${waiting}个周期正在预热或暂不可用")
-                    if (row.missingIntervals.isNotEmpty()) Text("待确认周期：${row.missingIntervals.joinToString("、")}")
+                    val filtered = row.perIntervalQuality.count { it.availability == "filtered" }
+                    Text("${ready}个周期可判断 · ${filtered}个周期被规则过滤")
+                    serverSignalQualityLines(row).forEach { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }
             Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("刷新服务器信号") }
