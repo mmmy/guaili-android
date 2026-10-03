@@ -18,7 +18,7 @@ data class GuailiCell(
     val openTime: String?,
     val closeTime: String?,
     // Matrix trends intentionally refer to the preceding candle. Signal context
-    // must instead use the trend of the same closed candle as its guaili value.
+    // must instead use the trend of the same candle as its guaili value.
     val signalLongTrend: Boolean? = null,
     val signalShortTrend: Boolean? = null,
     val signalAtrReady: Boolean? = null,
@@ -30,4 +30,6 @@ data class GuailiTable(
     val intervals: List<String>,
     val cells: Map<String, Map<String, GuailiCell>>,
     val closedCells: Map<String, Map<String, GuailiCell>> = emptyMap(),
+    // Kept independently when the matrix is configured to display closed candles.
+    val dynamicCells: Map<String, Map<String, GuailiCell>>? = null,
 )

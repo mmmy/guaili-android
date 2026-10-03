@@ -35,6 +35,12 @@ class WidgetBusinessRulesTest {
         "BTCUSDT", interval, 12, 1.2, 100.0, 1.0, 50.0, true,
         false, false, true, null, Instant.ofEpochMilli(now - age).toString(),
     )
+    private fun dynamicCell(interval: String, time: Long = now): GuailiCell {
+        val duration = com.gouge.guaili.domain.guailiIntervalDurationMillis(interval)
+        val start = time / duration * duration
+        return cell(interval).copy(isClosed = false, openTime = Instant.ofEpochMilli(start).toString(),
+            closeTime = Instant.ofEpochMilli(start + duration - 1).toString())
+    }
     private fun snapshot(cells: Map<String, GuailiCell> = intervals.associateWith { cell(it) }) = GuailiSnapshot(
         GuailiTable(listOf("BTCUSDT"), intervals, mapOf("BTCUSDT" to cells), mapOf("BTCUSDT" to cells)), now,
     )
@@ -65,23 +71,26 @@ class WidgetBusinessRulesTest {
             listOf("1", "8", "15", "60", "240", "720") to setOf("60"),
         )
         cases.forEach { (requested, missing) ->
-            val point = GuailiPoint(value = 12, rankFilter = true, isClosed = true,
-                closeTime = Instant.ofEpochMilli(now - 30_000).toString())
+            fun point(interval: String): GuailiPoint {
+                val c = dynamicCell(interval)
+                return GuailiPoint(value = 12, rankFilter = true, isClosed = false,
+                    openTime = c.openTime, closeTime = c.closeTime)
+            }
             val response = GuailiResponse(
                 symbols = listOf("BTCUSDT", "XAUUSDT"), intervals = requested,
-                limit = 2, calcLimit = 500, closedOnly = true,
+                limit = 2, calcLimit = 500, closedOnly = false,
                 results = listOf(
                     GuailiSymbolResult("BTCUSDT", requested.filterNot(missing::contains).map {
-                        GuailiSeries(interval = it, latest = point, data = listOf(point))
+                        GuailiSeries(interval = it, latest = point(it), data = listOf(point(it)))
                     }),
                     GuailiSymbolResult("XAUUSDT", requested.map {
-                        GuailiSeries(interval = it, latest = point, data = listOf(point))
+                        GuailiSeries(interval = it, latest = point(it), data = listOf(point(it)))
                     }),
                 ),
             )
             val table = response.toTable(response.symbols, requested)
             val data = GuailiSnapshot(table, now)
-            val status = widgetDataStatus(data, listOf("BTCUSDT"), now)
+            val status = widgetDataStatus(data, listOf("BTCUSDT"), now, dynamicSignals = true)
             assertEquals(0, status.missing)
             assertEquals(missing.size, status.unavailable)
             assertEquals(requested.size - missing.size, status.expectedCells)
@@ -90,7 +99,7 @@ class WidgetBusinessRulesTest {
             assertFalse(status.incomplete)
             assertTrue(GuailiSignalDetector.detect(table, listOf("BTCUSDT"), nowMillis = now).isEmpty())
             assertTrue(GuailiSignalDetector.detect(table, listOf("XAUUSDT"), nowMillis = now).isNotEmpty())
-            assertNull(widgetDataStatus(data, listOf("XAUUSDT"), now).warning)
+            assertNull(widgetDataStatus(data, listOf("XAUUSDT"), now, dynamicSignals = true).warning)
         }
     }
 
@@ -99,7 +108,7 @@ class WidgetBusinessRulesTest {
         listOf("5", "8").forEach { firstAvailable ->
             val upperPeriods = requested.dropWhile { it != firstAvailable }
             // The backend may keep 1m even though other periods below its threshold are absent.
-            val returned = (listOf("1") + upperPeriods).associateWith { cell(it) }
+            val returned = (listOf("1") + upperPeriods).associateWith { dynamicCell(it) }
             val table = GuailiTable(listOf("BTCUSDT"), requested,
                 mapOf("BTCUSDT" to returned), mapOf("BTCUSDT" to returned))
             val signal = GuailiSignalDetector.detect(table, nowMillis = now).single()
@@ -175,9 +184,15 @@ class WidgetBusinessRulesTest {
             "120" to "2026-09-12T15:59:59.999Z",
         )
         val closed = closeTimes.mapValues { (period, time) -> cell(period).copy(symbol = "UVXYUSDT", closeTime = time) }
+        val dynamic = closed.mapValues { (period, previous) ->
+            val duration = com.gouge.guaili.domain.guailiIntervalDurationMillis(period)
+            val start = parseGuailiTime(previous.closeTime)!! + 1
+            previous.copy(isClosed = false, openTime = Instant.ofEpochMilli(start).toString(),
+                closeTime = Instant.ofEpochMilli(start + duration - 1).toString())
+        }
         val table = GuailiTable(listOf("UVXYUSDT"), requested,
-            mapOf("UVXYUSDT" to closed), mapOf("UVXYUSDT" to closed))
-        val status = widgetDataStatus(GuailiSnapshot(table, fetchedAt), table.symbols, fetchedAt)
+            mapOf("UVXYUSDT" to dynamic), mapOf("UVXYUSDT" to closed))
+        val status = widgetDataStatus(GuailiSnapshot(table, fetchedAt), table.symbols, fetchedAt, dynamicSignals = true)
         assertEquals("部分行情过期：UVXY（5m）", status.warning)
         assertEquals(1, status.stale)
         assertEquals(0, status.missing)

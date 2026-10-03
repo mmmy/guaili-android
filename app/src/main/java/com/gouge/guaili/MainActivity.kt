@@ -17,6 +17,8 @@ import com.gouge.guaili.ui.theme.GuailiTheme
 import com.gouge.guaili.widget.GuailiWidget
 import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import com.gouge.guaili.widget.refreshServerSignalWidgets
 
 class MainActivity : ComponentActivity() {
     private val requestedKline = MutableStateFlow<KlineTarget?>(null)
@@ -36,7 +38,10 @@ class MainActivity : ComponentActivity() {
             GuailiViewModelFactory(
                 settingsSource = settingsStore,
                 snapshotStore = GuailiSnapshotStore(applicationContext),
-                onSnapshotUpdated = { GuailiWidget().updateAll(applicationContext) },
+                onSnapshotUpdated = {
+                    refreshServerSignalWidgets(applicationContext, settingsStore.settings.first())
+                    GuailiWidget().updateAll(applicationContext)
+                },
             ),
         )[GuailiViewModel::class.java]
 

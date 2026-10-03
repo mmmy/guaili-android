@@ -109,24 +109,24 @@ class GuailiSignalEvolutionTest {
         val old = table(periods.associateWith { 12 }, before)
         val prior = evaluate(old, before)
         val fresh = table(periods.associateWith { 12 }, now)
-        val cells = fresh.closedCells.getValue(symbol)
-        val missing = fresh.copy(closedCells = mapOf(symbol to cells.minus("3")))
+        val cells = fresh.cells.getValue(symbol)
+        val missing = fresh.copy(cells = mapOf(symbol to cells.minus("3")))
         assertTrue(evaluate(missing, now, old, prior, before).isEmpty())
-        val filtered = fresh.copy(closedCells = mapOf(symbol to (cells + ("3" to cells.getValue("3").copy(rankFilter = false)))))
+        val filtered = fresh.copy(cells = mapOf(symbol to (cells + ("3" to cells.getValue("3").copy(rankFilter = false)))))
         assertEquals(GuailiSignalPhase.Ended, evaluate(filtered, now, old, prior, before).single().phase)
-        val stale = fresh.copy(closedCells = mapOf(symbol to (cells + ("3" to cells.getValue("3").copy(
+        val stale = fresh.copy(cells = mapOf(symbol to (cells + ("3" to cells.getValue("3").copy(
             closeTime = Instant.ofEpochMilli(now - 3_600_000).toString())))))
         assertTrue(evaluate(stale, now, old, prior, before).isEmpty())
         assertEquals(GuailiSignalPhase.FirstObserved, evaluate(fresh, now, missing, emptyList(), now - 1).single().phase)
     }
 
-    @Test fun skippedCandlesAndCorrectionsResetInsteadOfInventingTransitions() {
+    @Test fun skippedCandlesResetAndSameCandleDynamicChangesCanWiden() {
         val old = table(periods.associateWith { 12 }, before)
         val fresh = table(periods.associateWith { 14 }, now + 120_000)
         assertEquals(GuailiSignalPhase.FirstObserved,
             evaluate(fresh, now + 120_000, old, evaluate(old, before), before).single().phase)
         val corrected = table(periods.associateWith { 16 }, before)
-        assertEquals(GuailiSignalPhase.FirstObserved,
+        assertEquals(GuailiSignalPhase.Widening,
             evaluate(corrected, before + 100, old, evaluate(old, before), before).single().phase)
     }
 
@@ -161,11 +161,11 @@ class GuailiSignalEvolutionTest {
         GuailiSignalEvolution.evaluate(table, time, "UTC", old, signals, oldTime)
 
     private fun table(values: Map<String, Int>, time: Long): GuailiTable = GuailiTable(
-        symbols = listOf(symbol), intervals = values.keys.toList(), cells = emptyMap(),
-        closedCells = mapOf(symbol to values.mapValues { (interval, value) ->
+        symbols = listOf(symbol), intervals = values.keys.toList(), cells = mapOf(symbol to values.mapValues { (interval, value) ->
             val duration = guailiIntervalDurationMillis(interval)
             GuailiCell(symbol, interval, value, value / 10.0, 100.0, 1.0, 50.0, true,
-                false, false, true, null, Instant.ofEpochMilli(time / duration * duration - 1).toString(),
+                false, false, false, Instant.ofEpochMilli(time / duration * duration).toString(),
+                Instant.ofEpochMilli((time / duration + 1) * duration - 1).toString(),
                 signalLongTrend = true, signalShortTrend = false, signalAtrReady = true)
         }),
     )

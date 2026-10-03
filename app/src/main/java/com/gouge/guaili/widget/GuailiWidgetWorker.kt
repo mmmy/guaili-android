@@ -16,9 +16,13 @@ import androidx.work.workDataOf
 import com.gouge.guaili.data.GuailiRefreshUseCase
 import com.gouge.guaili.data.GuailiResult
 import com.gouge.guaili.data.GuailiSnapshotStore
+import com.gouge.guaili.data.ServerSignalsRefreshUseCase
+import com.gouge.guaili.data.ServerSignalsSnapshotStore
 import com.gouge.guaili.settings.SettingsStore
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 class GuailiWidgetWorker(
     appContext: Context,
@@ -31,25 +35,30 @@ class GuailiWidgetWorker(
             GuailiWidget().updateAll(applicationContext)
         }
         val settings = SettingsStore(applicationContext).settings.first()
-        val result = GuailiRefreshUseCase(
-            snapshotSink = GuailiSnapshotStore(applicationContext),
-        ).refresh(settings, requirePersistence = true)
-        run {
-            setAllWidgetRefreshStatuses(
-                context = applicationContext,
-                phase =
-                when (result) {
-                    is GuailiResult.Success -> WidgetRefreshPhase.Success
-                    is GuailiResult.Failure -> WidgetRefreshPhase.Failure
-                },
-                message = (result as? GuailiResult.Failure)?.message,
-            )
+        val targets = widgetRefreshTargets(applicationContext, settings)
+        val needsLegacy = targets.any { it.config.mode !in setOf(WidgetMode.SignalsV2, WidgetMode.DecisionReminders) }
+        val needsV2 = targets.any { it.config.mode == WidgetMode.SignalsV2 }
+        val failures = coroutineScope {
+            val legacy = async { if (needsLegacy) GuailiRefreshUseCase(snapshotSink = GuailiSnapshotStore(applicationContext))
+                .refresh(settings, requirePersistence = true) else null }
+            val v2 = async { if (needsV2) ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(applicationContext))
+                .refresh(settings.baseUrl, symbols = serverSignalQuerySymbols(targets.map { it.config })) else null }
+            val legacyResult = legacy.await()
+            val v2Result = v2.await()
+            val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
+            val configurations = WidgetConfigStore(applicationContext)
+            targets.forEach { target ->
+                val result = if (target.config.mode == WidgetMode.SignalsV2) v2Result else legacyResult
+                val currentMode = configurations.read(manager.getAppWidgetId(target.id), settings).mode
+                if (result != null && currentMode == target.config.mode) setWidgetRefreshStatus(applicationContext, target.id,
+                    if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
+                    message = (result as? GuailiResult.Failure)?.message)
+            }
+            if (v2Result is GuailiResult.Success) scheduleServerSignalsExpiry(applicationContext, v2Result.value)
+            listOfNotNull(legacyResult, v2Result).filterIsInstance<GuailiResult.Failure>()
         }
         GuailiWidget().updateAll(applicationContext)
-        return when (result) {
-            is GuailiResult.Success -> Result.success()
-            is GuailiResult.Failure -> if (showFeedback) Result.failure() else Result.retry()
-        }
+        return if (failures.isEmpty()) Result.success() else if (showFeedback) Result.failure() else Result.retry()
     }
 }
 

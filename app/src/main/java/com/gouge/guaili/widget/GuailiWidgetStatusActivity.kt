@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.gouge.guaili.data.GuailiSnapshotStore
+import com.gouge.guaili.data.ServerSignalsSnapshotStore
 import com.gouge.guaili.data.assessGuailiTime
 import com.gouge.guaili.data.readGuailiDeviceTime
 import com.gouge.guaili.settings.SettingsStore
@@ -44,9 +45,12 @@ class GuailiWidgetStatusActivity : ComponentActivity() {
         val context = applicationContext
         val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
         val snapshots = GuailiSnapshotStore(context).snapshots
+        val serverStore = ServerSignalsSnapshotStore(context)
         val configuration = WidgetConfigStore(context).observe(id, SettingsStore(context).settings)
         setContent {
             val snapshot by snapshots.collectAsState(initial = null)
+            val serverSnapshot by serverStore.snapshots.collectAsState(initial = null)
+            val serverFailure by serverStore.failures.collectAsState(initial = null)
             val configured by configuration.collectAsState(initial = null)
             var tick by remember { mutableLongStateOf(0) }
             LaunchedEffect(Unit) {
@@ -54,13 +58,22 @@ class GuailiWidgetStatusActivity : ComponentActivity() {
                     while (true) { delay(1_000); tick++ }
                 }
             }
-            val device = remember(tick, snapshot) { readGuailiDeviceTime(context) }
+            val device = remember(tick, snapshot, serverSnapshot) { readGuailiDeviceTime(context) }
+            val serverConfiguration = configured
+            if (serverConfiguration?.config?.mode == WidgetMode.SignalsV2) {
+                GuailiTheme {
+                    ServerSignalsStatusContent(serverSnapshot, serverFailure, serverConfiguration.config,
+                        serverConfiguration.settings.baseUrl, device, onBack = { finish() },
+                        onRefresh = { GuailiWidgetScheduler.refreshNow(context, showFeedback = true) })
+                }
+                return@setContent
+            }
             val time = snapshot?.let { assessGuailiTime(it, device) }
             val status = snapshot?.let {
                 val config = configured?.config
                 widgetDataStatus(it, config?.symbols ?: it.table.symbols,
                     intervals = if (config?.mode == WidgetMode.Matrix) config.intervals else it.table.intervals,
-                    time = time)
+                    time = time, dynamicSignals = config?.mode == WidgetMode.Signals)
             }
             fun format(value: Long?) = value?.let {
                 DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it))
@@ -78,6 +91,7 @@ class GuailiWidgetStatusActivity : ComponentActivity() {
                         Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             Text("行情与数据", style = MaterialTheme.typography.titleMedium)
+                            if (configured?.config?.mode == WidgetMode.Signals) Text("信号计算使用当前实时动态 K")
                             Text(status?.warning ?: status?.description ?: "暂无数据，请刷新",
                                 color = if (status?.incomplete == true) MaterialTheme.colorScheme.error
                                     else MaterialTheme.colorScheme.onSurface)
@@ -98,7 +112,7 @@ class GuailiWidgetStatusActivity : ComponentActivity() {
                             HorizontalDivider()
                             Text("简写说明", style = MaterialTheme.typography.titleMedium)
                             Text("信号均为规则观察。级别数表示覆盖的周期数。↑／↓表示最大周期均线的方向；“未定”表示尚未满足连续方向条件，“未知”表示趋势信息不足。")
-                            Text("“变化”与“原”表示此前区间的变化记录。“向上／向下离开”描述原近均线区间最短两个周期的收线变化。")
+                            Text("“变化”与“原”表示此前区间的变化记录。“向上／向下离开”描述原近均线区间最短两个周期在前后动态快照中的变化。")
                         }
                         Button(onClick = { GuailiWidgetScheduler.refreshNow(context, showFeedback = true) },
                             modifier = Modifier.fillMaxWidth()) { Text("刷新行情") }

@@ -6,6 +6,7 @@ import com.gouge.guaili.data.GuailiResponse
 fun GuailiResponse.toTable(
     requestedSymbols: List<String>,
     requestedIntervals: List<String>,
+    displayClosedOnly: Boolean = closedOnly,
 ): GuailiTable {
     val bySymbol = results.associateBy { it.symbol }
     val cells = requestedSymbols.associateWith { symbol ->
@@ -47,8 +48,9 @@ fun GuailiResponse.toTable(
     return GuailiTable(
         symbols = requestedSymbols,
         intervals = requestedIntervals,
-        cells = cells,
+        cells = if (displayClosedOnly) closedCells else cells,
         closedCells = closedCells,
+        dynamicCells = cells,
     )
 }
 

@@ -272,7 +272,9 @@ private fun WidgetConfigurationScreen(
         Text(
             text = when (mode) {
                 WidgetMode.Signals ->
-                    "监控最多 10 个品种，显示乖离共振、近均线、长短周期分歧及其收线变化。"
+                    "监控最多 10 个品种，使用当前实时动态 K 计算乖离共振、近均线、长短周期分歧及其变化。"
+                WidgetMode.SignalsV2 ->
+                    "监控最多 10 个品种，从服务器读取实时动态 K 线的乖离共振、近均线和长短周期分歧。桌面定期刷新，计算周期由服务器配置。"
                 WidgetMode.Matrix ->
                     "选择最多 5 个品种和 4 个周期；上下滑动查看全部品种。"
                 WidgetMode.SingleSymbol ->
@@ -498,7 +500,7 @@ private fun WidgetConfigurationScreen(
                 }
             }
             else -> {
-                if (mode == WidgetMode.Signals) {
+                if (mode == WidgetMode.Signals || mode == WidgetMode.SignalsV2) {
                     item {
                         SectionTitle("启用的信号")
                         GuailiSignalKind.entries.forEach { kind ->
@@ -587,7 +589,7 @@ private fun WidgetConfigurationScreen(
                     )
                 },
                 enabled = !saving && !(mode == WidgetMode.DecisionReminders && editorDirty) && when (mode) {
-                    WidgetMode.Signals -> selectedSymbols.isNotEmpty()
+                    WidgetMode.Signals, WidgetMode.SignalsV2 -> selectedSymbols.isNotEmpty()
                     WidgetMode.Matrix -> selectedSymbols.isNotEmpty() && selectedIntervals.isNotEmpty()
                     WidgetMode.SingleSymbol -> selectedSingleSymbol != null
                     WidgetMode.DecisionReminders -> true

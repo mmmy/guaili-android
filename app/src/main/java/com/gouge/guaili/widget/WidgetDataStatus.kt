@@ -7,7 +7,9 @@ import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
 import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.data.parseGuailiTime
 import com.gouge.guaili.data.signalCellAvailability
+import com.gouge.guaili.data.dynamicSignalCellAvailability
 import com.gouge.guaili.domain.GuailiCell
+import com.gouge.guaili.domain.signalCells
 
 data class WidgetDataStatus(
     val ready: Int,
@@ -26,6 +28,7 @@ data class WidgetDataStatus(
     val clockWarning: String? = null,
     val clockCorrection: String? = null,
     val fetchedAtMillis: Long? = null,
+    val dynamicSignals: Boolean = false,
 ) {
     val incomplete: Boolean get() = timeUncertain || future > 0 || missing > 0 || stale > 0 || snapshotStale || expectedCells == 0 || noDataSymbols.isNotEmpty()
     val description: String get() = when {
@@ -35,8 +38,8 @@ data class WidgetDataStatus(
         noDataSymbols.isNotEmpty() -> "部分品种暂无行情"
         else -> listOfNotNull(
             if (stale > 0) "${stale}级过期" else null,
-            if (future > 0) "${future}级收线时间异常" else null,
-            if (missing > 0) "${missing}级尚无有效收线数据" else null,
+            if (future > 0) "${future}级K线时间异常" else null,
+            if (missing > 0) if (dynamicSignals) "${missing}级尚无有效动态K" else "${missing}级尚无有效收线数据" else null,
             if (filtered > 0) "${filtered}级被过滤" else null,
         ).joinToString(" · ").ifEmpty { "已返回周期可用" }
     }
@@ -44,7 +47,8 @@ data class WidgetDataStatus(
     val warning: String? get() = when {
         timeUncertain -> clockWarning ?: "时间暂不可确认，请刷新"
         snapshotStale -> "缓存过期，请刷新"
-        future > 0 -> "收线时间异常：${future}个周期晚于服务器时间"
+        future > 0 -> if (dynamicSignals) "K线时间异常：${future}个周期开盘晚于服务器时间"
+            else "收线时间异常：${future}个周期晚于服务器时间"
         stale > 0 -> (if (stale == expectedCells) "行情过期：" else "部分行情过期：") +
             staleSymbols.take(2).joinToString("、") { symbol ->
                 val periods = staleIntervalsBySymbol[symbol].orEmpty()
@@ -67,21 +71,24 @@ fun widgetDataStatus(
     now: Long = System.currentTimeMillis(),
     intervals: List<String> = snapshot.table.intervals,
     time: GuailiTimeAssessment? = null,
+    dynamicSignals: Boolean = false,
 ): WidgetDataStatus {
     val effectiveNow = time?.nowMillis ?: now
     val timeUncertain = time != null && !time.available
     val requestedIntervals = intervals.distinct()
     val cellsBySymbol = symbols.distinct().associateWith { symbol ->
-        val latest = snapshot.table.cells[symbol].orEmpty()
+        val latest = if (dynamicSignals) signalCells(snapshot.table, symbol) else snapshot.table.cells[symbol].orEmpty()
         val closed = snapshot.table.closedCells[symbol] ?: snapshot.table.cells[symbol].orEmpty()
         // Omitted/empty backend periods are normal. A returned live period without a
         // closed candle is different: it still cannot be used for closed-candle signals.
-        requestedIntervals.filter { closed[it] != null || latest[it] != null }.associateWith { closed[it] }
+        requestedIntervals.filter { closed[it] != null || latest[it] != null }
+            .associateWith { if (dynamicSignals) latest[it] else closed[it] }
     }
     val cells = cellsBySymbol.values.flatMap { it.values }
     val statusesBySymbol = cellsBySymbol.mapValues { (_, periods) ->
         periods.mapValues { (_, cell) ->
             if (timeUncertain && cell?.value != null) CellAvailability.UnknownTime
+            else if (dynamicSignals) dynamicSignalCellAvailability(cell, effectiveNow, snapshot.timezone)
             else signalCellAvailability(cell, effectiveNow, snapshot.timezone)
         }
     }
@@ -94,7 +101,9 @@ fun widgetDataStatus(
         missing = statuses.count { it in setOf(CellAvailability.Missing, CellAvailability.Unclosed, CellAvailability.UnknownTime, CellAvailability.Invalid) },
         stale = statuses.count { it == CellAvailability.Stale },
         filtered = statuses.count { it == CellAvailability.Filtered },
-        latestClosedAt = if (timeUncertain) null else cells.mapNotNull { parseGuailiTime(it?.closeTime, snapshot.timezone) }
+        latestClosedAt = if (timeUncertain) null else (if (dynamicSignals)
+            snapshot.table.closedCells.filterKeys { it in symbols }.values.flatMap { it.values } else cells)
+            .mapNotNull { parseGuailiTime(it?.closeTime, snapshot.timezone) }
             .filter { it <= effectiveNow + 2_000 }.maxOrNull(),
         snapshotStale = if (time == null) isGuailiSnapshotStale(snapshot.updatedAt, now)
             else time.cacheAgeMillis?.let { it >= GUAILI_STALE_AFTER_MILLIS } == true,
@@ -109,6 +118,7 @@ fun widgetDataStatus(
         clockWarning = time?.unavailableReason,
         clockCorrection = time?.correctionMessage,
         fetchedAtMillis = time?.fetchedAtMillis ?: snapshot.updatedAt,
+        dynamicSignals = dynamicSignals,
     )
 }
 

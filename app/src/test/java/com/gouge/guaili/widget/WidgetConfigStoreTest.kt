@@ -40,6 +40,10 @@ class WidgetConfigStoreTest {
             normalizeWidgetSymbols(symbols, WidgetMode.Signals),
         )
         assertEquals(
+            symbols.take(10),
+            normalizeWidgetSymbols(symbols, WidgetMode.SignalsV2),
+        )
+        assertEquals(
             symbols.take(5),
             normalizeWidgetSymbols(symbols, WidgetMode.Matrix),
         )
@@ -67,6 +71,50 @@ class WidgetConfigStoreTest {
         )
 
         assertEquals(setOf(GuailiSignalKind.Extreme), config.enabledSignalKinds)
+    }
+
+    @Test
+    fun serverSignalDraftKeepsAllTenSymbolsAndDoesNotRequireMatrixIntervals() {
+        val symbols = (1..10).map { "S$it" }
+        val config = buildWidgetConfig(
+            mode = WidgetMode.SignalsV2,
+            selectedSymbols = symbols,
+            selectedSingleSymbol = "S1",
+            selectedIntervals = emptyList(),
+            enabledSignalKinds = setOf(GuailiSignalKind.Conflict),
+        )
+
+        assertEquals(WidgetMode.SignalsV2, config.mode)
+        assertEquals("信号模式 v2", config.mode.label)
+        assertEquals(symbols, config.symbols)
+        assertEquals(emptyList<String>(), config.intervals)
+        assertEquals(setOf(GuailiSignalKind.Conflict), config.enabledSignalKinds)
+    }
+
+    @Test
+    fun serverSignalNormalizationDeduplicatesBeforeLimitingToTen() {
+        val symbols = (1..12).map { "S$it" }
+        val config = normalizeWidgetConfig(
+            WidgetConfig(
+                symbols = listOf("S1", "S1") + symbols,
+                intervals = listOf("5", "5", "15", "60", "D", "W"),
+                mode = WidgetMode.SignalsV2,
+                enabledSignalKinds = emptySet(),
+            ),
+        )
+
+        assertEquals(symbols.take(10), config.symbols)
+        assertEquals(listOf("5", "15", "60", "D"), config.intervals)
+        assertEquals(emptySet<GuailiSignalKind>(), config.enabledSignalKinds)
+    }
+
+    @Test
+    fun originalSignalModeRemainsTheDefault() {
+        val config = WidgetConfig(symbols = listOf("BTCUSDT"), intervals = emptyList())
+
+        assertEquals(WidgetMode.Signals, config.mode)
+        assertEquals("信号模式", config.mode.label)
+        assertEquals(DefaultWidgetSignalKinds, config.enabledSignalKinds)
     }
 
     @Test

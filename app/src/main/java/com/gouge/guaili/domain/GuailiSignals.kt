@@ -2,7 +2,7 @@ package com.gouge.guaili.domain
 
 import kotlin.math.abs
 import com.gouge.guaili.data.CellAvailability
-import com.gouge.guaili.data.signalCellAvailability
+import com.gouge.guaili.data.dynamicSignalCellAvailability
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -85,7 +85,7 @@ object GuailiSignalDetector {
         val intervals = table.intervals.distinct().sortedBy(::guailiIntervalDurationMillis)
         return selectedSymbols.distinct().flatMap { symbol ->
             val cells = signalCells(table, symbol).filterValues {
-                signalCellAvailability(it, nowMillis, timezone) == CellAvailability.Ready && eligibleCell(it)
+                dynamicSignalCellAvailability(it, nowMillis, timezone) == CellAvailability.Ready && eligibleCell(it)
             }
             val extremes = extremeRuns(intervals, cells)
             buildList {
@@ -188,7 +188,7 @@ object GuailiSignalDetector {
     }
 
     private fun eligibleCell(cell: GuailiCell): Boolean =
-        cell.value != null && cell.isClosed == true && cell.rankFilter == true &&
+        cell.value != null && cell.isClosed == false && cell.rankFilter == true &&
             cell.signalAtrReady != false && (cell.guaili == null || cell.guaili.isFinite()) &&
             (cell.atr14 == null || (cell.atr14.isFinite() && cell.atr14 > 0.0))
 
@@ -205,7 +205,7 @@ object GuailiSignalDetector {
 }
 
 internal fun signalCells(table: GuailiTable, symbol: String): Map<String, GuailiCell> =
-    table.closedCells[symbol] ?: table.cells[symbol].orEmpty().filterValues { it.isClosed == true }
+    table.dynamicCells?.get(symbol) ?: table.cells[symbol].orEmpty()
 
 internal fun signalGuaili(cell: GuailiCell): Double = cell.guaili ?: (cell.value ?: 0) / 10.0
 

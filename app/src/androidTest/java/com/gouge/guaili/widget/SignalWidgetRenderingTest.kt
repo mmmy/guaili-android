@@ -52,7 +52,9 @@ class SignalWidgetRenderingTest {
                     else -> if (index < 5) 12 else 5
                 }
                 interval to GuailiCell(symbol, interval, value, value / 10.0, 100.0, 1.0, 50.0,
-                    true, true, false, true, null, Instant.ofEpochMilli(time - 1_000).toString(),
+                    true, true, false, false,
+                    Instant.ofEpochMilli(time / guailiIntervalDurationMillis(interval) * guailiIntervalDurationMillis(interval)).toString(),
+                    Instant.ofEpochMilli((time / guailiIntervalDurationMillis(interval) + 1) * guailiIntervalDurationMillis(interval) - 1).toString(),
                     signalLongTrend = true, signalShortTrend = false, signalAtrReady = true)
             }.toMap()
         }.toMap()

@@ -21,6 +21,11 @@ class GuailiServerClockTest {
         table = GuailiTable(listOf("BTCUSDT"), intervals, emptyMap(), mapOf("BTCUSDT" to intervals.associateWith {
             GuailiCell("BTCUSDT", it, 12, 1.2, 100.0, 1.0, 50.0, true, false, false, true,
                 null, Instant.ofEpochMilli(serverNow - 1_000L).toString())
+        }), dynamicCells = mapOf("BTCUSDT" to intervals.associateWith {
+            val duration = com.gouge.guaili.domain.guailiIntervalDurationMillis(it)
+            val start = serverNow / duration * duration
+            GuailiCell("BTCUSDT", it, 12, 1.2, 100.0, 1.0, 50.0, true, false, false, false,
+                Instant.ofEpochMilli(start).toString(), Instant.ofEpochMilli(start + duration - 1).toString())
         })),
         updatedAt = serverNow - 86_000L,
         serverClock = GuailiServerClock(serverNow, elapsed, boot, 300),

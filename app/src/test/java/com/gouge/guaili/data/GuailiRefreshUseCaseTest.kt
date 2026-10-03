@@ -36,8 +36,10 @@ class GuailiRefreshUseCaseTest {
                         val closed = GuailiPoint(value = 12, guaili = 1.2, atr14 = 1.0, isClosed = true,
                             rankFilter = true, longTrend = true, shortTrend = false,
                             closeTime = Instant.ofEpochMilli(closedAt).toString())
-                        GuailiSeries(interval, latest = closed, data = listOf(closed.copy(
-                            closeTime = Instant.ofEpochMilli(closedAt - duration).toString()), closed))
+                        val live = closed.copy(isClosed = false,
+                            openTime = Instant.ofEpochMilli(closedAt + 1).toString(),
+                            closeTime = Instant.ofEpochMilli(closedAt + duration).toString())
+                        GuailiSeries(interval, latest = live, data = listOf(closed, live))
                     }))))
             } }, snapshotSink = sink, nowMillis = { device.wallMillis },
         )
@@ -78,8 +80,10 @@ class GuailiRefreshUseCaseTest {
                         val closed = GuailiPoint(value = value, guaili = value / 10.0, atr14 = 1.0,
                             isClosed = true, rankFilter = true, longTrend = true, shortTrend = false,
                             closeTime = Instant.ofEpochMilli(clock / duration * duration - 1).toString())
-                        GuailiSeries(interval, latest = closed, data = listOf(closed.copy(
-                            closeTime = Instant.ofEpochMilli(clock / duration * duration - duration - 1).toString()), closed))
+                        val live = closed.copy(isClosed = false,
+                            openTime = Instant.ofEpochMilli(clock / duration * duration).toString(),
+                            closeTime = Instant.ofEpochMilli((clock / duration + 1) * duration - 1).toString())
+                        GuailiSeries(interval, latest = live, data = listOf(closed, live))
                     }))))
             } }, snapshotSink = sink, nowMillis = { clock },
         )

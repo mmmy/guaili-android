@@ -35,6 +35,7 @@ internal val DefaultWidgetSignalKinds: Set<GuailiSignalKind> =
 @Serializable
 enum class WidgetMode(val label: String) {
     Signals("信号模式"),
+    SignalsV2("信号模式 v2"),
     Matrix("数据矩阵"),
     SingleSymbol("单品种全周期"),
     DecisionReminders("决策提醒"),
@@ -169,7 +170,7 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
         }
 
         fun maxSymbols(mode: WidgetMode): Int = when (mode) {
-            WidgetMode.Signals -> MaxSignalSymbols
+            WidgetMode.Signals, WidgetMode.SignalsV2 -> MaxSignalSymbols
             WidgetMode.Matrix, WidgetMode.DecisionReminders -> MaxMatrixSymbols
             WidgetMode.SingleSymbol -> 1
         }

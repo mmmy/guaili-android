@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GuailiSignalsTest {
+    private val testNow = System.currentTimeMillis()
     @Test
     fun detectsFiveLevelPositiveDeviationStructure() {
         val table = table(
@@ -100,8 +101,7 @@ class GuailiSignalsTest {
         val table = GuailiTable(
             symbols = listOf(Symbol),
             intervals = values.keys.toList(),
-            cells = emptyMap(),
-            closedCells = mapOf(Symbol to cells),
+            cells = mapOf(Symbol to cells),
         )
 
         assertTrue(GuailiSignalDetector.detect(table).isEmpty())
@@ -123,10 +123,10 @@ class GuailiSignalsTest {
             "10" to 6, "15" to 0, "20" to 0, "30" to 0, "45" to 0, "60" to 0)
         assertEquals("15", GuailiSignalDetector.detect(table(values)).single().primaryRun.startInterval)
         val base = table(values.mapValues { if (it.key == "10") 6 else 0 })
-        val cells = base.closedCells.getValue(Symbol).mapValues { (interval, value) ->
+        val cells = base.cells.getValue(Symbol).mapValues { (interval, value) ->
             value.copy(guaili = if (interval.toInt() < 10) 0.01 else 0.09)
         }
-        assertEquals("1", GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to cells)))
+        assertEquals("1", GuailiSignalDetector.detect(base.copy(cells = mapOf(Symbol to cells)))
             .single().primaryRun.startInterval)
     }
 
@@ -139,20 +139,20 @@ class GuailiSignalsTest {
             assertEquals("value=$value", expected, result.firstOrNull()?.kind)
         }
         val base = table(listOf("1", "2", "3", "5", "8").associateWith { 2 })
-        val raw = base.closedCells.getValue(Symbol).mapValues { it.value.copy(guaili = 0.299) }
+        val raw = base.cells.getValue(Symbol).mapValues { it.value.copy(guaili = 0.299) }
         assertEquals(GuailiSignalKind.Compression,
-            GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to raw))).single().kind)
+            GuailiSignalDetector.detect(base.copy(cells = mapOf(Symbol to raw))).single().kind)
         assertTrue(GuailiSignalDetector.detect(table(listOf("1", "2", "3", "5").associateWith { 10 })).isEmpty())
     }
 
     @Test
     fun invalidNumbersOrAtrDoNotMasqueradeAsNearMean() {
         val base = table(listOf("1", "2", "3", "5", "8").associateWith { 0 })
-        val cell = base.closedCells.getValue(Symbol).getValue("3")
+        val cell = base.cells.getValue(Symbol).getValue("3")
         for (invalid in listOf(cell.copy(guaili = Double.NaN), cell.copy(atr14 = 0.0),
             cell.copy(signalAtrReady = false), cell.copy(rankFilter = null))) {
-            val cells = base.closedCells.getValue(Symbol) + ("3" to invalid)
-            assertTrue(GuailiSignalDetector.detect(base.copy(closedCells = mapOf(Symbol to cells))).isEmpty())
+            val cells = base.cells.getValue(Symbol) + ("3" to invalid)
+            assertTrue(GuailiSignalDetector.detect(base.copy(cells = mapOf(Symbol to cells))).isEmpty())
         }
     }
 
@@ -162,8 +162,7 @@ class GuailiSignalsTest {
     ): GuailiTable = GuailiTable(
         symbols = listOf(Symbol),
         intervals = intervalOrder,
-        cells = emptyMap(),
-        closedCells = mapOf(
+        cells = mapOf(
             Symbol to values.mapValues { (interval, value) -> cell(interval, value) },
         ),
     )
@@ -179,9 +178,9 @@ class GuailiSignalsTest {
         rankFilter = true,
         longTrend = false,
         shortTrend = false,
-        isClosed = true,
-        openTime = null,
-        closeTime = java.time.Instant.now().minusSeconds(1).toString(),
+        isClosed = false,
+        openTime = java.time.Instant.ofEpochMilli(testNow / guailiIntervalDurationMillis(interval) * guailiIntervalDurationMillis(interval)).toString(),
+        closeTime = java.time.Instant.ofEpochMilli((testNow / guailiIntervalDurationMillis(interval) + 1) * guailiIntervalDurationMillis(interval) - 1).toString(),
     )
 
     companion object {

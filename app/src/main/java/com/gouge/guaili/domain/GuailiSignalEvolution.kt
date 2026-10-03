@@ -2,7 +2,7 @@ package com.gouge.guaili.domain
 
 import com.gouge.guaili.data.CellAvailability
 import com.gouge.guaili.data.parseGuailiTime
-import com.gouge.guaili.data.signalCellAvailability
+import com.gouge.guaili.data.dynamicSignalCellAvailability
 import kotlinx.serialization.Serializable
 import kotlin.math.abs
 
@@ -13,9 +13,9 @@ enum class GuailiSignalPhase {
     AlignedPositive, AlignedNegative, Ended,
 }
 
-/** Compare actual consecutive closed candles, never refresh counts or live points. */
+/** Compare consecutive valid dynamic samples, including changes within one candle. */
 object GuailiSignalEvolution {
-    const val RuleVersion = "closed-structure-v2"
+    const val RuleVersion = "dynamic-structure-v1"
     // One displayed unit, used only for descriptive changes, not probability.
     private const val ChangeBand = 0.1
 
@@ -51,7 +51,7 @@ object GuailiSignalEvolution {
         }.toMutableList()
 
         // An exit is a one-observation event. Re-fetching the same candles keeps
-        // it visible; the next genuinely new relevant candle retires the event.
+        // it visible; the next changed dynamic sample retires the event.
         previousSignals.forEach { prior ->
             when (compare(table, previousTable, prior.symbol, prior.intervals(), nowMillis, previousAt, timezone)) {
                 Comparison.Unknown -> Unit // missing/old/corrected data cannot prove an exit
@@ -187,15 +187,18 @@ object GuailiSignalEvolution {
                 return Comparison.Unknown
             }
             if (delta == 0L) {
-                // A historical correction or filter change is a new baseline.
-                if (a != b) return Comparison.Unknown
+                // Prices and filters can change while the same dynamic candle is forming.
+                if (a != b) {
+                    if (now == previousAt) return Comparison.Unknown
+                    advanced = true
+                }
             } else advanced = true
         }
         return if (advanced) Comparison.Advanced else Comparison.Unchanged
     }
 
     private fun usable(cell: GuailiCell?, now: Long, timezone: String?): Boolean =
-        cell != null && signalCellAvailability(cell, now, timezone) in setOf(CellAvailability.Ready, CellAvailability.Filtered) &&
+        cell != null && dynamicSignalCellAvailability(cell, now, timezone) in setOf(CellAvailability.Ready, CellAvailability.Filtered) &&
             cell.signalAtrReady != false && signalGuaili(cell).isFinite() &&
             (cell.atr14 == null || (cell.atr14.isFinite() && cell.atr14 > 0.0))
 

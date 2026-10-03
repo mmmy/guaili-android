@@ -39,7 +39,8 @@ class GuailiRefreshUseCase(
         }
 
         val requestStarted = snapshotSink.currentDeviceTime()
-        return when (val result = currentFetcher.fetch(settings)) {
+        // Signal mode always needs the current candle, independently of matrix display.
+        return when (val result = currentFetcher.fetch(settings.copy(closedOnly = false))) {
             is GuailiResult.Failure -> result
             is GuailiResult.Success -> {
                 val received = snapshotSink.currentDeviceTime()
@@ -54,7 +55,7 @@ class GuailiRefreshUseCase(
                     )
                 }
                 val baseSnapshot = GuailiSnapshot(
-                    table = result.value.toTable(settings.symbols, settings.intervals),
+                    table = result.value.toTable(settings.symbols, settings.intervals, settings.closedOnly),
                     updatedAt = nowMillis(),
                     timezone = result.value.timezone,
                     maType = settings.maType,

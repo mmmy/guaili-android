@@ -28,18 +28,23 @@ class GuailiSnapshotStoreTest {
         )
         fun response(age: Long) = GuailiResponse(
             symbols = settings.symbols, intervals = settings.intervals,
-            limit = 2, calcLimit = 500, closedOnly = true, timezone = "UTC",
+            limit = 2, calcLimit = 500, closedOnly = false, timezone = "UTC",
             results = listOf(GuailiSymbolResult("BTCUSDT", settings.intervals.map { interval ->
-                val point = GuailiPoint(value = 12, rankFilter = true, isClosed = true,
-                    closeTime = Instant.ofEpochMilli(now - age).toString())
-                GuailiSeries(interval = interval, latest = point, data = listOf(point))
+                val duration = com.gouge.guaili.domain.guailiIntervalDurationMillis(interval)
+                val start = (if (age <= 30_000) now else now - age) / duration * duration
+                val point = GuailiPoint(value = 12, rankFilter = true, isClosed = false, atr14 = 1.0,
+                    openTime = Instant.ofEpochMilli(start).toString(),
+                    closeTime = Instant.ofEpochMilli(start + duration - 1).toString())
+                GuailiSeries(interval = interval, latest = point, data = listOf(point.copy(isClosed = true,
+                    openTime = Instant.ofEpochMilli(start - duration).toString(),
+                    closeTime = Instant.ofEpochMilli(start - 1).toString()), point))
             })),
         )
         val staleResponse = response(20 * 60_000L)
         workerStore.save(GuailiSnapshot(staleResponse.toTable(settings.symbols, settings.intervals), now - 1_000))
         widgetStore.snapshots.test {
             val initial = awaitItem()!!
-            assertEquals(5, widgetDataStatus(initial, settings.symbols, now).stale)
+            assertEquals(5, widgetDataStatus(initial, settings.symbols, now, dynamicSignals = true).stale)
             assertTrue(GuailiSignalDetector.detect(initial.table, nowMillis = now).isEmpty())
 
             val refresh = GuailiRefreshUseCase(
@@ -50,7 +55,7 @@ class GuailiSnapshotStoreTest {
             assertTrue(refresh.refresh(settings, requirePersistence = true) is GuailiResult.Success)
             val updated = awaitItem()!!
             assertEquals(now, updated.updatedAt)
-            assertFalse(widgetDataStatus(updated, settings.symbols, now).incomplete)
+            assertFalse(widgetDataStatus(updated, settings.symbols, now, dynamicSignals = true).incomplete)
             assertTrue(GuailiSignalDetector.detect(updated.table, nowMillis = now).isNotEmpty())
             assertEquals(updated, widgetStore.read())
 
@@ -62,7 +67,7 @@ class GuailiSnapshotStoreTest {
             )
             assertTrue(oldServerData.refresh(settings, requirePersistence = true) is GuailiResult.Success)
             val stillStale = awaitItem()!!
-            assertEquals(5, widgetDataStatus(stillStale, settings.symbols, now + 1).stale)
+            assertEquals(5, widgetDataStatus(stillStale, settings.symbols, now + 1, dynamicSignals = true).stale)
             assertTrue(GuailiSignalDetector.detect(stillStale.table, nowMillis = now + 1).isEmpty())
         }
     }

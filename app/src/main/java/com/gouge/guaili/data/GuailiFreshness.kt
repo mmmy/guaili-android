@@ -46,3 +46,25 @@ fun signalCellAvailability(
     if (!cell.rankFilter) return CellAvailability.Filtered
     return CellAvailability.Ready
 }
+
+/** A dynamic signal must use the unclosed candle covering the current server time. */
+fun dynamicSignalCellAvailability(
+    cell: GuailiCell?,
+    nowMillis: Long = System.currentTimeMillis(),
+    timezone: String? = null,
+): CellAvailability {
+    if (cell?.value == null) return CellAvailability.Missing
+    if (cell.isClosed != false) return CellAvailability.Invalid
+    val openedAt = parseGuailiTime(cell.openTime, timezone) ?: return CellAvailability.UnknownTime
+    val closesAt = parseGuailiTime(cell.closeTime, timezone) ?: return CellAvailability.UnknownTime
+    val period = guailiIntervalDurationMillis(cell.interval)
+    if (period == Long.MAX_VALUE || period <= 0L || closesAt < openedAt ||
+        kotlin.math.abs(closesAt - openedAt + 1 - period) > 2_000L) return CellAvailability.Invalid
+    if (openedAt > nowMillis + 2_000L) return CellAvailability.Future
+    if (closesAt < nowMillis) return CellAvailability.Stale
+    if (cell.signalAtrReady == false || cell.guaili?.isFinite() == false ||
+        cell.atr14?.let { !it.isFinite() || it <= 0.0 } == true || cell.rankFilter == null) {
+        return CellAvailability.Invalid
+    }
+    return if (cell.rankFilter) CellAvailability.Ready else CellAvailability.Filtered
+}
