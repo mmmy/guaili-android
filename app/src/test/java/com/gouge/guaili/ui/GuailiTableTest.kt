@@ -8,6 +8,7 @@ import com.gouge.guaili.settings.SymbolColumnWidthMode
 import com.gouge.guaili.settings.SymbolDisplayMode
 import com.gouge.guaili.settings.TableDensity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GuailiTableTest {
@@ -106,6 +107,20 @@ class GuailiTableTest {
             10,
             groupedColumnCount(320, GroupLayoutSize.TenColumns, TableDensity.Comfortable),
         )
+    }
+
+    @Test
+    fun largeFontsKeepLabelsAndValuesInsideTheirContainers() {
+        val normal = groupedLayoutDimensions(360, GroupLayoutSize.TenColumns, TableDensity.Compact)
+        listOf(1.3f, 2f).forEach { scale ->
+            val large = groupedLayoutDimensions(360, GroupLayoutSize.TenColumns, TableDensity.Compact, scale)
+            assertTrue(large.columns < normal.columns)
+            assertTrue(large.periodHeaderHeight.value >= large.periodFontSize.value * scale * 1.2f)
+            assertTrue(large.table.cellHeight.value >= large.table.valueFontSize.value * scale * 1.2f)
+            assertEquals(normal.periodFontSize, large.periodFontSize)
+            assertEquals(normal.table.valueFontSize, large.table.valueFontSize)
+        }
+        assertTrue(tableDimensions(TableDensity.Compact, 2f).cellWidth > tableDimensions(TableDensity.Compact).cellWidth)
     }
 
     @Test

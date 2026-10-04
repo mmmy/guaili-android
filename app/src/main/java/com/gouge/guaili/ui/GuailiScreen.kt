@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,8 +22,11 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -46,8 +50,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,6 +77,7 @@ fun GuailiScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
+    val compactFilters = compactHeader && windowSize.height / LocalDensity.current.density < 360f
     val tableLayout = resolveTableLayout(state.settings.layoutMode, compactHeader)
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -80,9 +88,9 @@ fun GuailiScreen(
     val klineTarget = klineSymbol?.let { symbol ->
         klineInterval?.let { interval -> KlineTarget(symbol, interval) }
     }
-    var showSettings by remember { mutableStateOf(false) }
-    var showHelp by remember { mutableStateOf(false) }
-    var intervalGroup by remember { mutableStateOf(IntervalGroup.All) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showHelp by rememberSaveable { mutableStateOf(false) }
+    var intervalGroup by rememberSaveable { mutableStateOf(IntervalGroup.All) }
     val visibleIntervals = remember(state.intervals, intervalGroup) {
         filterIntervals(state.intervals, intervalGroup)
     }
@@ -134,7 +142,7 @@ fun GuailiScreen(
         SettingsSheet(
             settings = state.settings,
             onSave = { settings ->
-                viewModel.saveSettings(settings)
+                viewModel.saveSettingsAndAwait(settings)
                 scope.launch { snackbarHostState.showSnackbar("Settings saved") }
             },
             onDismiss = { showSettings = false },
@@ -160,6 +168,9 @@ fun GuailiScreen(
             Toolbar(
                 state = state,
                 compact = compactHeader,
+                compactFilters = compactFilters,
+                intervalGroup = intervalGroup,
+                onSelectIntervalGroup = { intervalGroup = it },
                 onRefresh = viewModel::refresh,
                 tableLayout = tableLayout,
                 onToggleLayout = {
@@ -181,10 +192,12 @@ fun GuailiScreen(
                 )
             }
 
-            IntervalFilters(
-                selected = intervalGroup,
-                onSelected = { intervalGroup = it },
-            )
+            if (!compactFilters) {
+                IntervalFilters(
+                    selected = intervalGroup,
+                    onSelected = { intervalGroup = it },
+                )
+            }
 
             Box(
                 modifier = Modifier
@@ -245,63 +258,79 @@ data class KlineTarget(
 private fun Toolbar(
     state: GuailiTableState,
     compact: Boolean,
+    compactFilters: Boolean,
+    intervalGroup: IntervalGroup,
+    onSelectIntervalGroup: (IntervalGroup) -> Unit,
     onRefresh: () -> Unit,
     tableLayout: TableLayout,
     onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHelp: () -> Unit,
 ) {
-    if (compact) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 2.dp),
-        ) {
-            Text(
-                text = "Guaili Matrix",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(modifier = Modifier.width(18.dp))
-            StatusIndicator(state = state, modifier = Modifier.weight(1f))
-            ToolbarActions(
-                state = state,
-                onRefresh = onRefresh,
-                tableLayout = tableLayout,
-                onToggleLayout = onToggleLayout,
-                onOpenSettings = onOpenSettings,
-                onOpenHelp = onOpenHelp,
-            )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val singleRow = !compactFilters && compact && maxWidth.value / LocalDensity.current.fontScale >= 700f
+        if (singleRow) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+            ) {
+                Text(
+                    text = "Guaili Matrix",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(modifier = Modifier.width(18.dp))
+                StatusIndicator(state = state, modifier = Modifier.weight(1f))
+                ToolbarActions(
+                    state = state,
+                    onRefresh = onRefresh,
+                    tableLayout = tableLayout,
+                    onToggleLayout = onToggleLayout,
+                    onOpenSettings = onOpenSettings,
+                    onOpenHelp = onOpenHelp,
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = if (compactFilters) 2.dp else 6.dp, bottom = if (compactFilters) 0.dp else 4.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "Guaili Matrix",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ToolbarActions(
+                        state = state,
+                        onRefresh = onRefresh,
+                        tableLayout = tableLayout,
+                        onToggleLayout = onToggleLayout,
+                        onOpenSettings = onOpenSettings,
+                        onOpenHelp = onOpenHelp,
+                    )
+                }
+                if (compactFilters) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        StatusIndicator(state, Modifier.weight(1f), compact = true)
+                        CompactIntervalFilter(intervalGroup, onSelectIntervalGroup)
+                    }
+                } else {
+                    StatusIndicator(state = state, modifier = Modifier.fillMaxWidth().padding(start = 2.dp, bottom = 2.dp))
+                }
+            }
         }
-        return
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 4.dp),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = "Guaili Matrix",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            ToolbarActions(
-                state = state,
-                onRefresh = onRefresh,
-                tableLayout = tableLayout,
-                onToggleLayout = onToggleLayout,
-                onOpenSettings = onOpenSettings,
-                onOpenHelp = onOpenHelp,
-            )
-        }
-        StatusIndicator(state = state, modifier = Modifier.padding(start = 2.dp, bottom = 2.dp))
     }
 }
 
@@ -343,10 +372,10 @@ private fun ToolbarActions(
 }
 
 @Composable
-private fun StatusIndicator(state: GuailiTableState, modifier: Modifier = Modifier) {
+private fun StatusIndicator(state: GuailiTableState, modifier: Modifier = Modifier, compact: Boolean = false) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier,
+        modifier = modifier.horizontalScroll(rememberScrollState()),
     ) {
         Box(
             modifier = Modifier
@@ -355,13 +384,35 @@ private fun StatusIndicator(state: GuailiTableState, modifier: Modifier = Modifi
         )
         Spacer(modifier = Modifier.width(7.dp))
         Text(
-            text = statusText(state),
+            text = statusText(state, compact),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
+            lineHeight = 16.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+@Composable
+private fun CompactIntervalFilter(selected: IntervalGroup, onSelected: (IntervalGroup) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = { expanded = true },
+            modifier = Modifier.semantics { contentDescription = "Period filter: ${selected.label}" },
+        ) {
+            Text(selected.label)
+            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            IntervalGroup.entries.forEach { group ->
+                DropdownMenuItem(
+                    text = { Text(group.label) },
+                    onClick = { onSelected(group); expanded = false },
+                )
+            }
+        }
     }
 }
 
@@ -450,7 +501,7 @@ private fun intervalMinutes(interval: String): Double? {
     return value * multiplier
 }
 
-private fun statusText(state: GuailiTableState): String {
+private fun statusText(state: GuailiTableState, compact: Boolean = false): String {
     val loadState = when {
         state.isLoading -> "Loading"
         state.isRefreshing -> "Refreshing"
@@ -459,6 +510,10 @@ private fun statusText(state: GuailiTableState): String {
         else -> "Live"
     }
     val updatedAt = state.lastUpdatedAt?.let { "Updated ${formatTime(it)}" } ?: "Not updated"
+    if (compact) {
+        val time = state.lastUpdatedAt?.let(::formatTime) ?: "Not updated"
+        return "$loadState · $time · ${if (state.settings.closedOnly) "Closed" else "Live candles"}"
+    }
     val candleMode = if (state.settings.closedOnly) "Closed only" else "Live candles"
     return "$loadState  |  $candleMode  |  $updatedAt  |  ${state.symbols.size} symbols"
 }

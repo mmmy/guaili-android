@@ -12,11 +12,13 @@ import com.gouge.guaili.settings.LayoutMode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.resetMain
@@ -28,6 +30,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TestWatcher
 import org.junit.runner.Description
+import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class GuailiViewModelTest {
@@ -216,6 +219,46 @@ class GuailiViewModelTest {
             advanceUntilIdle()
 
             assertEquals(2, fetcher.startedCalls)
+        } finally {
+            viewModel.clearViewModel()
+        }
+    }
+
+    @Test
+    fun settingsSaveWaitsForPersistenceAndReportsFailure() = runTest {
+        val original = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"), intervals = listOf("1"))
+        val flow = MutableStateFlow(original)
+        val gate = CompletableDeferred<Unit>()
+        var failSave = false
+        val source = object : GuailiSettingsSource {
+            override val settings: Flow<GuailiSettings> = flow
+            override suspend fun save(settings: GuailiSettings) {
+                gate.await()
+                if (failSave) throw IOException("disk full")
+                flow.value = settings
+            }
+        }
+        val viewModel = GuailiViewModel(
+            settingsSource = source,
+            fetcherFactory = { QueueingFetcher(GuailiResult.Success(responseFor(original, "BTCUSDT", "1", 12))) },
+            autoRefreshEnabled = false,
+        )
+        try {
+            advanceUntilIdle()
+            val updated = original.copy(layoutMode = LayoutMode.Table)
+            val saving = async { viewModel.saveSettingsAndAwait(updated) }
+            runCurrent()
+            assertFalse(saving.isCompleted)
+            assertEquals(original, flow.value)
+            gate.complete(Unit)
+            saving.await()
+            advanceUntilIdle()
+            assertEquals(updated, flow.value)
+            failSave = true
+            val failure = runCatching { viewModel.saveSettingsAndAwait(original) }
+            assertTrue(failure.exceptionOrNull() is IOException)
+            assertEquals(updated, flow.value)
+            assertEquals(12, viewModel.state.value.cells["BTCUSDT"]?.get("1")?.value)
         } finally {
             viewModel.clearViewModel()
         }

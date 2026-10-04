@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 data class GuailiTableState(
     val settings: GuailiSettings = GuailiSettings.defaults(),
@@ -85,8 +86,18 @@ class GuailiViewModel(
 
     fun saveSettings(settings: GuailiSettings) {
         viewModelScope.launch {
-            settingsSource.save(settings)
+            try {
+                saveSettingsAndAwait(settings)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _state.value = _state.value.copy(errorMessage = "Unable to save settings. Please try again.")
+            }
         }
+    }
+
+    suspend fun saveSettingsAndAwait(settings: GuailiSettings) {
+        settingsSource.save(settings)
     }
 
     fun setLayoutMode(layoutMode: LayoutMode) {

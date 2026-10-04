@@ -14,19 +14,26 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,8 +48,10 @@ import com.gouge.guaili.settings.LayoutMode
 import com.gouge.guaili.settings.SymbolColumnWidthMode
 import com.gouge.guaili.settings.SymbolDisplayMode
 import com.gouge.guaili.settings.TableDensity
+import kotlin.math.max
 
 private val GridLineColor = Color(0xFF27313B)
+private val MatrixBackground = Color(0xFF11161C)
 
 @Composable
 fun GuailiTable(
@@ -52,54 +61,47 @@ fun GuailiTable(
     intervals: List<String> = state.intervals,
 ) {
     val horizontal = rememberScrollState()
-    val vertical = rememberScrollState()
-    val symbolPresentation = buildSymbolPresentation(
-        symbols = state.symbols,
-        displayMode = state.settings.symbolDisplayMode,
-        widthMode = state.settings.symbolColumnWidthMode,
-    )
-    val symbolWidth = symbolPresentation.widthDp.dp
-    val dimensions = tableDimensions(state.settings.tableDensity)
+    val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
+        buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
+    }
+    val fontScale = LocalDensity.current.fontScale
+    val symbolWidth = (symbolPresentation.widthDp * fontScale.coerceAtLeast(1f)).dp
+    val dimensions = tableDimensions(state.settings.tableDensity, fontScale)
+    val headerHeight = max(dimensions.cellHeight.value, 25.2f * fontScale + 6f).dp
 
-    Column(modifier = modifier.background(Color(0xFF11161C))) {
+    Column(modifier = modifier.background(MatrixBackground)) {
         Row {
             HeaderCell(
                 text = "Symbol",
                 secondaryText = symbolPresentation.commonQuote?.let { "/ $it" },
                 width = symbolWidth,
-                height = dimensions.cellHeight,
+                height = headerHeight,
             )
-            Row(modifier = Modifier.horizontalScroll(horizontal)) {
+            Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
                 intervals.forEach { interval ->
                     HeaderCell(
                         text = formatInterval(interval),
                         width = dimensions.cellWidth,
-                        height = dimensions.cellHeight,
+                        height = headerHeight,
                     )
                 }
             }
         }
 
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(vertical),
-        ) {
-            Column {
-                state.symbols.forEach { symbol ->
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            items(state.symbols, key = { it }, contentType = { "matrix-row" }) { symbol ->
+                Row {
                     HeaderCell(
                         text = symbolPresentation.displayNames.getValue(symbol),
                         width = symbolWidth,
                         height = dimensions.cellHeight,
                     )
-                }
-            }
-            Column(modifier = Modifier.horizontalScroll(horizontal)) {
-                state.symbols.forEach { symbol ->
-                    Row {
+                    Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
                         intervals.forEach { interval ->
                             ValueCell(
                                 cell = state.cells[symbol]?.get(interval),
+                                symbol = symbol,
+                                interval = interval,
                                 onCellClick = onCellClick,
                                 dimensions = dimensions,
                             )
@@ -118,59 +120,59 @@ fun GuailiGroupedTable(
     modifier: Modifier = Modifier,
     intervals: List<String> = state.intervals,
 ) {
-    val vertical = rememberScrollState()
-    val symbolPresentation = buildSymbolPresentation(
-        symbols = state.symbols,
-        displayMode = state.settings.symbolDisplayMode,
-        widthMode = state.settings.symbolColumnWidthMode,
-    )
+    val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
+        buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
+    }
+    val fontScale = LocalDensity.current.fontScale
 
     BoxWithConstraints(
-        modifier = modifier.background(Color(0xFF11161C)),
+        modifier = modifier.background(MatrixBackground),
     ) {
         val groupDimensions = groupedLayoutDimensions(
             widthDp = maxWidth.value.toInt(),
             size = state.settings.groupLayoutSize,
             density = state.settings.tableDensity,
+            fontScale = fontScale,
         )
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(vertical),
-        ) {
-            state.symbols.forEach { symbol ->
-                GroupedSymbolHeader(
-                    symbol = symbolPresentation.displayNames.getValue(symbol),
-                    quote = symbolPresentation.commonQuote,
-                    height = groupDimensions.symbolHeaderHeight,
-                )
-                intervals.chunked(groupDimensions.columns).forEach { rowIntervals ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(
-                            groupDimensions.columnSpacing,
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                horizontal = groupDimensions.horizontalPadding,
-                                vertical = groupDimensions.rowPadding,
+        val intervalRows = remember(intervals, groupDimensions.columns) { intervals.chunked(groupDimensions.columns) }
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(state.symbols, key = { it }, contentType = { "symbol-group" }) { symbol ->
+                // Keep the dense, unchanged grid in one layer while its group scrolls.
+                Column(modifier = Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)) {
+                    GroupedSymbolHeader(
+                        symbol = symbolPresentation.displayNames.getValue(symbol),
+                        quote = symbolPresentation.commonQuote,
+                        height = groupDimensions.symbolHeaderHeight,
+                    )
+                    intervalRows.forEach { rowIntervals ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(
+                                groupDimensions.columnSpacing,
                             ),
-                    ) {
-                        rowIntervals.forEach { interval ->
-                            GroupedPeriodCell(
-                                interval = interval,
-                                cell = state.cells[symbol]?.get(interval),
-                                onCellClick = onCellClick,
-                                dimensions = groupDimensions,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        repeat(groupDimensions.columns - rowIntervals.size) {
-                            Spacer(modifier = Modifier.weight(1f))
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal = groupDimensions.horizontalPadding,
+                                    vertical = groupDimensions.rowPadding,
+                                ),
+                        ) {
+                            rowIntervals.forEach { interval ->
+                                GroupedPeriodCell(
+                                    interval = interval,
+                                    cell = state.cells[symbol]?.get(interval),
+                                    symbol = symbol,
+                                    onCellClick = onCellClick,
+                                    dimensions = groupDimensions,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            repeat(groupDimensions.columns - rowIntervals.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
                         }
                     }
+                    Spacer(modifier = Modifier.height(groupDimensions.sectionSpacing))
                 }
-                Spacer(modifier = Modifier.height(groupDimensions.sectionSpacing))
             }
         }
     }
@@ -182,7 +184,7 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .height(height)
+            .heightIn(min = height)
             .background(Color(0xFF202832))
             .border(0.5.dp, GridLineColor)
             .padding(horizontal = 10.dp),
@@ -191,9 +193,11 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
             text = symbol,
             color = Color(0xFFE5E7EB),
             fontSize = 13.sp,
+            lineHeight = 15.6.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         quote?.let {
             Spacer(modifier = Modifier.width(4.dp))
@@ -201,6 +205,7 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
                 text = "/ $it",
                 color = Color(0xFF9CA3AF),
                 fontSize = 10.sp,
+                lineHeight = 12.sp,
                 fontWeight = FontWeight.Medium,
             )
         }
@@ -211,6 +216,7 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
 private fun GroupedPeriodCell(
     interval: String,
     cell: GuailiCell?,
+    symbol: String,
     onCellClick: (GuailiCell) -> Unit,
     dimensions: GroupedLayoutDimensions,
     modifier: Modifier = Modifier,
@@ -236,6 +242,7 @@ private fun GroupedPeriodCell(
                 text = formatInterval(interval),
                 color = periodTextColor,
                 fontSize = dimensions.periodFontSize,
+                lineHeight = dimensions.periodFontSize * 1.2f,
                 fontWeight = periodTextWeight,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -243,6 +250,8 @@ private fun GroupedPeriodCell(
         }
         ValueCell(
             cell = cell,
+            symbol = symbol,
+            interval = interval,
             onCellClick = onCellClick,
             dimensions = dimensions.table,
             modifier = Modifier.fillMaxWidth(),
@@ -271,6 +280,7 @@ private fun HeaderCell(
                 text = text,
                 color = Color(0xFFE5E7EB),
                 fontSize = 12.sp,
+                lineHeight = 14.4.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -281,6 +291,7 @@ private fun HeaderCell(
                     text = secondary,
                     color = Color(0xFF9CA3AF),
                     fontSize = 9.sp,
+                    lineHeight = 10.8.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -294,33 +305,47 @@ private fun HeaderCell(
 @Composable
 private fun ValueCell(
     cell: GuailiCell?,
+    symbol: String,
+    interval: String,
     onCellClick: (GuailiCell) -> Unit,
     dimensions: TableDimensions,
-    modifier: Modifier = Modifier.width(dimensions.cellWidth),
+    modifier: Modifier = Modifier,
 ) {
     val text = cell?.value?.toString() ?: "-"
     val textColor = if (cell == null) {
-        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
     } else {
-        Color.White
+        Color.White.copy(alpha = if (cell.rankFilter == false) 0.8f else 1f)
+    }
+    val background = cellBackground(cell).let {
+        if (cell?.rankFilter == false) Color(
+            red = (MatrixBackground.red + it.red) / 2f,
+            green = (MatrixBackground.green + it.green) / 2f,
+            blue = (MatrixBackground.blue + it.blue) / 2f,
+        ) else it
     }
 
     Box(
         modifier = modifier
+            .then(if (dimensions.cellWidth > 0.dp) Modifier.width(dimensions.cellWidth) else Modifier)
             .height(dimensions.cellHeight)
             .defaultMinSize(
                 minWidth = dimensions.cellWidth,
                 minHeight = dimensions.cellHeight,
             )
-            .background(cellBackground(cell))
+            .background(background)
             .border(0.5.dp, GridLineColor)
-            .graphicsLayer(alpha = if (cell?.rankFilter == false) 0.5f else 1f)
-            .then(if (cell != null) Modifier.clickable { onCellClick(cell) } else Modifier)
+            .then(if (cell != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open cell details") { onCellClick(cell) } else Modifier)
             .semantics {
                 contentDescription = cell?.let {
                     val trend = trendState(it.longTrend, it.shortTrend).label.lowercase()
                     "${it.symbol}, ${formatInterval(it.interval)}, value ${it.value ?: "no data"}, $trend trend"
-                } ?: "No data"
+                } ?: "$symbol, ${formatInterval(interval)}, no data"
+                stateDescription = when (cell?.rankFilter) {
+                    true -> "ATR filter passed"
+                    false -> "ATR filtered"
+                    null -> "ATR filter unavailable"
+                }
             }
             .padding(horizontal = 2.dp),
         contentAlignment = Alignment.Center,
@@ -329,9 +354,10 @@ private fun ValueCell(
             text = text,
             color = textColor,
             fontSize = dimensions.valueFontSize,
+            lineHeight = dimensions.valueFontSize * 1.2f,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
-            overflow = TextOverflow.Clip,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
     }
@@ -343,18 +369,27 @@ internal data class TableDimensions(
     val valueFontSize: TextUnit,
 )
 
-internal fun tableDimensions(density: TableDensity): TableDimensions = when (density) {
-    TableDensity.Compact -> TableDimensions(
-        cellWidth = 52.dp,
-        cellHeight = 40.dp,
-        valueFontSize = 14.sp,
-    )
-    TableDensity.Comfortable -> TableDimensions(
-        cellWidth = 60.dp,
-        cellHeight = 48.dp,
-        valueFontSize = 14.sp,
+internal fun tableDimensions(density: TableDensity, fontScale: Float = 1f): TableDimensions {
+    val base = when (density) {
+        TableDensity.Compact -> TableDimensions(
+            cellWidth = 52.dp,
+            cellHeight = 40.dp,
+            valueFontSize = 14.sp,
+        )
+        TableDensity.Comfortable -> TableDimensions(
+            cellWidth = 60.dp,
+            cellHeight = 48.dp,
+            valueFontSize = 14.sp,
+        )
+    }
+    return base.copy(
+        cellWidth = (base.cellWidth.value * fontScale.coerceAtLeast(1f)).dp,
+        cellHeight = textContainerHeight(base.cellHeight, base.valueFontSize, fontScale),
     )
 }
+
+private fun textContainerHeight(minimum: Dp, fontSize: TextUnit, fontScale: Float): Dp =
+    max(minimum.value, fontSize.value * fontScale * 1.2f + 6f).dp
 
 internal data class GroupedLayoutDimensions(
     val columns: Int,
@@ -372,11 +407,12 @@ internal fun groupedLayoutDimensions(
     widthDp: Int,
     size: GroupLayoutSize,
     density: TableDensity,
+    fontScale: Float = 1f,
 ): GroupedLayoutDimensions {
-    val base = tableDimensions(density)
-    return when (size) {
+    val base = tableDimensions(density, fontScale)
+    val result = when (size) {
         GroupLayoutSize.Standard -> GroupedLayoutDimensions(
-            columns = groupedColumnCount(widthDp, size, density),
+            columns = groupedColumnCount(widthDp, size, density, fontScale),
             symbolHeaderHeight = 36.dp,
             periodHeaderHeight = 26.dp,
             periodFontSize = 11.sp,
@@ -387,7 +423,7 @@ internal fun groupedLayoutDimensions(
             table = base.copy(cellWidth = 0.dp),
         )
         GroupLayoutSize.Compact -> GroupedLayoutDimensions(
-            columns = groupedColumnCount(widthDp, size, density),
+            columns = groupedColumnCount(widthDp, size, density, fontScale),
             symbolHeaderHeight = 30.dp,
             periodHeaderHeight = 20.dp,
             periodFontSize = 10.sp,
@@ -402,7 +438,7 @@ internal fun groupedLayoutDimensions(
             ),
         )
         GroupLayoutSize.TenColumns -> GroupedLayoutDimensions(
-            columns = 10,
+            columns = groupedColumnCount(widthDp, size, density, fontScale),
             symbolHeaderHeight = 28.dp,
             periodHeaderHeight = 18.dp,
             periodFontSize = 9.sp,
@@ -417,6 +453,11 @@ internal fun groupedLayoutDimensions(
             ),
         )
     }
+    return result.copy(
+        symbolHeaderHeight = textContainerHeight(result.symbolHeaderHeight, 13.sp, fontScale),
+        periodHeaderHeight = textContainerHeight(result.periodHeaderHeight, result.periodFontSize, fontScale),
+        table = result.table.copy(cellHeight = textContainerHeight(result.table.cellHeight, result.table.valueFontSize, fontScale)),
+    )
 }
 
 internal enum class TableLayout {
@@ -434,8 +475,9 @@ internal fun groupedColumnCount(
     widthDp: Int,
     size: GroupLayoutSize,
     density: TableDensity,
+    fontScale: Float = 1f,
 ): Int {
-    if (size == GroupLayoutSize.TenColumns) return 10
+    if (size == GroupLayoutSize.TenColumns) return (10 / fontScale.coerceAtLeast(1f)).toInt().coerceIn(2, 10)
     val targetWidth = when (size) {
         GroupLayoutSize.Standard -> when (density) {
             TableDensity.Compact -> 92
@@ -448,7 +490,7 @@ internal fun groupedColumnCount(
         GroupLayoutSize.TenColumns -> error("Handled above")
     }
     val maxColumns = if (size == GroupLayoutSize.Compact) 8 else 6
-    return (widthDp / targetWidth).coerceIn(2, maxColumns)
+    return (widthDp / (targetWidth * fontScale.coerceAtLeast(1f))).toInt().coerceIn(2, maxColumns)
 }
 
 internal data class SymbolPresentation(

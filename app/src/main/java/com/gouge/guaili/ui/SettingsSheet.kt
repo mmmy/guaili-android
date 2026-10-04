@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -35,13 +37,24 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -55,37 +68,57 @@ import com.gouge.guaili.settings.SymbolDisplayMode
 import com.gouge.guaili.settings.TableDensity
 import com.gouge.guaili.settings.parseCsv
 import java.net.URI
+import java.net.URISyntaxException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+
+private val LocalSettingsEnabled = staticCompositionLocalOf { true }
+
+private val SettingsFieldItems = linkedMapOf(
+    "baseUrl" to 1, "autoRefreshSeconds" to 2, "calcLimit" to 3,
+    "symbols" to 5, "intervals" to 12, "maLength" to 16,
+    "atrLen" to 19, "atrPercentLen" to 20, "maxAtrRank" to 21, "slopeMul" to 24,
+)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSheet(
     settings: GuailiSettings,
-    onSave: (GuailiSettings) -> Unit,
+    onSave: suspend (GuailiSettings) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var baseUrl by remember(settings) { mutableStateOf(settings.baseUrl) }
-    var symbols by remember(settings) { mutableStateOf(settings.symbols) }
-    var symbolDisplayMode by remember(settings) { mutableStateOf(settings.symbolDisplayMode) }
-    var symbolColumnWidthMode by remember(settings) {
+    var baseUrl by rememberSaveable(settings) { mutableStateOf(settings.baseUrl) }
+    var symbols by rememberSaveable(settings) { mutableStateOf(settings.symbols) }
+    var symbolDisplayMode by rememberSaveable(settings) { mutableStateOf(settings.symbolDisplayMode) }
+    var symbolColumnWidthMode by rememberSaveable(settings) {
         mutableStateOf(settings.symbolColumnWidthMode)
     }
-    var tableDensity by remember(settings) { mutableStateOf(settings.tableDensity) }
-    var layoutMode by remember(settings) { mutableStateOf(settings.layoutMode) }
-    var groupLayoutSize by remember(settings) { mutableStateOf(settings.groupLayoutSize) }
-    var intervals by remember(settings) { mutableStateOf(settings.intervals) }
-    var refreshSeconds by remember(settings) { mutableStateOf(settings.autoRefreshSeconds.toString()) }
-    var calcLimit by remember(settings) { mutableStateOf(settings.calcLimit.toString()) }
-    var closedOnly by remember(settings) { mutableStateOf(settings.closedOnly) }
-    var maLength by remember(settings) { mutableStateOf(settings.maLength.toString()) }
-    var maType by remember(settings) { mutableStateOf(settings.maType) }
-    var atrLen by remember(settings) { mutableStateOf(settings.atrLen.toString()) }
-    var atrPercentLen by remember(settings) { mutableStateOf(settings.atrPercentLen.toString()) }
-    var maxAtrRank by remember(settings) { mutableStateOf(settings.maxAtrRank.toString()) }
-    var slopeMul by remember(settings) { mutableStateOf(settings.slopeMul.toString()) }
-    var useSlope by remember(settings) { mutableStateOf(settings.useSlope) }
+    var tableDensity by rememberSaveable(settings) { mutableStateOf(settings.tableDensity) }
+    var layoutMode by rememberSaveable(settings) { mutableStateOf(settings.layoutMode) }
+    var groupLayoutSize by rememberSaveable(settings) { mutableStateOf(settings.groupLayoutSize) }
+    var intervals by rememberSaveable(settings) { mutableStateOf(settings.intervals) }
+    var refreshSeconds by rememberSaveable(settings) { mutableStateOf(settings.autoRefreshSeconds.toString()) }
+    var calcLimit by rememberSaveable(settings) { mutableStateOf(settings.calcLimit.toString()) }
+    var closedOnly by rememberSaveable(settings) { mutableStateOf(settings.closedOnly) }
+    var maLength by rememberSaveable(settings) { mutableStateOf(settings.maLength.toString()) }
+    var maType by rememberSaveable(settings) { mutableStateOf(settings.maType) }
+    var atrLen by rememberSaveable(settings) { mutableStateOf(settings.atrLen.toString()) }
+    var atrPercentLen by rememberSaveable(settings) { mutableStateOf(settings.atrPercentLen.toString()) }
+    var maxAtrRank by rememberSaveable(settings) { mutableStateOf(settings.maxAtrRank.toString()) }
+    var slopeMul by rememberSaveable(settings) { mutableStateOf(settings.slopeMul.toString()) }
+    var useSlope by rememberSaveable(settings) { mutableStateOf(settings.useSlope) }
     var fieldErrors by remember(settings) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var isSaving by remember { mutableStateOf(false) }
+    var saveError by rememberSaveable { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val fieldFocus = remember { SettingsFieldItems.keys.associateWith { FocusRequester() } }
 
     fun save() {
+        if (isSaving) return
+        focusManager.clearFocus()
+        saveError = null
         when (
             val result = buildSettingsFromValues(
                 current = settings,
@@ -111,34 +144,69 @@ fun SettingsSheet(
         ) {
             is SettingsFormResult.Valid -> {
                 fieldErrors = emptyMap()
-                onSave(result.settings)
-                onDismiss()
+                isSaving = true
+                scope.launch {
+                    try {
+                        onSave(result.settings)
+                        onDismiss()
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        saveError = "Unable to save settings. Your changes are kept; please try again."
+                    } finally {
+                        isSaving = false
+                    }
+                }
             }
-            is SettingsFormResult.Invalid -> fieldErrors = result.fieldErrors
+            is SettingsFormResult.Invalid -> {
+                fieldErrors = result.fieldErrors
+                val firstField = result.fieldErrors.keys.first()
+                scope.launch {
+                    listState.animateScrollToItem(SettingsFieldItems.getValue(firstField))
+                    withFrameNanos { }
+                    fieldFocus.getValue(firstField).requestFocus()
+                }
+            }
         }
     }
 
-    BackHandler(onBack = onDismiss)
-    Surface(
-        color = MaterialTheme.colorScheme.background,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding(),
+    BackHandler { if (!isSaving) onDismiss() }
+    CompositionLocalProvider(LocalSettingsEnabled provides !isSaving) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            modifier = Modifier.fillMaxSize(),
         ) {
-            SettingsHeader(onDismiss = onDismiss, onSave = ::save)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 16.dp),
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding(),
             ) {
+                SettingsHeader(onDismiss = onDismiss, onSave = ::save)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                val message = saveError ?: fieldErrors.values.firstOrNull()?.let {
+                    "Check the highlighted settings. $it"
+                }
+                if (message != null) {
+                    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.fillMaxWidth().padding(12.dp)
+                                .semantics { liveRegion = LiveRegionMode.Polite },
+                        )
+                    }
+                }
+                LazyColumn(
+                    state = listState,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp),
+                ) {
                     item { SettingsSection("Connection and refresh") }
                     item {
                         SettingTextField(
@@ -146,6 +214,7 @@ fun SettingsSheet(
                             onValueChange = { baseUrl = it },
                             label = "Base URL",
                             error = fieldErrors["baseUrl"],
+                            focusRequester = fieldFocus.getValue("baseUrl"),
                         )
                     }
                     item {
@@ -153,6 +222,7 @@ fun SettingsSheet(
                             value = refreshSeconds,
                             onValueChange = { refreshSeconds = it },
                             error = fieldErrors["autoRefreshSeconds"],
+                            focusRequester = fieldFocus.getValue("autoRefreshSeconds"),
                         )
                     }
                     item {
@@ -161,17 +231,19 @@ fun SettingsSheet(
                             onValueChange = { calcLimit = it },
                             label = "Calculation history limit",
                             error = fieldErrors["calcLimit"],
+                            focusRequester = fieldFocus.getValue("calcLimit"),
                         )
                     }
 
                     item { SettingsSection("Symbols") }
-                    item {
+                    item(key = "symbols") {
                         EditableTokenList(
                             label = "Symbol",
                             items = symbols,
                             onItemsChange = { symbols = it },
                             normalize = { it.trim().uppercase() },
                             error = fieldErrors["symbols"],
+                            focusRequester = fieldFocus.getValue("symbols"),
                         )
                     }
                     item {
@@ -230,13 +302,14 @@ fun SettingsSheet(
                     }
 
                     item { SettingsSection("Intervals") }
-                    item {
+                    item(key = "intervals") {
                         EditableTokenList(
                             label = "Interval",
                             items = intervals,
                             onItemsChange = { intervals = it },
                             normalize = { normalizeInterval(it) },
                             error = fieldErrors["intervals"],
+                            focusRequester = fieldFocus.getValue("intervals"),
                         )
                     }
 
@@ -257,6 +330,7 @@ fun SettingsSheet(
                             onValueChange = { maLength = it },
                             label = "MA length",
                             error = fieldErrors["maLength"],
+                            focusRequester = fieldFocus.getValue("maLength"),
                         )
                     }
                     item {
@@ -275,6 +349,7 @@ fun SettingsSheet(
                             onValueChange = { atrLen = it },
                             label = "ATR length",
                             error = fieldErrors["atrLen"],
+                            focusRequester = fieldFocus.getValue("atrLen"),
                         )
                     }
                     item {
@@ -283,6 +358,7 @@ fun SettingsSheet(
                             onValueChange = { atrPercentLen = it },
                             label = "ATR percentile length",
                             error = fieldErrors["atrPercentLen"],
+                            focusRequester = fieldFocus.getValue("atrPercentLen"),
                         )
                     }
                     item {
@@ -291,6 +367,7 @@ fun SettingsSheet(
                             onValueChange = { maxAtrRank = it },
                             label = "Maximum ATR rank (%)",
                             error = fieldErrors["maxAtrRank"],
+                            focusRequester = fieldFocus.getValue("maxAtrRank"),
                             decimal = true,
                         )
                     }
@@ -310,10 +387,12 @@ fun SettingsSheet(
                             onValueChange = { slopeMul = it },
                             label = "Slope multiplier",
                             error = fieldErrors["slopeMul"],
+                            focusRequester = fieldFocus.getValue("slopeMul"),
                             decimal = true,
                         )
                     }
-                item { Spacer(modifier = Modifier.size(8.dp)) }
+                    item { Spacer(modifier = Modifier.size(8.dp)) }
+                }
             }
         }
     }
@@ -327,7 +406,7 @@ private fun SettingsHeader(onDismiss: () -> Unit, onSave: () -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
-        IconButton(onClick = onDismiss) {
+        IconButton(onClick = onDismiss, enabled = LocalSettingsEnabled.current) {
             Icon(Icons.Outlined.Close, contentDescription = "Close settings")
         }
         Text(
@@ -338,7 +417,9 @@ private fun SettingsHeader(onDismiss: () -> Unit, onSave: () -> Unit) {
                 .weight(1f)
                 .padding(start = 4.dp),
         )
-        Button(onClick = onSave) { Text("Save") }
+        Button(onClick = onSave, enabled = LocalSettingsEnabled.current) {
+            Text(if (LocalSettingsEnabled.current) "Save" else "Saving…")
+        }
     }
 }
 
@@ -360,16 +441,19 @@ private fun SettingTextField(
     label: String,
     error: String? = null,
     keyboardType: KeyboardType = KeyboardType.Text,
+    focusRequester: FocusRequester? = null,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         singleLine = true,
+        enabled = LocalSettingsEnabled.current,
         isError = error != null,
         supportingText = error?.let { { Text(it) } },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth()
+            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
     )
 }
 
@@ -380,17 +464,15 @@ private fun NumberField(
     label: String,
     error: String?,
     decimal: Boolean = false,
+    focusRequester: FocusRequester? = null,
 ) {
     SettingTextField(
         value = value,
-        onValueChange = { next ->
-            onValueChange(
-                next.filter { char -> char.isDigit() || (decimal && char == '.') },
-            )
-        },
+        onValueChange = onValueChange,
         label = label,
         error = error,
         keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number,
+        focusRequester = focusRequester,
     )
 }
 
@@ -400,6 +482,7 @@ private fun RefreshSelector(
     value: String,
     onValueChange: (String) -> Unit,
     error: String?,
+    focusRequester: FocusRequester? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Auto refresh", style = MaterialTheme.typography.labelLarge)
@@ -407,6 +490,7 @@ private fun RefreshSelector(
             listOf("3", "5", "10", "30").forEach { seconds ->
                 FilterChip(
                     selected = value == seconds,
+                    enabled = LocalSettingsEnabled.current,
                     onClick = { onValueChange(seconds) },
                     label = { Text("${seconds}s") },
                 )
@@ -417,6 +501,7 @@ private fun RefreshSelector(
             onValueChange = onValueChange,
             label = "Custom seconds",
             error = error,
+            focusRequester = focusRequester,
         )
     }
 }
@@ -429,15 +514,17 @@ private fun EditableTokenList(
     onItemsChange: (List<String>) -> Unit,
     normalize: (String) -> String,
     error: String?,
+    focusRequester: FocusRequester? = null,
 ) {
-    var newValue by remember { mutableStateOf("") }
-    var selectedIndex by remember(items) { mutableIntStateOf(-1) }
+    var newValue by rememberSaveable { mutableStateOf("") }
+    var selectedItem by rememberSaveable { mutableStateOf<String?>(null) }
+    val selectedIndex = items.indexOf(selectedItem)
 
     fun addValue() {
         val normalized = normalize(newValue)
         if (normalized.isNotBlank() && normalized !in items) {
             onItemsChange(items + normalized)
-            selectedIndex = items.size
+            selectedItem = normalized
             newValue = ""
         }
     }
@@ -451,7 +538,8 @@ private fun EditableTokenList(
                 items.forEachIndexed { index, item ->
                     InputChip(
                         selected = selectedIndex == index,
-                        onClick = { selectedIndex = if (selectedIndex == index) -1 else index },
+                        enabled = LocalSettingsEnabled.current,
+                        onClick = { selectedItem = if (selectedItem == item) null else item },
                         label = { Text(item) },
                     )
                 }
@@ -468,26 +556,25 @@ private fun EditableTokenList(
                 IconButton(
                     onClick = {
                         onItemsChange(items.swap(selectedIndex, selectedIndex - 1))
-                        selectedIndex--
                     },
-                    enabled = selectedIndex > 0,
+                    enabled = LocalSettingsEnabled.current && selectedIndex > 0,
                 ) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Move earlier")
                 }
                 IconButton(
                     onClick = {
                         onItemsChange(items.swap(selectedIndex, selectedIndex + 1))
-                        selectedIndex++
                     },
-                    enabled = selectedIndex < items.lastIndex,
+                    enabled = LocalSettingsEnabled.current && selectedIndex < items.lastIndex,
                 ) {
                     Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = "Move later")
                 }
                 IconButton(
                     onClick = {
                         onItemsChange(items.filterIndexed { index, _ -> index != selectedIndex })
-                        selectedIndex = -1
+                        selectedItem = null
                     },
+                    enabled = LocalSettingsEnabled.current,
                 ) {
                     Icon(Icons.Outlined.Delete, contentDescription = "Delete selected item")
                 }
@@ -499,14 +586,16 @@ private fun EditableTokenList(
                 onValueChange = { newValue = it },
                 label = { Text("Add $label") },
                 singleLine = true,
+                enabled = LocalSettingsEnabled.current,
                 isError = error != null,
                 supportingText = error?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { addValue() }),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f)
+                    .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
             )
             Spacer(modifier = Modifier.width(4.dp))
-            IconButton(onClick = { addValue() }, enabled = newValue.isNotBlank()) {
+            IconButton(onClick = { addValue() }, enabled = LocalSettingsEnabled.current && newValue.isNotBlank()) {
                 Icon(Icons.Outlined.AddCircle, contentDescription = "Add $label")
             }
         }
@@ -527,6 +616,7 @@ private fun OptionSelector(
             options.forEach { option ->
                 FilterChip(
                     selected = selected == option,
+                    enabled = LocalSettingsEnabled.current,
                     onClick = { onSelected(option) },
                     label = { Text(option) },
                 )
@@ -544,7 +634,12 @@ private fun SwitchSetting(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().toggleable(
+            value = checked,
+            enabled = LocalSettingsEnabled.current,
+            role = Role.Switch,
+            onValueChange = onCheckedChange,
+        ),
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
@@ -554,7 +649,7 @@ private fun SwitchSetting(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = null, enabled = LocalSettingsEnabled.current)
     }
 }
 
@@ -611,7 +706,7 @@ internal fun buildSettingsFromValues(
         if (parsedMaxAtrRank == null || parsedMaxAtrRank !in 0.0..100.0) {
             put("maxAtrRank", "Use a rank from 0 to 100")
         }
-        if (parsedSlopeMul == null || parsedSlopeMul < 0.0) {
+        if (parsedSlopeMul == null || !parsedSlopeMul.isFinite() || parsedSlopeMul < 0.0) {
             put("slopeMul", "Use zero or a positive multiplier")
         }
     }
@@ -690,6 +785,8 @@ private fun isHttpUrl(value: String): Boolean {
     if (value.isBlank()) return false
     val uri = try {
         URI(value)
+    } catch (_: URISyntaxException) {
+        return false
     } catch (_: IllegalArgumentException) {
         return false
     }

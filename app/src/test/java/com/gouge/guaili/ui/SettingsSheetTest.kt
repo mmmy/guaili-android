@@ -55,6 +55,9 @@ class SettingsSheetTest {
         assertBaseUrlError("")
         assertBaseUrlError("guaili.local:8080")
         assertBaseUrlError("ftp://guaili.local")
+        assertBaseUrlError("http://127.0.0.1:3005/a b")
+        assertBaseUrlError("http://127.0.0.1:3005/%")
+        assertBaseUrlError("http://[bad-ipv6")
     }
 
     @Test
@@ -155,6 +158,25 @@ class SettingsSheetTest {
         assertTrue("atrPercentLen" in errors)
         assertTrue("maxAtrRank" in errors)
         assertTrue("slopeMul" in errors)
+    }
+
+    @Test
+    fun negativeAndNonFiniteInputsAreRejectedWithoutBecomingPositive() {
+        val current = GuailiSettings.defaults()
+        fun result(refresh: String, slope: String) = buildSettingsFromValues(
+            current = current, baseUrl = current.baseUrl, symbols = current.symbols,
+            intervals = current.intervals, autoRefreshSeconds = refresh,
+            calcLimit = "500", closedOnly = false, maLength = "20", maType = "EMA",
+            atrLen = "1", atrPercentLen = "20", maxAtrRank = "100", slopeMul = slope,
+            useSlope = true,
+        )
+        val negative = result("-5", "-0.5") as SettingsFormResult.Invalid
+        assertTrue("autoRefreshSeconds" in negative.fieldErrors)
+        assertTrue("slopeMul" in negative.fieldErrors)
+        listOf("NaN", "Infinity", "9".repeat(400), "0,5").forEach { value ->
+            val invalid = result("30", value) as SettingsFormResult.Invalid
+            assertTrue("slopeMul" in invalid.fieldErrors)
+        }
     }
 
     private fun assertBaseUrlError(baseUrl: String) {
