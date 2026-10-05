@@ -12,3 +12,9 @@
 验证：150 项单元测试通过；桌面显示/状态详情/滚动、卡片尺寸及单行栏尺寸测试通过（3 项）。尺寸测试使用真实 RemoteViews 在 180/250/320dp 渲染共 9 种卡片组合及 18 种状态栏组合，检查每个文本字段无省略；单行栏高度不超过32dp，覆盖正常、缺失、待校时、异常、刷新中与失败。Debug APK 与测试 APK 构建成功，Lint 为 0 错误、40 警告。
 
 安装前已备份模拟器的数据，采用覆盖安装。桌面测试临时配置与快照在 finally 中恢复。`build/widget-signals-top.png`、`build/widget-signals-bottom.png` 及 `build/signal-card-*.png` 是测试数据的排版截图。
+
+2026-10-05：主程序行情页v2视图统一使用上述小组件排版。`signals/SignalCardStyle.kt` 和 `signals/SignalCardPresentation.kt` 提供共用字体大小、间距与简写文案，以及桌面小组件的日夜颜色。主程序颜色映射到应用MaterialTheme，保持与暗色应用一致，不跟随系统日夜模式切换。主程序点记录进入K线，点级别徽标或长按展开详情；筛选通过标题栏“编辑”展开。
+
+本次验证：应用212项单元测试通过，构建与Lint通过（0错误）；手机6项验证覆盖全部信号类型、筛选、级别徽标/长按详情、K线跳转、关闭状态、真实服务器和小组件180/250/320dp排版；深色宽屏、字体1.3验证2项通过。截图为 `build/market-v2-widget-style-phone.png`、`build/market-v2-widget-style-tablet.png` 和 `build/market-v2-widget-style-live.png`。模拟器显示设置与测试数据已恢复。
+
+主程序主题适配验证：在系统浅色模式下，应用v2列表、筛选和详情均使用Guaili暗色MaterialTheme；手机2项交互验证及深色宽屏/字体1.3的1项排版验证通过。构建与Lint通过。截图为 `build/market-v2-app-theme-phone.png`、`build/market-v2-app-theme-details.png`、`build/market-v2-app-theme-tablet.png`。已覆盖更新模拟器APK，并恢复测试配置及系统显示设置。

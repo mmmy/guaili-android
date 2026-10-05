@@ -129,7 +129,7 @@ internal fun movingAverageLabel(snapshot: GuailiSnapshot): String =
     if (snapshot.maType != null && snapshot.maLength != null) "${snapshot.maType.uppercase()}${snapshot.maLength}" else "均线（参数未知）"
 
 internal fun widgetCellValue(cell: GuailiCell?): String =
-    cell?.value?.toString() ?: "--"
+    cell?.value?.toString() ?: "—"
 
 internal fun widgetConfigurationIssue(config: WidgetConfig, symbols: List<String>, intervals: List<String>): String? {
     val missingSymbols = config.symbols.filterNot(symbols::contains)

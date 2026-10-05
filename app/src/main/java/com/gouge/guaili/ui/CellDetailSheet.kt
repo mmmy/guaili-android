@@ -58,7 +58,7 @@ fun CellDetailSheet(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = cell.value?.let { "Signal value $it" } ?: "No signal value",
+                text = cell.value?.let { "Signal value $it" } ?: "Signal value —",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
@@ -70,7 +70,11 @@ fun CellDetailSheet(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 StatusChip("Candle", if (cell.isClosed == true) "Closed" else "Live")
-                StatusChip("ATR filter", if (cell.rankFilter == true) "Passed" else "Filtered")
+                StatusChip("ATR filter", when (cell.rankFilter) {
+                    true -> "Passed"
+                    false -> "Filtered"
+                    null -> "—"
+                })
                 val trend = trendState(cell.longTrend, cell.shortTrend).label
                 StatusChip("Trend", trend)
             }
@@ -80,6 +84,7 @@ fun CellDetailSheet(
             DetailLine("Moving average", formatDecimal(cell.ma, 4))
             DetailLine("ATR", formatDecimal(cell.atr14, 4))
             DetailLine("ATR rank", formatDecimal(cell.atrRank, 2, "%"))
+            cell.reason?.let { DetailLine("Data status", it) }
 
             DetailSection("Candle time")
             DetailLine("Open", formatDateTime(cell.openTime))

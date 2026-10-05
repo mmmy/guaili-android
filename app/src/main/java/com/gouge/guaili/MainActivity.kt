@@ -16,6 +16,10 @@ import com.gouge.guaili.ui.TradingAppScreen
 import com.gouge.guaili.ui.clearAppLaunchExtras
 import com.gouge.guaili.ui.resolveAppLaunch
 import com.gouge.guaili.ui.GuailiViewModel
+import com.gouge.guaili.ui.ServerSignalsViewModel
+import com.gouge.guaili.data.ServerSignalsSnapshotStore
+import com.gouge.guaili.settings.MarketSignalPreferencesStore
+import com.gouge.guaili.widget.updateServerSignalWidgets
 import com.gouge.guaili.ui.theme.GuailiTheme
 import com.gouge.guaili.widget.GuailiWidget
 import androidx.glance.appwidget.updateAll
@@ -50,6 +54,15 @@ class MainActivity : ComponentActivity() {
                 },
             ),
         )[GuailiViewModel::class.java]
+        val signalsViewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass == ServerSignalsViewModel::class.java)
+                return ServerSignalsViewModel(settingsStore, MarketSignalPreferencesStore(applicationContext),
+                    ServerSignalsSnapshotStore(applicationContext),
+                    onRefreshed = { settings, result -> updateServerSignalWidgets(applicationContext, settings, result) }) as T
+            }
+        })[ServerSignalsViewModel::class.java]
         val xbotViewModel = ViewModelProvider(this, MainViewModel.factory(applicationContext))[MainViewModel::class.java]
 
         setContent {
@@ -57,6 +70,7 @@ class MainActivity : ComponentActivity() {
             GuailiTheme {
                 TradingAppScreen(
                     marketViewModel = viewModel,
+                    signalsViewModel = signalsViewModel,
                     xbotViewModel = xbotViewModel,
                     requestedLaunch = request,
                     resumeGeneration = resumeGeneration.intValue,

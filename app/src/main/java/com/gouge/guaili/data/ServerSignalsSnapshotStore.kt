@@ -24,6 +24,7 @@ data class ServerSignalsSnapshot(
     val updatedAt: Long,
     val baseUrl: String,
     val serverClock: GuailiServerClock? = null,
+    val fullUniverse: Boolean = false,
 )
 
 @Serializable
@@ -44,10 +45,15 @@ fun interface ServerSignalsSnapshotSink {
     suspend fun readFailure(): ServerSignalsFailure? = null
 }
 
+interface ServerSignalsSource : ServerSignalsSnapshotSink {
+    val snapshots: Flow<ServerSignalsSnapshot?>
+    val failures: Flow<ServerSignalsFailure?>
+}
+
 class ServerSignalsSnapshotStore internal constructor(
     private val dataStore: DataStore<Preferences>,
     private val deviceTime: () -> GuailiDeviceTime? = { null },
-) : ServerSignalsSnapshotSink {
+) : ServerSignalsSource {
     constructor(context: Context) : this(
         context.applicationContext.serverSignalsDataStore,
         { readGuailiDeviceTime(context.applicationContext) },
@@ -58,13 +64,13 @@ class ServerSignalsSnapshotStore internal constructor(
         if (error is IOException) emit(emptyPreferences()) else throw error
     }
 
-    val snapshots: Flow<ServerSignalsSnapshot?> = preferences.map { values ->
+    override val snapshots: Flow<ServerSignalsSnapshot?> = preferences.map { values ->
         values[SnapshotKey]?.let { encoded ->
             runCatching { json.decodeFromString<ServerSignalsSnapshot>(encoded) }.getOrNull()
         }
     }.distinctUntilChanged()
 
-    val failures: Flow<ServerSignalsFailure?> = preferences.map { values ->
+    override val failures: Flow<ServerSignalsFailure?> = preferences.map { values ->
         values[FailureKey]?.let { encoded ->
             runCatching { json.decodeFromString<ServerSignalsFailure>(encoded) }.getOrNull()
         }
@@ -91,6 +97,10 @@ class ServerSignalsSnapshotStore internal constructor(
             if (encoded == null) preferences.remove(FailureKey)
             else preferences[FailureKey] = encoded
         }
+    }
+
+    suspend fun clear() {
+        dataStore.edit { values -> values.remove(SnapshotKey); values.remove(FailureKey) }
     }
 
     companion object {

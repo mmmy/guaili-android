@@ -42,7 +42,7 @@ class GuailiWidgetWorker(
             val legacy = async { if (needsLegacy) GuailiRefreshUseCase(snapshotSink = GuailiSnapshotStore(applicationContext))
                 .refresh(settings, requirePersistence = true) else null }
             val v2 = async { if (needsV2) ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(applicationContext))
-                .refresh(settings.baseUrl, symbols = serverSignalQuerySymbols(targets.map { it.config })) else null }
+                .refresh(settings.baseUrl, reuseWithinMillis = 1_000L) else null }
             val legacyResult = legacy.await()
             val v2Result = v2.await()
             val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)

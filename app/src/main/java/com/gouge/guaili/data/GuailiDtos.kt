@@ -28,6 +28,9 @@ data class GuailiSeries(
     val count: Int = 0,
     val latest: GuailiPoint? = null,
     val data: List<GuailiPoint> = emptyList(),
+    val availability: String? = null,
+    val reasonCode: String? = null,
+    val reason: String? = null,
 )
 
 @Serializable
@@ -43,4 +46,8 @@ data class GuailiPoint(
     val longTrend: Boolean? = null,
     val shortTrend: Boolean? = null,
     val isClosed: Boolean? = null,
+    val availability: String? = null,
+    val reasonCode: String? = null,
+    val reason: String? = null,
+    val historyCount: Int? = null,
 )

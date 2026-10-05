@@ -22,6 +22,10 @@ data class GuailiCell(
     val signalLongTrend: Boolean? = null,
     val signalShortTrend: Boolean? = null,
     val signalAtrReady: Boolean? = null,
+    val availability: String? = null,
+    val reasonCode: String? = null,
+    val reason: String? = null,
+    val historyCount: Int? = null,
 )
 
 @Serializable

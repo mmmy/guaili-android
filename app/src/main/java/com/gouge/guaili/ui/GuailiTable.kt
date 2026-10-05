@@ -311,7 +311,7 @@ private fun ValueCell(
     dimensions: TableDimensions,
     modifier: Modifier = Modifier,
 ) {
-    val text = cell?.value?.toString() ?: "-"
+    val text = cell?.value?.toString() ?: "—"
     val textColor = if (cell == null) {
         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
     } else {

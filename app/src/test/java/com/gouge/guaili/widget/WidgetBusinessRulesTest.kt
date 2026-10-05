@@ -259,6 +259,9 @@ class WidgetBusinessRulesTest {
         assertEquals("12", widgetCellValue(cell().copy(isClosed = false)))
         assertEquals("12", widgetCellValue(cell().copy(isClosed = null)))
         assertEquals("12", widgetCellValue(cell()))
+        assertEquals("0", widgetCellValue(cell().copy(value = 0)))
+        assertEquals("—", widgetCellValue(cell().copy(value = null)))
+        assertEquals("—", widgetCellValue(null))
     }
 
     @Test fun snoozeAddsExactlyFifteenMinutesWithoutRounding() {

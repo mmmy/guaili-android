@@ -48,8 +48,9 @@ import com.gouge.xbot.widget.AlertWidgetTarget
 private enum class SettingsDetail { Overview, Market, Account }
 
 @Composable
-fun TradingAppScreen(
+internal fun TradingAppScreen(
     marketViewModel: GuailiViewModel,
+    signalsViewModel: ServerSignalsViewModel,
     xbotViewModel: MainViewModel,
     requestedLaunch: AppLaunchRequest? = null,
     resumeGeneration: Int = 0,
@@ -91,7 +92,10 @@ fun TradingAppScreen(
     }
 
     LaunchedEffect(destination) {
-        if (destination != AppDestination.Market) marketViewModel.setForeground(false)
+        if (destination != AppDestination.Market) {
+            marketViewModel.setForeground(false)
+            signalsViewModel.setForeground(false)
+        }
     }
 
     LaunchedEffect(resumeGeneration) {
@@ -125,6 +129,7 @@ fun TradingAppScreen(
                     when (destination) {
                         AppDestination.Market -> GuailiScreen(
                             viewModel = marketViewModel,
+                            signalsViewModel = signalsViewModel,
                             requestedKlineTarget = requestedKline,
                             onRequestedKlineConsumed = { requestedKline = null },
                             onOpenAppSettings = { destination = AppDestination.Settings },

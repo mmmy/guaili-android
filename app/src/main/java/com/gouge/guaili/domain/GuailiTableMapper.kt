@@ -13,7 +13,9 @@ fun GuailiResponse.toTable(
         val seriesByInterval = bySymbol[symbol]?.series.orEmpty().associateBy { it.interval }
         requestedIntervals.mapNotNull { interval ->
             val series = seriesByInterval[interval] ?: return@mapNotNull null
-            val latest = series.latest ?: return@mapNotNull null
+            val latest = series.latest ?: series.availability?.let {
+                GuailiPoint(availability = it, reasonCode = series.reasonCode, reason = series.reason)
+            } ?: return@mapNotNull null
             val previous = series.data.getOrNull(series.data.lastIndex - 1)
             interval to latest.toCell(
                 symbol = symbol,
@@ -77,5 +79,10 @@ private fun GuailiPoint.toCell(
         closeTime = closeTime,
         signalLongTrend = this.longTrend,
         signalShortTrend = this.shortTrend,
-        signalAtrReady = previousAtr14?.let { it.isFinite() && it > 0.0 },
+        signalAtrReady = if (availability != null) value != null
+            else previousAtr14?.let { it.isFinite() && it > 0.0 },
+        availability = availability,
+        reasonCode = reasonCode,
+        reason = reason,
+        historyCount = historyCount,
     )

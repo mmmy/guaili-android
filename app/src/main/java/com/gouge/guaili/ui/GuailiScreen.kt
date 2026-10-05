@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -63,19 +64,25 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.settings.LayoutMode
+import com.gouge.guaili.settings.MarketView
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
 @Composable
-fun GuailiScreen(
+internal fun GuailiScreen(
     viewModel: GuailiViewModel,
+    signalsViewModel: ServerSignalsViewModel,
     requestedKlineTarget: KlineTarget? = null,
     onRequestedKlineConsumed: () -> Unit = {},
     onOpenAppSettings: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val signalsState by signalsViewModel.state.collectAsStateWithLifecycle()
+    val signalListState = rememberLazyListState()
+    val showSignals = signalsState.preferences.view == MarketView.SignalsV2
+    var klineFromSignals by rememberSaveable { mutableStateOf(false) }
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
     val compactFilters = compactHeader && windowSize.height / LocalDensity.current.density < 360f
@@ -98,42 +105,46 @@ fun GuailiScreen(
 
     LaunchedEffect(requestedKlineTarget) {
         requestedKlineTarget?.let { target ->
+            klineFromSignals = false
             klineSymbol = target.symbol
             klineInterval = target.interval
             onRequestedKlineConsumed()
         }
     }
 
-    DisposableEffect(lifecycleOwner, viewModel, klineTarget) {
+    val contentActive = klineTarget == null && !showSettings && !showHelp
+    DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals) {
+        fun update(active: Boolean) {
+            viewModel.setForeground(active && contentActive && !showSignals)
+            signalsViewModel.setForeground(active && contentActive && showSignals)
+        }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.setForeground(klineTarget == null)
-                Lifecycle.Event.ON_STOP -> viewModel.setForeground(false)
+                Lifecycle.Event.ON_START -> update(true)
+                Lifecycle.Event.ON_STOP -> update(false)
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        update(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.setForeground(false)
+            signalsViewModel.setForeground(false)
         }
-    }
-
-    LaunchedEffect(klineTarget) {
-        viewModel.setForeground(
-            klineTarget == null && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
-        )
     }
 
     klineTarget?.let { target ->
         KlineScreen(
             baseUrl = state.settings.baseUrl,
-            symbols = state.settings.symbols,
-            intervals = state.settings.intervals,
+            symbols = if (klineFromSignals) (signalsState.availableSymbols + target.symbol).distinct() else state.settings.symbols,
+            intervals = if (klineFromSignals) (signalsState.snapshot?.response?.results
+                ?.firstOrNull { it.symbol == target.symbol }?.perIntervalQuality.orEmpty().map { it.interval } +
+                state.settings.intervals + target.interval).distinct() else state.settings.intervals,
             initialSymbol = target.symbol,
             initialInterval = target.interval,
             refreshSeconds = state.settings.autoRefreshSeconds,
-            closedOnly = state.settings.closedOnly,
+            closedOnly = if (klineFromSignals) false else state.settings.closedOnly,
             onBack = {
                 klineSymbol = null
                 klineInterval = null
@@ -169,71 +180,90 @@ fun GuailiScreen(
                 .padding(innerPadding)
                 .padding(horizontal = 12.dp),
         ) {
-            Toolbar(
-                state = state,
-                compact = compactHeader,
-                compactFilters = compactFilters,
-                intervalGroup = intervalGroup,
-                onSelectIntervalGroup = { intervalGroup = it },
-                onRefresh = viewModel::refresh,
-                tableLayout = tableLayout,
-                onToggleLayout = {
-                    val next = when (tableLayout) {
-                        TableLayout.Table -> LayoutMode.Groups
-                        TableLayout.Groups -> LayoutMode.Table
+            MarketViewSelector(signalsState.preferences.view, signalsViewModel::setView)
+            if (showSignals) {
+                MarketSignalsContent(
+                    state = signalsState,
+                    listState = signalListState,
+                    onRefresh = signalsViewModel::refresh,
+                    onToggleSymbol = signalsViewModel::toggleSymbol,
+                    onSelectAll = signalsViewModel::selectAllSymbols,
+                    onToggleKind = signalsViewModel::toggleKind,
+                    onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
+                    onOpenKline = { target ->
+                        klineFromSignals = true
+                        klineSymbol = target.symbol
+                        klineInterval = target.interval
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Toolbar(
+                    state = state,
+                    compact = compactHeader,
+                    compactFilters = compactFilters,
+                    intervalGroup = intervalGroup,
+                    onSelectIntervalGroup = { intervalGroup = it },
+                    onRefresh = viewModel::refresh,
+                    tableLayout = tableLayout,
+                    onToggleLayout = {
+                        val next = when (tableLayout) {
+                            TableLayout.Table -> LayoutMode.Groups
+                            TableLayout.Groups -> LayoutMode.Table
+                        }
+                        viewModel.setLayoutMode(next)
+                    },
+                    onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
+                    onOpenHelp = { showHelp = true },
+                )
+
+                state.errorMessage?.let { error ->
+                    ErrorBanner(
+                        message = error,
+                        hasCachedData = state.cells.isNotEmpty(),
+                        onRetry = viewModel::refresh,
+                    )
+                }
+
+                if (!compactFilters) {
+                    IntervalFilters(
+                        selected = intervalGroup,
+                        onSelected = { intervalGroup = it },
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(bottom = 8.dp),
+                ) {
+                    when (tableLayout) {
+                        TableLayout.Table -> GuailiTable(
+                            state = state,
+                            intervals = visibleIntervals,
+                            onCellClick = { selectedCell = it },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        TableLayout.Groups -> GuailiGroupedTable(
+                            state = state,
+                            intervals = visibleIntervals,
+                            onCellClick = { selectedCell = it },
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     }
-                    viewModel.setLayoutMode(next)
-                },
-                onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
-                onOpenHelp = { showHelp = true },
-            )
-
-            state.errorMessage?.let { error ->
-                ErrorBanner(
-                    message = error,
-                    hasCachedData = state.cells.isNotEmpty(),
-                    onRetry = viewModel::refresh,
-                )
-            }
-
-            if (!compactFilters) {
-                IntervalFilters(
-                    selected = intervalGroup,
-                    onSelected = { intervalGroup = it },
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(bottom = 8.dp),
-            ) {
-                when (tableLayout) {
-                    TableLayout.Table -> GuailiTable(
-                        state = state,
-                        intervals = visibleIntervals,
-                        onCellClick = { selectedCell = it },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    TableLayout.Groups -> GuailiGroupedTable(
-                        state = state,
-                        intervals = visibleIntervals,
-                        onCellClick = { selectedCell = it },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                if (state.isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-                if (state.isRefreshing) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.TopCenter),
-                    )
+                    if (state.isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center),
+                        )
+                    }
+                    if (state.isRefreshing) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.TopCenter),
+                        )
+                    }
                 }
             }
         }
@@ -243,6 +273,7 @@ fun GuailiScreen(
         CellDetailSheet(
             cell = cell,
             onOpenKline = {
+                klineFromSignals = false
                 klineSymbol = cell.symbol
                 klineInterval = cell.interval
                 selectedCell = null

@@ -9,6 +9,29 @@ import org.junit.Test
 import kotlin.test.assertFailsWith
 
 class ServerSignalsRefreshUseCaseTest {
+    @Test fun appAndWidgetReuseOnlyRecentCompleteSnapshotsFromTheSameSource() = runTest {
+        val sink = MemorySink()
+        var calls = 0
+        val factory = ServerSignalsFetcherFactory { ServerSignalsFetcher {
+            calls++
+            GuailiResult.Success(ServerSignalsResponse(true, "ready", 20_000L))
+        } }
+        val app = ServerSignalsRefreshUseCase(factory, sink)
+        val widget = ServerSignalsRefreshUseCase(factory, sink)
+        app.refresh("http://server-a", reuseWithinMillis = 1_000)
+        widget.refresh("http://server-a/", reuseWithinMillis = 1_000)
+        assertEquals(1, calls)
+        assertTrue(sink.snapshot!!.fullUniverse)
+        sink.snapshot = sink.snapshot!!.copy(fullUniverse = false)
+        widget.refresh("http://server-a", reuseWithinMillis = 1_000)
+        assertEquals(2, calls)
+        app.refresh("http://server-b", reuseWithinMillis = 1_000)
+        assertEquals(3, calls)
+        sink.device = sink.device.copy(elapsedMillis = sink.device.elapsedMillis + 1_001)
+        app.refresh("http://server-b", reuseWithinMillis = 1_000)
+        assertEquals(4, calls)
+    }
+
     private class MemorySink : ServerSignalsSnapshotSink {
         var snapshot: ServerSignalsSnapshot? = null
         var failure: ServerSignalsFailure? = null

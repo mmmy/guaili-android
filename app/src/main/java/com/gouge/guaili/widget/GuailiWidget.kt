@@ -56,6 +56,7 @@ import com.gouge.guaili.data.ServerSignalsFailure
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.domain.GuailiSignal
+import com.gouge.guaili.signals.SignalCardStyle
 import com.gouge.guaili.domain.GuailiSignalDirection
 import com.gouge.guaili.data.assessGuailiTime
 import com.gouge.guaili.data.readGuailiDeviceTime
@@ -572,7 +573,7 @@ internal fun SignalWidgetHeader(snapshot: GuailiSnapshot?, appWidgetId: Int, ref
             } else {
                 when { wide -> "乖离信号 $version · ${signalCount}条"; narrow -> "信号$version·${signalCount}条"; else -> "信号 $version · ${signalCount}条" }
             },
-            style = TextStyle(color = PrimaryText, fontSize = if (wide) 13.sp else if (narrow) 11.sp else 12.sp,
+            style = TextStyle(color = PrimaryText, fontSize = if (wide) SignalCardStyle.HeaderFontSp.sp else if (narrow) 11.sp else 12.sp,
                 fontWeight = FontWeight.Bold),
             modifier = GlanceModifier.defaultWeight().padding(end = 4.dp)
                 .clickable(actionStartActivity(mainActivityIntent())), maxLines = 1,
@@ -853,7 +854,7 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
         modifier = GlanceModifier
             .fillMaxWidth()
             .background(SignalBackground)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)
             .clickable(actionStartActivity(klineIntent(signal.symbol, signal.anchorInterval))),
     ) {
         Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -861,10 +862,10 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
             text = displaySymbol(signal.symbol),
             style = TextStyle(
                 color = PrimaryText,
-                fontSize = 12.sp,
+                fontSize = SignalCardStyle.TitleFontSp.sp,
                 fontWeight = FontWeight.Bold,
             ),
-            modifier = if (narrow) GlanceModifier.defaultWeight() else GlanceModifier.width(52.dp),
+            modifier = if (narrow) GlanceModifier.defaultWeight() else GlanceModifier.width(SignalCardStyle.SymbolWidthDp.dp),
             maxLines = 1,
         )
         if (!narrow) {
@@ -873,7 +874,7 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
                 text = signalTitle(signal),
                 style = TextStyle(
                     color = signalTitleColor(signal),
-                    fontSize = 12.sp,
+                    fontSize = SignalCardStyle.TitleFontSp.sp,
                     fontWeight = FontWeight.Bold,
                 ),
                 modifier = GlanceModifier.defaultWeight(),
@@ -883,7 +884,7 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
         Spacer(modifier = GlanceModifier.width(6.dp))
         Text(
             text = "${signal.totalLevelCount}级" + if (narrow && signal.transitionOnly) " · 变化" else "",
-            style = TextStyle(color = SecondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp, fontWeight = FontWeight.Bold),
             modifier = GlanceModifier.background(SignalBadgeBackground).padding(horizontal = 4.dp, vertical = 2.dp),
             maxLines = 1,
         )
@@ -905,7 +906,7 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
                 signal.runs.forEachIndexed { index, run ->
                     if (index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
                     Text(signalRunLabel(run, index == 0, signal.transitionOnly),
-                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp,
+                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp,
                             textAlign = if (index == 0) TextAlign.Start else TextAlign.End),
                         modifier = GlanceModifier.defaultWeight(), maxLines = 1)
                 }
@@ -913,7 +914,7 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
             } else {
                 signal.runs.forEachIndexed { index, run ->
                     Text(signalRunLabel(run, index == 0, signal.transitionOnly),
-                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
+                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp),
                         modifier = GlanceModifier.fillMaxWidth(), maxLines = 1)
                 }
             }
@@ -921,38 +922,31 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
         }
         Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             if (signal.kind != GuailiSignalKind.Conflict) {
-                Text(signalRangeLabel(signal), style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
+                Text(signalRangeLabel(signal), style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp),
                     modifier = GlanceModifier.defaultWeight(), maxLines = 1)
                 Spacer(modifier = GlanceModifier.width(8.dp))
             }
             Text(
                 text = signalCompactTrend(signal, maLabel),
-                style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp,
+                style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp,
                     textAlign = if (wide && signal.kind != GuailiSignalKind.Conflict) TextAlign.Center else TextAlign.Start),
                 modifier = if (signal.kind == GuailiSignalKind.Conflict || wide) GlanceModifier.defaultWeight() else GlanceModifier,
                 maxLines = if (narrow && signal.kind == GuailiSignalKind.Conflict) 2 else 1,
             )
             if (!narrow) {
                 Spacer(modifier = GlanceModifier.width(8.dp))
-                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = 10.sp,
+                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp,
                     textAlign = TextAlign.End), modifier = if (wide && signal.kind != GuailiSignalKind.Conflict)
                         GlanceModifier.defaultWeight() else GlanceModifier, maxLines = 1)
             }
         }
     }
-    Spacer(modifier = GlanceModifier.height(5.dp))
+    Spacer(modifier = GlanceModifier.height(SignalCardStyle.CardSpacingDp.dp))
     }
 }
 
-private fun signalTitleColor(signal: GuailiSignal): ColorProvider = when (signal.kind) {
-    GuailiSignalKind.Compression -> AccentText
-    GuailiSignalKind.Extreme -> when (signal.primaryRun.direction) {
-        GuailiSignalDirection.Positive -> SignalPositiveText
-        GuailiSignalDirection.Negative -> SignalNegativeText
-        GuailiSignalDirection.Neutral -> SecondaryText
-    }
-    GuailiSignalKind.Conflict -> WarningText
-}
+private fun signalTitleColor(signal: GuailiSignal): ColorProvider =
+    dayNightColor(SignalCardStyle.Light.titleColor(signal), SignalCardStyle.Dark.titleColor(signal))
 
 @Composable
 private fun EmptyWidgetContent() {
@@ -1107,7 +1101,7 @@ private val SymbolWidth = 54.dp
 private fun dayNightColor(day: Long, night: Long): ColorProvider =
     DayNightColorProvider(Color(day), Color(night))
 
-private val WidgetBackground = dayNightColor(0xFFF9FAFB, 0xFF17191D)
+private val WidgetBackground = dayNightColor(SignalCardStyle.Light.background, SignalCardStyle.Dark.background)
 private val GroupedBackground = ColorProvider(Color(0xFF11161C))
 private val GroupedHeaderBackground = ColorProvider(Color(0xFF202832))
 private val GroupedPrimaryText = ColorProvider(Color(0xFFE5E7EB))
@@ -1118,14 +1112,14 @@ private val GroupedLongTrendText = ColorProvider(Color(0xFF69F0AE))
 private val GroupedShortTrendText = ColorProvider(Color(0xFFFF8A80))
 private val GroupedConflictTrendText = ColorProvider(Color(0xFFFFD740))
 private val GroupedNeutralTrendText = ColorProvider(Color(0xFFD1D5DB))
-private val SignalBackground = dayNightColor(0xFFF1F3F5, 0xFF24272D)
-private val SignalPositiveText = dayNightColor(0xFF06722D, 0xFF69F0AE)
-private val SignalNegativeText = dayNightColor(0xFFB0003A, 0xFFFF8A80)
-private val SignalBadgeBackground = dayNightColor(0xFFE3E7EC, 0xFF343B45)
-private val PrimaryText = dayNightColor(0xFF17191D, 0xFFF3F4F6)
-private val SecondaryText = dayNightColor(0xFF62666D, 0xFFB7BBC3)
-private val AccentText = dayNightColor(0xFF315EFB, 0xFF9DB2FF)
-private val WarningText = dayNightColor(0xFFB45309, 0xFFFBBF24)
+private val SignalBackground = dayNightColor(SignalCardStyle.Light.card, SignalCardStyle.Dark.card)
+private val SignalPositiveText = dayNightColor(SignalCardStyle.Light.positive, SignalCardStyle.Dark.positive)
+private val SignalNegativeText = dayNightColor(SignalCardStyle.Light.negative, SignalCardStyle.Dark.negative)
+private val SignalBadgeBackground = dayNightColor(SignalCardStyle.Light.badge, SignalCardStyle.Dark.badge)
+private val PrimaryText = dayNightColor(SignalCardStyle.Light.primary, SignalCardStyle.Dark.primary)
+private val SecondaryText = dayNightColor(SignalCardStyle.Light.secondary, SignalCardStyle.Dark.secondary)
+private val AccentText = dayNightColor(SignalCardStyle.Light.accent, SignalCardStyle.Dark.accent)
+private val WarningText = dayNightColor(SignalCardStyle.Light.warning, SignalCardStyle.Dark.warning)
 private val RefreshSuccessText = dayNightColor(0xFF06722D, 0xFF69F0AE)
 private val ReminderLongText = dayNightColor(0xFF06722D, 0xFF69F0AE)
 private val ReminderShortText = dayNightColor(0xFFB0003A, 0xFFFF8A80)

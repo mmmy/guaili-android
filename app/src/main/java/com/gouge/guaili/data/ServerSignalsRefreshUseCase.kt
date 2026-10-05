@@ -27,7 +27,18 @@ class ServerSignalsRefreshUseCase(
         baseUrl: String,
         requirePersistence: Boolean = true,
         symbols: List<String> = emptyList(),
+        reuseWithinMillis: Long = 0,
     ): GuailiResult<ServerSignalsSnapshot> = RefreshCoordinator.mutex.withLock {
+        // A caller queued behind another entry point can reuse its complete, freshly saved
+        // response. Old subset caches and snapshots from other servers are never reused.
+        if (reuseWithinMillis > 0 && symbols.isEmpty()) {
+            val cached = snapshotSink.read()
+            val device = snapshotSink.currentDeviceTime()
+            if (cached != null && cached.fullUniverse && cached.belongsTo(baseUrl) && device != null) {
+                val age = assessServerSignalsTime(cached, device).cacheAgeMillis
+                if (age != null && age in 0..reuseWithinMillis) return@withLock GuailiResult.Success(cached)
+            }
+        }
         refreshLocked(normalizeServerSignalsBaseUrl(baseUrl), requirePersistence, symbols)
     }
 
@@ -72,6 +83,7 @@ class ServerSignalsRefreshUseCase(
                     updatedAt = nowMillis(),
                     baseUrl = baseUrl,
                     serverClock = clock,
+                    fullUniverse = symbols.isEmpty(),
                 )
                 try {
                     // Disabled/config-error responses are successful observations and must replace
@@ -81,7 +93,7 @@ class ServerSignalsRefreshUseCase(
                     throw error
                 } catch (error: Exception) {
                     if (requirePersistence) {
-                        return failure(baseUrl, "信号已获取，但无法保存到小组件，请重试", error)
+                        return failure(baseUrl, "信号已获取，但无法保存快照，请重试", error)
                     }
                 }
                 try {

@@ -3,6 +3,7 @@ package com.gouge.guaili.widget
 import android.content.Context
 import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.updateAll
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -12,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 internal data class WidgetRefreshTarget(val id: GlanceId, val config: WidgetConfig)
 
-/** A single V2 cache serves all opted-in widgets; never query just the widget being tapped. */
+/** Widget selections are presentation filters; production refreshes fetch the full universe. */
 internal fun serverSignalQuerySymbols(configurations: Iterable<WidgetConfig>): List<String> =
     configurations.filter { it.mode == WidgetMode.SignalsV2 }
         .flatMap { it.symbols }.map(String::trim).filter(String::isNotEmpty).distinct()
@@ -30,11 +31,23 @@ internal suspend fun refreshServerSignalWidgets(context: Context, settings: Guai
     val targets = widgetRefreshTargets(context, settings).filter { it.config.mode == WidgetMode.SignalsV2 }
     if (targets.isEmpty()) return
     val result = ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(context))
-        .refresh(settings.baseUrl, symbols = serverSignalQuerySymbols(targets.map { it.config }))
+        .refresh(settings.baseUrl, reuseWithinMillis = 1_000L)
     targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
         if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
         message = (result as? GuailiResult.Failure)?.message) }
     if (result is GuailiResult.Success) scheduleServerSignalsExpiry(context, result.value)
+}
+
+/** Called by the independent foreground signal screen, including when no widget exists. */
+internal suspend fun updateServerSignalWidgets(context: Context, settings: GuailiSettings,
+    result: GuailiResult<ServerSignalsSnapshot>) {
+    val targets = widgetRefreshTargets(context, settings).filter { it.config.mode == WidgetMode.SignalsV2 }
+    if (targets.isEmpty()) return
+    targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
+        if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
+        message = (result as? GuailiResult.Failure)?.message) }
+    if (result is GuailiResult.Success) scheduleServerSignalsExpiry(context, result.value)
+    com.gouge.guaili.widget.GuailiWidget().updateAll(context)
 }
 
 internal fun scheduleServerSignalsExpiry(context: Context, snapshot: ServerSignalsSnapshot) {
