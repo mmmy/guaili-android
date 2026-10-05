@@ -9,6 +9,8 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -161,9 +163,12 @@ class TvAlertScreenTest {
         compose.onNodeWithText("设置中").assertIsNotEnabled()
         compose.onNodeWithText("删除").assertIsNotEnabled()
         compose.onNodeWithText("添加").assertIsNotEnabled()
-        compose.onNodeWithText("刷新").assertIsNotEnabled()
+        compose.onNode(hasText("刷新") or hasContentDescription("刷新")).assertIsNotEnabled()
         // Account navigation is read-only; logout is guarded on the account screen.
+        val accountInMenu = compose.onAllNodesWithText("账户").fetchSemanticsNodes().isEmpty()
+        if (accountInMenu) compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("账户").assertIsEnabled()
+        if (accountInMenu) compose.onNodeWithText("账户").performClick()
         saveScreenshot("business-expiry-resetting")
     }
 

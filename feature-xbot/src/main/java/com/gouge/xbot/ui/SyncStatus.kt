@@ -4,10 +4,16 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-internal fun syncStatusText(updatedAtMillis: Long, loading: Boolean, error: String?): String {
+internal fun syncStatusText(updatedAtMillis: Long, loading: Boolean, error: String?, compact: Boolean = false): String {
     val updated = updatedAtMillis.takeIf { it > 0 }?.let {
-        DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+        DateTimeFormatter.ofPattern(if (compact) "HH:mm:ss" else "MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
             .format(Instant.ofEpochMilli(it))
+    }
+    if (compact) return when {
+        loading -> "同步中…"
+        error != null -> "同步失败"
+        updated == null -> "未同步"
+        else -> "同步 $updated"
     }
     return when {
         loading -> if (updated == null) "正在同步…" else "正在同步 · 上次 $updated"

@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -50,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.res.painterResource
@@ -107,31 +111,62 @@ fun TvAlertScreen(
         }
     }
     Column(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp)) {
-            Text("警报管理", style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = "${state.visibleAlertIds.size}/${state.alertConfigs.size} 组 · " +
-                    syncStatusText(state.alertsUpdatedAtMillis, state.isLoadingAlerts, state.alertErrorMessage),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onChooseVisible,
-                    enabled = state.hasLoadedAlerts && !state.isLoadingAlerts && !state.isChangingAlerts) { Text("显示配置") }
-                TextButton(onClick = onRefresh,
-                    enabled = !state.isLoadingAlerts && !state.isChangingAlerts) { Text("刷新") }
-                TextButton(onClick = onLogout) { Text("账户") }
-                if (onRefreshCache != null) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp)) {
+            val iconActions = maxWidth / LocalDensity.current.fontScale < 480.dp
+            val groupCount = "${state.visibleAlertIds.size}/${state.alertConfigs.size}"
+            val fullStatus = "$groupCount 组 · " +
+                syncStatusText(state.alertsUpdatedAtMillis, state.isLoadingAlerts, state.alertErrorMessage)
+            val compactStatus = syncStatusText(state.alertsUpdatedAtMillis, state.isLoadingAlerts, state.alertErrorMessage, compact = true)
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("警报管理", style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "$groupCount · " + if (iconActions) compactStatus.removePrefix("同步 ") else compactStatus,
+                    modifier = Modifier.weight(1f).semantics { contentDescription = fullStatus },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (state.alertErrorMessage == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (iconActions) {
+                        IconButton(onClick = onChooseVisible,
+                            enabled = state.hasLoadedAlerts && !state.isLoadingAlerts && !state.isChangingAlerts,
+                            modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Outlined.FilterList, contentDescription = "显示配置")
+                        }
+                        IconButton(onClick = onRefresh,
+                            enabled = !state.isLoadingAlerts && !state.isChangingAlerts,
+                            modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "刷新")
+                        }
+                    } else {
+                        TextButton(onClick = onChooseVisible,
+                            enabled = state.hasLoadedAlerts && !state.isLoadingAlerts && !state.isChangingAlerts) { Text("显示配置") }
+                        TextButton(onClick = onRefresh,
+                            enabled = !state.isLoadingAlerts && !state.isChangingAlerts) { Text("刷新") }
+                        TextButton(onClick = onLogout) { Text("账户") }
+                    }
+                    if (iconActions || onRefreshCache != null) {
                     Box {
                         IconButton(onClick = { moreMenu = true },
-                            enabled = !state.isChangingAlerts && !state.isLoadingAlerts) {
+                            enabled = iconActions || (!state.isChangingAlerts && !state.isLoadingAlerts),
+                            modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Outlined.MoreVert, contentDescription = "更多操作")
                         }
                         DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
-                            DropdownMenuItem(text = { Text("刷新 TradingView 缓存") },
-                                enabled = state.visibleAlertIds.isNotEmpty(),
-                                onClick = { moreMenu = false; onRefreshCache() })
+                            Text(fullStatus, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (iconActions) {
+                                DropdownMenuItem(text = { Text("账户") }, onClick = { moreMenu = false; onLogout() })
+                            }
+                            if (onRefreshCache != null) {
+                                DropdownMenuItem(text = { Text("刷新 TradingView 缓存") },
+                                    enabled = state.visibleAlertIds.isNotEmpty() && !state.isChangingAlerts && !state.isLoadingAlerts,
+                                    onClick = { moreMenu = false; onRefreshCache() })
+                            }
                         }
+                    }
                     }
                 }
             }
