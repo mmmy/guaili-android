@@ -1,0 +1,11 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/xbot_aw_row_root" android:layout_width="match_parent" android:layout_height="44dp"
+    android:gravity="center_vertical" android:paddingHorizontal="10dp" android:background="@color/xbot_alert_widget_group">
+    <ImageView android:id="@+id/xbot_aw_group_arrow" android:layout_width="16dp" android:layout_height="16dp"
+        android:src="@drawable/xbot_ic_alert_chevron" android:importantForAccessibility="no" />
+    <TextView android:id="@+id/xbot_aw_group_title" android:layout_width="0dp" android:layout_weight="1"
+        android:layout_height="wrap_content" android:layout_marginStart="6dp" android:textSize="13sp"
+        android:textStyle="bold" android:textColor="@color/xbot_alert_widget_text" android:maxLines="1" android:ellipsize="end" />
+    <TextView android:id="@+id/xbot_aw_group_summary" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginStart="6dp" android:textSize="11sp" android:textColor="@color/xbot_alert_widget_muted" android:maxLines="1" />
+</LinearLayout>

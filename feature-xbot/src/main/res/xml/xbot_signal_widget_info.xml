@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:configure="com.gouge.xbot.widget.SignalWidgetConfigActivity"
+    android:description="@string/xbot_widget_description"
+    android:initialLayout="@layout/xbot_signal_widget"
+    android:minHeight="110dp"
+    android:minResizeHeight="72dp"
+    android:minResizeWidth="180dp"
+    android:minWidth="180dp"
+    android:previewLayout="@layout/xbot_signal_widget"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="3"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable"
+    tools:targetApi="s" />

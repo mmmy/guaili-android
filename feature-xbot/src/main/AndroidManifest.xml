@@ -1,0 +1,54 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <activity android:name=".XbotAccountActivity" android:exported="false"
+            android:theme="@style/XbotAppTheme" />
+
+        <activity
+            android:name=".widget.SignalWidgetConfigActivity"
+            android:exported="true"
+            android:theme="@style/XbotAppTheme">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".widget.WidgetQuickSettingsActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/XbotWidgetQuickSettingsTheme" />
+
+        <receiver
+            android:name=".widget.AlertWidgetProvider" android:exported="false" android:label="@string/xbot_alert_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.gouge.xbot.action.ALERT_SESSION_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/xbot_alert_widget_info" />
+        </receiver>
+        <activity android:name=".widget.AlertWidgetConfigActivity" android:exported="true"
+            android:excludeFromRecents="true" android:theme="@style/XbotWidgetQuickSettingsTheme">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" /></intent-filter>
+        </activity>
+        <activity android:name=".widget.AlertWidgetActionActivity" android:exported="false"
+            android:excludeFromRecents="true" android:theme="@style/XbotAlertWidgetActionTheme" />
+        <service android:name=".widget.AlertWidgetRemoteService" android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+        <receiver
+            android:name=".widget.SignalWidgetProvider"
+            android:exported="false"
+            android:label="@string/xbot_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.gouge.xbot.action.ALERT_SESSION_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/xbot_signal_widget_info" />
+        </receiver>
+    </application>
+</manifest>

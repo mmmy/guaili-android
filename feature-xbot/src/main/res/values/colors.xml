@@ -1,0 +1,12 @@
+<resources>
+    <color name="xbot_widget_text">#F4F6FA</color>
+    <color name="xbot_widget_muted">#A8B0BF</color>
+    <color name="xbot_widget_expired">#B3A8B0BF</color>
+    <color name="xbot_widget_divider">#2D3440</color>
+    <color name="xbot_signal_green">#57D38C</color>
+    <color name="xbot_signal_red">#FF6B78</color>
+    <color name="xbot_signal_cyan">#66D9D2</color>
+    <color name="xbot_signal_orange">#FFB45C</color>
+    <color name="xbot_signal_purple">#B793FF</color>
+    <color name="xbot_launcher_background">#181A20</color>
+</resources>

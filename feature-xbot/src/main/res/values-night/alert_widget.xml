@@ -1,0 +1,8 @@
+<resources>
+    <color name="xbot_alert_widget_surface">#181A20</color>
+    <color name="xbot_alert_widget_text">#F4F6FA</color>
+    <color name="xbot_alert_widget_muted">#A8B0BF</color>
+    <color name="xbot_alert_widget_divider">#343B46</color>
+    <color name="xbot_alert_widget_group">#222731</color>
+    <color name="xbot_alert_widget_expired">#FFB45C</color>
+</resources>

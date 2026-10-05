@@ -1,0 +1,17 @@
+<resources>
+    <string name="xbot_app_name">XBot Signal</string>
+    <string name="xbot_widget_name">信号设置</string>
+    <string name="xbot_widget_description">显示一至两个信号的动作、级别、方向和过期时间</string>
+    <string name="xbot_widget_refresh">刷新信号</string>
+    <string name="xbot_widget_settings">编辑小组件</string>
+    <string name="xbot_widget_preview_symbol">BTCUSDT</string>
+    <string name="xbot_widget_preview_level">级别  5 · 15 · 60</string>
+    <string name="xbot_widget_preview_direction">做多</string>
+    <string name="xbot_widget_preview_expiry">长期有效</string>
+    <string name="xbot_widget_preview_updated">12:31</string>
+    <string name="xbot_widget_preview_signal_icon">信号类型图标</string>
+    <string name="xbot_widget_preview_open_long">做多  突破均线</string>
+    <string name="xbot_widget_preview_open_short">做空  跌破均线</string>
+    <string name="xbot_widget_preview_close_long">平多  反向信号</string>
+    <string name="xbot_widget_preview_close_short">平空  趋势反转</string>
+</resources>

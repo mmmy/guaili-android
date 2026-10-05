@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "GuailiAndroid"
 include(":app")
+include(":feature-xbot")

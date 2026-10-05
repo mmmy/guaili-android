@@ -4,27 +4,33 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gouge.guaili.data.GuailiSnapshotStore
 import com.gouge.guaili.settings.GuailiSettingsSource
 import com.gouge.guaili.settings.SettingsStore
-import com.gouge.guaili.ui.GuailiScreen
+import com.gouge.guaili.ui.AppLaunchRequest
+import com.gouge.guaili.ui.TradingAppScreen
+import com.gouge.guaili.ui.clearAppLaunchExtras
+import com.gouge.guaili.ui.resolveAppLaunch
 import com.gouge.guaili.ui.GuailiViewModel
-import com.gouge.guaili.ui.KlineTarget
 import com.gouge.guaili.ui.theme.GuailiTheme
 import com.gouge.guaili.widget.GuailiWidget
 import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import com.gouge.guaili.widget.refreshServerSignalWidgets
+import com.gouge.xbot.ui.MainViewModel
 
 class MainActivity : ComponentActivity() {
-    private val requestedKline = MutableStateFlow<KlineTarget?>(null)
+    private val requestedLaunch = MutableStateFlow<AppLaunchRequest?>(null)
+    private val resumeGeneration = mutableIntStateOf(0)
 
     override fun onResume() {
         super.onResume()
+        resumeGeneration.intValue++
         com.gouge.guaili.widget.DecisionReminderScheduler.rescheduleAll(this)
     }
 
@@ -44,14 +50,20 @@ class MainActivity : ComponentActivity() {
                 },
             ),
         )[GuailiViewModel::class.java]
+        val xbotViewModel = ViewModelProvider(this, MainViewModel.factory(applicationContext))[MainViewModel::class.java]
 
         setContent {
-            val target by requestedKline.collectAsStateWithLifecycle()
+            val request by requestedLaunch.collectAsStateWithLifecycle()
             GuailiTheme {
-                GuailiScreen(
-                    viewModel = viewModel,
-                    requestedKlineTarget = target,
-                    onRequestedKlineConsumed = { requestedKline.value = null },
+                TradingAppScreen(
+                    marketViewModel = viewModel,
+                    xbotViewModel = xbotViewModel,
+                    requestedLaunch = request,
+                    resumeGeneration = resumeGeneration.intValue,
+                    onLaunchConsumed = {
+                        requestedLaunch.value = null
+                        intent?.clearAppLaunchExtras()
+                    },
                 )
             }
         }
@@ -64,9 +76,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleWidgetIntent(intent: android.content.Intent?) {
-        val symbol = intent?.getStringExtra(ExtraWidgetSymbol) ?: return
-        val interval = intent.getStringExtra(ExtraWidgetInterval) ?: return
-        requestedKline.value = KlineTarget(symbol, interval)
+        requestedLaunch.value = resolveAppLaunch(intent)
     }
 
     companion object {

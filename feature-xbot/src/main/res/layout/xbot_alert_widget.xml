@@ -1,0 +1,29 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/xbot_aw_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@drawable/xbot_alert_widget_background" android:clipToOutline="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="36dp"
+        android:gravity="center_vertical" android:paddingStart="12dp" android:paddingEnd="4dp">
+        <TextView android:id="@+id/xbot_aw_title" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/xbot_alert_widget_name" android:textSize="13sp" android:textStyle="bold"
+            android:includeFontPadding="false" android:textColor="@color/xbot_alert_widget_text" android:maxLines="1" />
+        <TextView android:id="@+id/xbot_aw_count" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:layout_marginStart="7dp" android:textSize="11sp" android:includeFontPadding="false"
+            android:textColor="@color/xbot_alert_widget_muted" android:maxLines="1" android:ellipsize="end" />
+        <TextView android:id="@+id/xbot_aw_status" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="5dp" android:textSize="11sp" android:includeFontPadding="false"
+            android:textColor="@color/xbot_alert_widget_muted" android:maxLines="1" />
+        <ImageView android:id="@+id/xbot_aw_settings" android:layout_width="36dp" android:layout_height="36dp"
+            android:padding="10dp" android:src="@drawable/xbot_ic_settings" android:tint="@color/xbot_alert_widget_muted"
+            android:contentDescription="@string/xbot_alert_widget_settings" />
+        <ImageView android:id="@+id/xbot_aw_refresh" android:layout_width="36dp" android:layout_height="36dp"
+            android:padding="10dp" android:src="@drawable/xbot_ic_refresh" android:tint="@color/xbot_alert_widget_muted"
+            android:contentDescription="@string/xbot_alert_widget_refresh" />
+    </LinearLayout>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <ListView android:id="@+id/xbot_aw_list" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:divider="@color/xbot_alert_widget_divider" android:dividerHeight="1dp" android:cacheColorHint="@android:color/transparent" />
+        <TextView android:id="@+id/xbot_aw_empty" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:gravity="center" android:padding="12dp" android:text="@string/xbot_alert_widget_empty"
+            android:textColor="@color/xbot_alert_widget_muted" android:textSize="12sp" />
+    </FrameLayout>
+</LinearLayout>

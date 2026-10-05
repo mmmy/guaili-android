@@ -73,6 +73,7 @@ fun GuailiScreen(
     viewModel: GuailiViewModel,
     requestedKlineTarget: KlineTarget? = null,
     onRequestedKlineConsumed: () -> Unit = {},
+    onOpenAppSettings: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val windowSize = LocalWindowInfo.current.containerSize
@@ -112,7 +113,10 @@ fun GuailiScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setForeground(false)
+        }
     }
 
     LaunchedEffect(klineTarget) {
@@ -180,7 +184,7 @@ fun GuailiScreen(
                     }
                     viewModel.setLayoutMode(next)
                 },
-                onOpenSettings = { showSettings = true },
+                onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
                 onOpenHelp = { showHelp = true },
             )
 

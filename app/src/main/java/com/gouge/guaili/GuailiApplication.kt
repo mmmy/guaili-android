@@ -6,10 +6,12 @@ import android.content.ComponentName
 import com.gouge.guaili.widget.GuailiWidgetReceiver
 import com.gouge.guaili.widget.GuailiWidgetScheduler
 import com.gouge.guaili.widget.DecisionReminderScheduler
+import com.gouge.xbot.XbotFeature
 
 class GuailiApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        XbotFeature.initialize(this)
         DecisionReminderScheduler.createNotificationChannel(this)
         val widgetIds = AppWidgetManager.getInstance(this).getAppWidgetIds(
             ComponentName(this, GuailiWidgetReceiver::class.java),
