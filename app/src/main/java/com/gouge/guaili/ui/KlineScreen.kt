@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -88,7 +89,6 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -144,6 +144,7 @@ fun KlineScreen(
     var isForeground by remember {
         mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
     }
+    var nextRefreshAt by remember { mutableLongStateOf(0L) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -172,9 +173,11 @@ fun KlineScreen(
         showAlertEditor = true
     }
     LaunchedEffect(symbol, interval, closedOnly, refreshSeconds, isForeground) {
-        if (!isForeground) return@LaunchedEffect
-        while (true) {
-            delay(refreshSeconds.coerceAtLeast(1) * 1_000L)
+        if (!isForeground) {
+            nextRefreshAt = 0L
+            return@LaunchedEffect
+        }
+        runKlineRefreshSchedule(refreshSeconds, android.os.SystemClock::elapsedRealtime, { nextRefreshAt = it }) {
             viewModel.load(symbol, interval, closedOnly, force = true)
         }
     }
@@ -209,6 +212,9 @@ fun KlineScreen(
                 onIntervalSelected = { interval = it },
                 onRefresh = { viewModel.load(symbol, interval, closedOnly, force = true) },
                 onBack = onBack,
+                refreshSeconds = refreshSeconds,
+                nextRefreshAt = nextRefreshAt,
+                foreground = isForeground,
             )
             selectedAlert?.let { alert ->
                 AlertFloatingToolbar(
@@ -385,6 +391,9 @@ private fun KlineToolbar(
     onIntervalSelected: (String) -> Unit,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
+    refreshSeconds: Int,
+    nextRefreshAt: Long,
+    foreground: Boolean,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -413,8 +422,12 @@ private fun KlineToolbar(
                 formatInterval(it)
             }
         }
-        IconButton(onClick = onRefresh, enabled = !isBusy) {
-            Icon(Icons.Outlined.Refresh, contentDescription = "Refresh K-line")
+        Box(Modifier.size(48.dp)) {
+            IconButton(onClick = onRefresh, enabled = !isBusy, modifier = Modifier.fillMaxSize()) {
+                Icon(Icons.Outlined.Refresh, contentDescription = "Refresh K-line")
+            }
+            KlineRefreshIndicator(refreshSeconds, nextRefreshAt, foreground,
+                Modifier.align(Alignment.TopEnd).padding(2.dp).size(12.dp))
         }
     }
 }
