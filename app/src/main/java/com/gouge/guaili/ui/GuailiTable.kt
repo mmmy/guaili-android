@@ -83,6 +83,9 @@ internal fun GuailiTable(
     alertsUnavailable: Boolean = false,
     onSymbolAlerts: (String) -> Unit = {},
     onPeriodAlert: (String, String) -> Unit = { _, _ -> },
+    tvAlerts: Map<String, SymbolTvAlerts> = emptyMap(),
+    onSymbolTvAlerts: (String) -> Unit = {},
+    onPeriodTvAlerts: (String, String) -> Unit = { _, _ -> },
 ) {
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
@@ -126,6 +129,7 @@ internal fun GuailiTable(
                             SignalSummaryRow(symbol, summary, onSignalClick, onSymbolSignals, compact = true)
                         }
                         PriceAlertSummary(symbol, priceAlerts[symbol], alertsUnavailable, { onSymbolAlerts(symbol) }, compact = true)
+                        TvAlertSummary(symbol, tvAlerts[symbol], { onSymbolTvAlerts(symbol) })
                     }
                     Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
                         intervals.forEach { interval ->
@@ -138,6 +142,8 @@ internal fun GuailiTable(
                                 member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
                                 alerts = priceAlerts[symbol]?.periods?.get(interval),
                                 onAlertClick = { onPeriodAlert(symbol, interval) },
+                                tvAlerts = tvAlerts[symbol]?.period(interval),
+                                onTvAlertClick = { onPeriodTvAlerts(symbol, interval) },
                             )
                         }
                     }
@@ -162,6 +168,9 @@ internal fun GuailiGroupedTable(
     alertsUnavailable: Boolean = false,
     onSymbolAlerts: (String) -> Unit = {},
     onPeriodAlert: (String, String) -> Unit = { _, _ -> },
+    tvAlerts: Map<String, SymbolTvAlerts> = emptyMap(),
+    onSymbolTvAlerts: (String) -> Unit = {},
+    onPeriodTvAlerts: (String, String) -> Unit = { _, _ -> },
 ) {
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
@@ -188,7 +197,12 @@ internal fun GuailiGroupedTable(
                         height = groupDimensions.symbolHeaderHeight,
                         summary = summaries[symbol],
                         summaryContent = { summaries[symbol]?.let { SignalSummaryRow(symbol, it, onSignalClick, onSymbolSignals) } },
-                        alertContent = { PriceAlertSummary(symbol, priceAlerts[symbol], alertsUnavailable, { onSymbolAlerts(symbol) }) },
+                        alertContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                PriceAlertSummary(symbol, priceAlerts[symbol], alertsUnavailable, { onSymbolAlerts(symbol) })
+                                TvAlertSummary(symbol, tvAlerts[symbol], { onSymbolTvAlerts(symbol) })
+                            }
+                        },
                     )
                     intervalRows.forEach { rowIntervals ->
                         Row(
@@ -213,6 +227,8 @@ internal fun GuailiGroupedTable(
                                     member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
                                     alerts = priceAlerts[symbol]?.periods?.get(interval),
                                     onAlertClick = { onPeriodAlert(symbol, interval) },
+                                    tvAlerts = tvAlerts[symbol]?.period(interval),
+                                    onTvAlertClick = { onPeriodTvAlerts(symbol, interval) },
                                 )
                             }
                             repeat(groupDimensions.columns - rowIntervals.size) {
@@ -279,6 +295,8 @@ internal fun GroupedPeriodCell(
     alerts: PeriodPriceAlerts? = null,
     onAlertClick: () -> Unit = {},
     highlightMember: Boolean = true,
+    tvAlerts: PeriodTvAlerts? = null,
+    onTvAlertClick: () -> Unit = {},
 ) {
     val trend = cell?.let { trendState(it.longTrend, it.shortTrend) }
     val periodTextColor = trend?.let(::trendTextColor) ?: NeutralTrendTextColor
@@ -319,6 +337,8 @@ internal fun GroupedPeriodCell(
             alerts = alerts,
             onAlertClick = onAlertClick,
             highlightMember = highlightMember,
+            tvAlerts = tvAlerts,
+            onTvAlertClick = onTvAlertClick,
         )
     }
 }
@@ -379,6 +399,8 @@ private fun ValueCell(
     alerts: PeriodPriceAlerts? = null,
     onAlertClick: () -> Unit = {},
     highlightMember: Boolean = true,
+    tvAlerts: PeriodTvAlerts? = null,
+    onTvAlertClick: () -> Unit = {},
 ) {
     val text = cell?.value?.toString() ?: "—"
     val textColor = if (cell == null) {
@@ -409,6 +431,7 @@ private fun ValueCell(
             .testTag("market-cell-$symbol-$interval")
             .then(when {
                 cell != null -> Modifier.clickable(role = Role.Button, onClickLabel = "Open cell details") { onCellClick(cell) }
+                tvAlerts != null -> Modifier.clickable(role = Role.Button, onClickLabel = "查看TV警报", onClick = onTvAlertClick)
                 alerts != null -> Modifier.clickable(role = Role.Button, onClickLabel = "查看价格警报线", onClick = onAlertClick)
                 else -> Modifier
             })
@@ -422,7 +445,8 @@ private fun ValueCell(
                     false -> "ATR filtered"
                     null -> "ATR filter unavailable"
                 } + (if (member != null) ", ${if (highlightMember) "所选实时信号" else "V2信号"}参与周期 $member" else "") +
-                    (if (alerts != null) "，${alerts.description}" else "")
+                    (if (alerts != null) "，${alerts.description}" else "") +
+                    (if (tvAlerts != null) "，${tvAlerts.description}" else "")
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -443,6 +467,12 @@ private fun ValueCell(
             Box(Modifier.align(Alignment.TopStart).padding(3.dp)) {
                 PriceAlertMarker(it, Modifier.testTag("market-period-alert-$symbol-$interval"))
             }
+        }
+        tvAlerts?.let { summary ->
+            Text("TV${summary.total}", Modifier.align(Alignment.BottomEnd)
+                .testTag("market-period-tv-$symbol-$interval").background(MatrixBackground)
+                .padding(horizontal = 2.dp), color = tvAlertColor(summary), fontSize = 8.sp, lineHeight = 10.sp,
+                maxLines = 1, fontWeight = FontWeight.SemiBold)
         }
     }
 }

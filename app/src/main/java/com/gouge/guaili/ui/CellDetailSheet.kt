@@ -43,6 +43,7 @@ fun CellDetailSheet(
     onViewSignals: (() -> Unit)? = null,
     priceAlertDescription: String? = null,
     dataContext: String? = null,
+    tvAlertsContent: (@Composable () -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -78,6 +79,21 @@ fun CellDetailSheet(
                 Text("价格警报：$it", Modifier.testTag("cell-price-alerts").padding(bottom = 10.dp),
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            FilledTonalButton(
+                onClick = onOpenKline,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("View K-line")
+            }
+            onViewSignals?.let { action -> TextButton(onClick = action, modifier = Modifier.fillMaxWidth()) {
+                Text("查看该周期的实时信号")
+            } }
+
+            tvAlertsContent?.invoke()
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
@@ -102,20 +118,6 @@ fun CellDetailSheet(
             DetailSection("Candle time")
             DetailLine("Open", formatDateTime(cell.openTime))
             DetailLine("Close", formatDateTime(cell.closeTime))
-
-            FilledTonalButton(
-                onClick = onOpenKline,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 18.dp),
-            ) {
-                Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("View K-line")
-            }
-            onViewSignals?.let { action -> TextButton(onClick = action, modifier = Modifier.fillMaxWidth()) {
-                Text("查看该周期的实时信号")
-            } }
         }
     }
 }

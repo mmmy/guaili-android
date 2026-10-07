@@ -174,7 +174,7 @@ class MainViewModel(
 
     fun loadAlerts(force: Boolean = false) {
         val current = _uiState.value
-        if (current.resettingTvAlert != null || current.isLoadingAlerts || (!force && current.hasLoadedAlerts)) return
+        if (!current.isAuthenticated || current.isChangingAlerts || current.isLoadingAlerts || (!force && current.hasLoadedAlerts)) return
         launchRequest {
             var requestGeneration = sessionStore.generation()
             val requestScope = alertSync.currentScope()
@@ -351,7 +351,11 @@ class MainViewModel(
     fun resetTvAlert(config: TvAlertConfigDto, alert: TvAlertDto) {
         val requestGeneration = sessionStore.generation()
         val current = _uiState.value
-        if (current.isChangingAlerts || current.isLoadingAlerts) return
+        if (!current.isAuthenticated || current.isChangingAlerts || current.isLoadingAlerts) return
+        if (config !in current.alertConfigs || alert !in current.tvAlertsByCookieId[config.cookieId].orEmpty()) {
+            updateState(requestGeneration) { it.copy(alertActionMessage = "警报或配置已更新，请刷新后重新选择") }
+            return
+        }
         val key = TvAlertDeletionKey(config.cookieId, alert.alertId)
         val knownIds = current.tvAlertsByCookieId[config.cookieId].orEmpty().mapTo(hashSetOf()) { it.alertId }
         val label = "${alert.tickerLabel()} · ${alert.resolution}"

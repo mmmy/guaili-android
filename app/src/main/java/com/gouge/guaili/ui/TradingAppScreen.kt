@@ -133,6 +133,13 @@ internal fun TradingAppScreen(
                             requestedKlineTarget = requestedKline,
                             onRequestedKlineConsumed = { requestedKline = null },
                             onOpenAppSettings = { destination = AppDestination.Settings },
+                            xbotViewModel = xbotViewModel,
+                            onOpenTvAlerts = { target ->
+                                alertConfigId = target?.config?.id
+                                alertId = target?.alert?.alertId ?: -1L
+                                if (target != null) alertLaunchGeneration++
+                                destination = AppDestination.Alerts
+                            },
                         )
                         AppDestination.Signals, AppDestination.Alerts -> XbotContent(
                             viewModel = xbotViewModel,

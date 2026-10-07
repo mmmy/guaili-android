@@ -82,17 +82,35 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import com.gouge.guaili.data.normalizeServerSignalsBaseUrl
 import com.gouge.guaili.signals.ServerSignalItem
+import com.gouge.guaili.data.MarketTvTickerStore
+import com.gouge.xbot.ui.MainViewModel
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import java.time.Instant
 
 @Composable
 internal fun GuailiScreen(
     viewModel: GuailiViewModel,
     signalsViewModel: ServerSignalsViewModel,
+    xbotViewModel: MainViewModel,
     requestedKlineTarget: KlineTarget? = null,
     onRequestedKlineConsumed: () -> Unit = {},
     onOpenAppSettings: (() -> Unit)? = null,
+    onOpenTvAlerts: (MarketTvAlertEntry?) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val tvState by xbotViewModel.uiState.collectAsStateWithLifecycle()
+    val tvTickerStore = remember(state.settings.baseUrl) { MarketTvTickerStore(context, state.settings.baseUrl) }
+    var tvTickers by remember(tvTickerStore) { mutableStateOf(tvTickerStore.read()) }
+    var tvNow by remember { mutableStateOf(Instant.now()) }
+    val tvEntriesBySymbol = remember(tvState.isAuthenticated, tvState.alertConfigs, tvState.visibleAlertIds,
+        tvState.tvAlertsByCookieId, state.symbols, tvTickers) {
+        state.symbols.associateWith { symbol -> marketTvEntries(tvState, tvTickers[symbol] ?: defaultMarketTvTicker(symbol)) }
+    }
+    val tvSummaries = remember(tvEntriesBySymbol, tvNow) {
+        summarizeMarketTvEntries(tvEntriesBySymbol, tvNow)
+    }
     val alertsViewModel: MarketPriceAlertsViewModel = viewModel(
         key = "market-price-alerts:${state.settings.baseUrl.trimEnd('/')}",
         factory = MarketPriceAlertsViewModel.factory(context, state.settings.baseUrl),
@@ -136,6 +154,8 @@ internal fun GuailiScreen(
     var klineInterval by rememberSaveable { mutableStateOf<String?>(null) }
     var klineAlertId by rememberSaveable { mutableStateOf<Long?>(null) }
     var alertListSymbol by rememberSaveable(state.settings.baseUrl) { mutableStateOf<String?>(null) }
+    var tvListSymbol by rememberSaveable(state.settings.baseUrl) { mutableStateOf<String?>(null) }
+    var tvListInterval by rememberSaveable(state.settings.baseUrl) { mutableStateOf<String?>(null) }
     val klineTarget = klineSymbol?.let { symbol ->
         klineInterval?.let { interval -> KlineTarget(symbol, interval) }
     }
@@ -230,6 +250,22 @@ internal fun GuailiScreen(
         alertListSymbol = symbol
         alertsViewModel.refresh()
     }
+    fun openTvAlerts(symbol: String, interval: String? = null) {
+        tvListSymbol = symbol
+        tvListInterval = interval
+        xbotViewModel.loadAlerts(force = true)
+    }
+    fun openTvManager(entry: MarketTvAlertEntry?) {
+        selectedCell = null
+        tvListSymbol = null
+        onOpenTvAlerts(entry)
+    }
+    fun saveTvTicker(symbol: String, ticker: String?): String? = try {
+        tvTickers = tvTickerStore.save(symbol, ticker)
+        null
+    } catch (error: Exception) {
+        error.message ?: "品种映射保存失败，请重试"
+    }
 
     LaunchedEffect(state.settings.baseUrl, state.settingsLoaded) {
         if (!state.settingsLoaded) return@LaunchedEffect
@@ -283,6 +319,16 @@ internal fun GuailiScreen(
     }
 
     val contentActive = klineTarget == null && !showSettings && !showHelp
+    LaunchedEffect(lifecycleOwner, xbotViewModel, tvState.isAuthenticated, tvState.serverUrl, contentActive, showSignals) {
+        if (!contentActive || showSignals || !tvState.isAuthenticated) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            xbotViewModel.loadAlerts(force = true)
+            while (true) {
+                tvNow = Instant.now()
+                delay(1_000)
+            }
+        }
+    }
     DisposableEffect(lifecycleOwner, alertsViewModel, contentActive, showSignals, state.settingsLoaded) {
         fun update() = alertsViewModel.setForeground(state.settingsLoaded && contentActive && !showSignals &&
             lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -383,7 +429,7 @@ internal fun GuailiScreen(
                 Column(Modifier.fillMaxSize().onSizeChanged { tableWidthPixels = it.width }) {
                     Toolbar(state, compactHeader, compactFilters, intervalGroup, { intervalGroup = it },
                         { if (!onlySignalCells || expandedFocusSymbols.isNotEmpty()) viewModel.refresh()
-                            signalsViewModel.refresh(); alertsViewModel.refresh() }, tableLayout,
+                            signalsViewModel.refresh(); alertsViewModel.refresh(); xbotViewModel.loadAlerts(force = true) }, tableLayout,
                         { viewModel.setLayoutMode(if (tableLayout == TableLayout.Table) LayoutMode.Groups else LayoutMode.Table) },
                         { onOpenAppSettings?.invoke() ?: run { showSettings = true } }, { showHelp = true },
                         onToggleSignalPane = {
@@ -402,6 +448,7 @@ internal fun GuailiScreen(
                         },
                         onStatusClick = { showDataStatus = true },
                     )
+                    MarketTvSyncBar(tvState) { openTvManager(null) }
                     if (!onlySignalCells) state.errorMessage?.let { ErrorBanner(it, state.cells.isNotEmpty(), viewModel::refresh) }
                     liveLink?.let { link ->
                         MarketLinkBar(link, signalsState, state, filteredIntervals, session.reveal, session.origins.isNotEmpty(),
@@ -413,14 +460,20 @@ internal fun GuailiScreen(
                             expandedFocusSymbols, { symbol -> expandedFocusSymbols =
                                 if (symbol in expandedFocusSymbols) expandedFocusSymbols - symbol else expandedFocusSymbols + symbol },
                             { selectCell(it, true) }, { selectCell(it) }, ::selectStructure,
-                            alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert, Modifier.fillMaxSize(), session.selection)
+                            alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert, Modifier.fillMaxSize(), session.selection,
+                            tvAlerts = tvSummaries, onSymbolTvAlerts = { openTvAlerts(it) },
+                            onPeriodTvAlerts = { symbol, interval -> openTvAlerts(symbol, interval) })
                         else when (tableLayout) {
                             TableLayout.Table -> GuailiTable(state, { selectCell(it) }, Modifier.fillMaxSize(), visibleIntervals,
                                 tableListState, tableHorizontal, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) },
-                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert)
+                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert,
+                                tvAlerts = tvSummaries, onSymbolTvAlerts = { openTvAlerts(it) },
+                                onPeriodTvAlerts = { symbol, interval -> openTvAlerts(symbol, interval) })
                             TableLayout.Groups -> GuailiGroupedTable(state, { selectCell(it) }, Modifier.fillMaxSize(), visibleIntervals,
                                 groupListState, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) },
-                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert)
+                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert,
+                                tvAlerts = tvSummaries, onSymbolTvAlerts = { openTvAlerts(it) },
+                                onPeriodTvAlerts = { symbol, interval -> openTvAlerts(symbol, interval) })
                         }
                         if (!onlySignalCells && state.isLoading) CircularProgressIndicator(Modifier.align(Alignment.Center))
                         if (if (onlySignalCells) signalsState.isRefreshing else state.isRefreshing)
@@ -467,6 +520,12 @@ internal fun GuailiScreen(
             onViewSignals = { showSymbolSignals(cell.symbol, cell.interval) },
             priceAlertDescription = periodAlerts?.description?.let { it + if (waitingReasons.isBlank()) "" else "（$waitingReasons）" },
             dataContext = selectedCellContext,
+            tvAlertsContent = {
+                MarketTvAlertsSection(cell.symbol, cell.interval, tvTickers[cell.symbol] ?: defaultMarketTvTicker(cell.symbol),
+                    tvState, tvNow, onRefresh = { xbotViewModel.loadAlerts(force = true) }, onManage = ::openTvManager,
+                    onReset = { xbotViewModel.resetTvAlert(it.config, it.alert) },
+                    onSaveTicker = { saveTvTicker(cell.symbol, it) })
+            },
         )
     }
 
@@ -484,6 +543,13 @@ internal fun GuailiScreen(
             onDismiss = { alertListSymbol = null }, onSelect = { id -> symbolAlerts.firstOrNull { it.id == id }?.let(::openPriceAlert) },
             onRefresh = { alertsViewModel.refresh(); alertsViewModel.acknowledge(symbolAlerts) },
             title = "${symbol.removeSuffix("USDT")} · 价格警报", loading = alertsState.loading)
+    }
+
+    tvListSymbol?.let { symbol ->
+        MarketTvAlertSheet(symbol, tvTickers[symbol] ?: defaultMarketTvTicker(symbol), tvState, tvNow,
+            onDismiss = { tvListSymbol = null }, onRefresh = { xbotViewModel.loadAlerts(force = true) },
+            onManage = ::openTvManager, onReset = { xbotViewModel.resetTvAlert(it.config, it.alert) },
+            onSaveTicker = { saveTvTicker(symbol, it) }, interval = tvListInterval)
     }
 
 }

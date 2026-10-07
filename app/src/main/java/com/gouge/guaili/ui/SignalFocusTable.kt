@@ -90,6 +90,9 @@ internal fun SignalFocusTable(
     onPeriodAlert: (String, String) -> Unit,
     modifier: Modifier = Modifier,
     selection: MarketLinkKey? = null,
+    tvAlerts: Map<String, SymbolTvAlerts> = emptyMap(),
+    onSymbolTvAlerts: (String) -> Unit = {},
+    onPeriodTvAlerts: (String, String) -> Unit = { _, _ -> },
 ) {
     val names = remember(table.symbols, table.settings.symbolDisplayMode, table.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(table.symbols, table.settings.symbolDisplayMode, table.settings.symbolColumnWidthMode)
@@ -119,6 +122,7 @@ internal fun SignalFocusTable(
                         Text("  ${group.rows.size}个信号", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.weight(1f))
                         PriceAlertSummary(group.symbol, priceAlerts[group.symbol], alertsUnavailable, { onSymbolAlerts(group.symbol) })
+                        TvAlertSummary(group.symbol, tvAlerts[group.symbol], { onSymbolTvAlerts(group.symbol) })
                         TextButton(onClick = { onExpand(group.symbol) }, modifier = Modifier.testTag("market-focus-expand-${group.symbol}"),
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
                             Text(if (group.symbol in expandedSymbols) "收起" else "全级别", fontSize = 11.sp)
@@ -150,7 +154,9 @@ internal fun SignalFocusTable(
                                     GroupedPeriodCell(member.cell.interval, member.cell, group.symbol, onCellClick,
                                         rowDimensions, Modifier.width(cellWidth), member = member.part.takeIf { selected || it.isNotEmpty() },
                                         alerts = priceAlerts[group.symbol]?.periods?.get(member.cell.interval),
-                                        onAlertClick = { onPeriodAlert(group.symbol, member.cell.interval) }, highlightMember = selected)
+                                        onAlertClick = { onPeriodAlert(group.symbol, member.cell.interval) }, highlightMember = selected,
+                                        tvAlerts = tvAlerts[group.symbol]?.period(member.cell.interval),
+                                        onTvAlertClick = { onPeriodTvAlerts(group.symbol, member.cell.interval) })
                                 }
                             }
                         }
@@ -169,7 +175,9 @@ internal fun SignalFocusTable(
                                     horizontalArrangement = Arrangement.spacedBy(dimensions.columnSpacing)) {
                                     intervals.forEach { interval -> GroupedPeriodCell(interval, table.cells[group.symbol]?.get(interval), group.symbol,
                                         onTableCellClick, dimensions, Modifier.weight(1f),
-                                        alerts = priceAlerts[group.symbol]?.periods?.get(interval), onAlertClick = { onPeriodAlert(group.symbol, interval) }) }
+                                        alerts = priceAlerts[group.symbol]?.periods?.get(interval), onAlertClick = { onPeriodAlert(group.symbol, interval) },
+                                        tvAlerts = tvAlerts[group.symbol]?.period(interval),
+                                        onTvAlertClick = { onPeriodTvAlerts(group.symbol, interval) }) }
                                     repeat(dimensions.columns - intervals.size) { Spacer(Modifier.weight(1f)) }
                                 }
                             }

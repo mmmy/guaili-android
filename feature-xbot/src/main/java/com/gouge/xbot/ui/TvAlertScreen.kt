@@ -233,35 +233,13 @@ fun TvAlertScreen(
     }
 
     pendingReset?.let { target ->
-        AlertDialog(
-            onDismissRequest = { pendingReset = null },
-            title = { Text("确认再设警报？") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("警报：${target.config.title.ifBlank { "未命名警报" }}")
-                    Text("品种：${target.alert.tickerId()}")
-                    Text("周期：${target.alert.resolution}")
-                    Text("将按当前配置覆盖已有警报并重新创建。业务有效期将按新警报的创建时间重新计算。")
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingReset?.let { confirmed ->
-                            pendingReset = null
-                            onResetAlert(confirmed.config, confirmed.alert)
-                        }
-                    },
-                    enabled = !state.isChangingAlerts && !state.isLoadingAlerts,
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
-                ) {
-                    Text("确认再设")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingReset = null }) {
-                    Text("取消")
-                }
+        TvAlertResetConfirmation(
+            config = target.config, alert = target.alert,
+            enabled = !state.isChangingAlerts && !state.isLoadingAlerts,
+            onDismiss = { pendingReset = null },
+            onConfirm = {
+                pendingReset = null
+                onResetAlert(target.config, target.alert)
             },
         )
     }
