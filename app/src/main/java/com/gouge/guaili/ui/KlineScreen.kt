@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
@@ -86,6 +87,8 @@ import com.gouge.guaili.domain.KlineChartRow
 import com.gouge.guaili.data.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -102,7 +105,6 @@ import java.util.Locale
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -265,7 +267,7 @@ fun KlineScreen(
                 when {
                     state.isLoading -> CircularProgressIndicator()
                     state.rows.isEmpty() -> Text("暂无 K 线数据")
-                    else -> KlineChart(
+                    else -> key(symbol, interval) { KlineChart(
                         rows = state.rows, alerts = alerts, pending = alertState.pending, selectedAlertId = selectedAlertId,
                         drawingKind = drawingKind, drawingExtend = preset.extend, tickSize = market?.step(), interval = interval, cancelGesture = cancelGesture,
                         cursorMode = cursorMode, cursorIndex = cursorIndex, cursorPrice = cursorPrice, cursorX = cursorX,
@@ -279,7 +281,7 @@ fun KlineScreen(
                         onAddAlert = { geometry -> cursorMode = false; editor = PriceAlertEditorSession(symbol, interval, geometry); savingEditor = false },
                         modifier = Modifier.fillMaxSize(),
                         focusAlertId = initialAlertId,
-                    )
+                    ) }
                 }
                 selectedAlert?.let { alert ->
                     PriceAlertSelectionBar(alert, alertState.pending[alert.id], alert.id in alertState.undo,
@@ -491,7 +493,7 @@ private fun SummaryValue(label: String, value: String, valueColor: Color? = null
 }
 
 @Composable
-private fun KlineChart(
+internal fun KlineChart(
     rows: List<KlineChartRow>,
     alerts: List<PriceAlertDto>,
     pending: Map<Long, PendingPriceAlert>,
@@ -527,7 +529,6 @@ private fun KlineChart(
     val currentPending by rememberUpdatedState(pending)
     val currentSelected by rememberUpdatedState(selectedAlertId)
     val currentTick by rememberUpdatedState(tickSize)
-    val currentChannel by rememberUpdatedState(showChannel)
     val currentSelect by rememberUpdatedState(onAlertSelected)
     val currentMove by rememberUpdatedState(onAlertDragEnd)
     var preview by remember { mutableStateOf<Pair<Long, PriceAlertGeometry>?>(null) }
@@ -537,9 +538,10 @@ private fun KlineChart(
     var frozenTransform by remember { mutableStateOf<AlertChartTransform?>(null) }
     LaunchedEffect(drawingKind, cancelGesture) { firstDrawingPoint = null; drawingPointer = null; onDrawingStart(false) }
 
-    var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(12f)) }
+    var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(1f)) }
     var rightOffsetBars by remember { mutableFloatStateOf(0f) }
-    var verticalScale by remember { mutableFloatStateOf(1f) }
+    var manualBounds by remember { mutableStateOf<PriceBounds?>(null) }
+    var previousLastTime by remember { mutableStateOf(timeIndex.lastOrNull()) }
     var focusedAlertId by remember { mutableStateOf<Long?>(null) }
     var canvasWidth by remember { mutableIntStateOf(1) }
     var canvasHeight by remember { mutableIntStateOf(1) }
@@ -549,10 +551,10 @@ private fun KlineChart(
     val leftPaddingPx = with(density) { 8.dp.toPx() }
     val rightPaddingPx = with(density) { 68.dp.toPx() }
 
-    LaunchedEffect(rows.size) {
-        visibleBars = min(72, rows.size).toFloat().coerceAtLeast(1f)
-        rightOffsetBars = 0f
-        verticalScale = 1f
+    LaunchedEffect(timeIndex) {
+        visibleBars = visibleBars.coerceIn(1f, rows.size.toFloat().coerceAtLeast(1f))
+        rightOffsetBars = reconcileKlineRightOffset(previousLastTime, timeIndex, visibleBars, rightOffsetBars)
+        previousLastTime = timeIndex.lastOrNull()
     }
 
     LaunchedEffect(focusAlertId, alerts, rows) {
@@ -566,6 +568,15 @@ private fun KlineChart(
         }
     }
 
+    val liveViewport = remember(rows.size, visibleBars, rightOffsetBars) {
+        calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
+    }
+    val selectedGeometry = selectedAlertId?.let { id -> pending[id]?.geometry ?: alerts.firstOrNull { it.id == id }?.geometry }
+    val autoBounds = remember(rows, liveViewport, showChannel, selectedGeometry) {
+        calculatePriceBounds(rows, liveViewport, showChannel, selectedGeometry)
+    }
+    val currentAutoBounds by rememberUpdatedState(autoBounds)
+
     Box(modifier = modifier) {
     Canvas(
         modifier = Modifier.fillMaxSize()
@@ -577,7 +588,7 @@ private fun KlineChart(
             .pointerInput(canvasWidth, canvasHeight, drawingKind, cancelGesture, interval) {
                 var lastAxisTapAt = 0L
                 fun viewport() = calculateKlineViewport(currentRows.size, visibleBars, rightOffsetBars)
-                fun bounds() = calculatePriceBounds(currentRows, viewport(), currentChannel, verticalScale)
+                fun bounds() = manualBounds ?: currentAutoBounds
                 fun plotRight() = (canvasWidth - rightPaddingPx).coerceAtLeast(leftPaddingPx + 1f)
                 fun transform(): AlertChartTransform {
                     val b = bounds()
@@ -618,7 +629,8 @@ private fun KlineChart(
                     val down = awaitPointerEvent().changes.firstOrNull { it.pressed } ?: return@awaitEachGesture
                     if (currentRows.isEmpty()) return@awaitEachGesture
                     val mapping = transform()
-                    val startedInCursorMode = currentCursorMode && drawingKind == null
+                    val startedOnPriceAxis = down.position.x >= plotRight() && down.position.y in mapping.top..mapping.bottom
+                    val startedInCursorMode = currentCursorMode && drawingKind == null && !startedOnPriceAxis
                     val candidate = if (startedInCursorMode || drawingKind != null) null else hit(down.position, mapping)
                     val downPoint = mapping.point(down.position.x, down.position.y)
                     val step = currentTick
@@ -627,7 +639,10 @@ private fun KlineChart(
                     var finalGeometry: PriceAlertGeometry? = null
                     var pinchDistance: Float? = null
                     var pinchCenter: Float? = null
-                    var mode = if (drawingKind != null) 6 else if (startedInCursorMode) 3 else 0
+                    val downBounds = PriceBounds(mapping.minimum, mapping.maximum)
+                    var timePanned = false
+                    var pricePanned = false
+                    var mode = if (startedOnPriceAxis) 5 else if (drawingKind != null) 6 else if (startedInCursorMode) 3 else 0
                     var moved = false
                     val deadline = android.os.SystemClock.uptimeMillis() + 500L
                     try {
@@ -654,11 +669,15 @@ private fun KlineChart(
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             if (!change.pressed) {
                                 when (mode) {
-                                    0 -> if (candidate != null) currentSelect(candidate.first.id) else if (down.position.x >= plotRight()) {
-                                        val now = android.os.SystemClock.uptimeMillis(); if (now - lastAxisTapAt < 300) verticalScale = 1f; lastAxisTapAt = now
-                                    } else {
+                                    0 -> if (candidate != null) currentSelect(candidate.first.id) else {
                                         currentSelect(null)
                                         val v = viewport(); onSelectedIndex(v.indexAtX(down.position.x, leftPaddingPx, (plotRight() - leftPaddingPx) / v.visibleSpan))
+                                    }
+                                    5 -> if (!moved) {
+                                        val now = android.os.SystemClock.uptimeMillis()
+                                        if (lastAxisTapAt != 0L && now - lastAxisTapAt < viewConfiguration.doubleTapTimeoutMillis) {
+                                            manualBounds = null; lastAxisTapAt = 0L
+                                        } else lastAxisTapAt = now
                                     }
                                     2 -> if (candidate != null && moved && finalGeometry != null) currentMove(candidate.first.id, finalGeometry)
                                     3 -> if (startedInCursorMode && !moved) onCursorModeChange(false)
@@ -675,13 +694,23 @@ private fun KlineChart(
                                 }
                                 break
                             }
-                            val dx = change.position.x - lastPosition.x; val dy = change.position.y - lastPosition.y
+                            val dx = change.position.x - lastPosition.x
                             val slop = (change.position - down.position).getDistance() > viewConfiguration.touchSlop
-                            if (mode == 0 && slop) mode = if (candidate != null) 2 else if (down.position.x >= plotRight()) 5 else 1
+                            if (mode == 0 && slop) mode = if (candidate != null) 2 else 1
                             when (mode) {
                                 1 -> {
                                     moved = true
-                                    rightOffsetBars = (rightOffsetBars + dx * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-(visibleBars - 3f).coerceAtLeast(0f), (currentRows.size - visibleBars).coerceAtLeast(0f))
+                                    val totalX = change.position.x - down.position.x
+                                    if (timePanned || abs(totalX) > viewConfiguration.touchSlop) {
+                                        val moveX = if (timePanned) dx else totalX
+                                        timePanned = true
+                                        rightOffsetBars = (rightOffsetBars + moveX * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-(visibleBars - 3f).coerceAtLeast(0f), (currentRows.size - visibleBars).coerceAtLeast(0f))
+                                    }
+                                    val totalY = change.position.y - down.position.y
+                                    if (down.position.y in mapping.top..mapping.bottom && (pricePanned || abs(totalY) > viewConfiguration.touchSlop)) {
+                                        pricePanned = true
+                                        manualBounds = downBounds.translated(totalY / (mapping.bottom - mapping.top) * downBounds.priceRange)
+                                    }
                                     change.consume()
                                 }
                                 2 -> if (candidate != null) {
@@ -696,7 +725,11 @@ private fun KlineChart(
                                     change.consume()
                                 }
                                 3 -> if (slop || !startedInCursorMode) { moved = true; updateCursor(change.position); change.consume() }
-                                5 -> { moved = true; verticalScale = (verticalScale * exp((-dy / 220f).toDouble()).toFloat()).coerceIn(.25f, 4f); change.consume() }
+                                5 -> if (slop || moved) {
+                                    moved = true; lastAxisTapAt = 0L
+                                    manualBounds = scalePriceBoundsFromDrag(downBounds, change.position.y - down.position.y, density.density)
+                                    change.consume()
+                                }
                                 6 -> { drawingPointer = mapping.point(change.position.x, change.position.y); frozenRows = originalRows; frozenTransform = mapping; change.consume() }
                             }
                             lastPosition = change.position
@@ -717,32 +750,9 @@ private fun KlineChart(
         val priceBottom = size.height * .70f
         val volumeTop = size.height * .76f
         val volumeBottom = size.height - 27.dp.toPx()
-        val priceValues = buildList {
-            visible.forEach { row ->
-                add(row.candle.high)
-                add(row.candle.low)
-                if (showChannel) {
-                    row.channel.upper?.let(::add)
-                    row.channel.lower?.let(::add)
-                }
-            }
-        }.toMutableList()
-        alerts.firstOrNull { it.id == selectedAlertId }?.geometry?.let { geometry ->
-            val firstTime = visible.first().candle.openTimeMillis
-            val lastTime = visible.last().candle.openTimeMillis
-            geometry.priceAt(firstTime)?.let { priceValues.add(it) }
-            geometry.priceAt(lastTime)?.let { priceValues.add(it) }
-            listOf(geometry.first, geometry.second).filter { it.timeMs in firstTime..lastTime }.forEach { priceValues.add(it.price) }
-        }
-        val rawMin = priceValues.minOrNull() ?: 0.0
-        val rawMax = priceValues.maxOrNull() ?: 1.0
-        val rawRange = (rawMax - rawMin).coerceAtLeast(0.0000001)
-        val pricePadding = (rawRange * .06).coerceAtLeast(0.0000001)
-        val fittedRange = rawRange + pricePadding * 2.0
-        val scaledRange = (fittedRange / verticalScale.toDouble()).coerceAtLeast(0.0000001)
-        val priceCenter = (rawMax + rawMin) / 2.0
-        val priceMin = frozenTransform?.minimum ?: (priceCenter - scaledRange / 2.0)
-        val priceMax = frozenTransform?.maximum ?: (priceCenter + scaledRange / 2.0)
+        val bounds = manualBounds ?: autoBounds
+        val priceMin = frozenTransform?.minimum ?: bounds.priceMin
+        val priceMax = frozenTransform?.maximum ?: bounds.priceMax
         val priceRange = priceMax - priceMin
         val slotWidth = plotWidth / viewport.visibleSpan
         val bodyWidth = (slotWidth * .62f).coerceIn(1.5.dp.toPx(), 13.dp.toPx())
@@ -939,8 +949,8 @@ private fun KlineChart(
         }
     }
     if (cursorMode && cursorPrice != null && canvasHeight > 0) {
-        val viewport = calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
-        val bounds = calculatePriceBounds(rows, viewport, showChannel, verticalScale)
+        val viewport = liveViewport
+        val bounds = manualBounds ?: autoBounds
         val chartTop = with(density) { 10.dp.toPx() }
         val chartBottom = canvasHeight * .70f
         val y = chartBottom - (((cursorPrice - bounds.priceMin) / bounds.priceRange).toFloat() * (chartBottom - chartTop))
@@ -961,6 +971,14 @@ private fun KlineChart(
             }
         }
     }
+    TextButton(
+        onClick = { manualBounds = null },
+        enabled = preview == null && frozenTransform == null,
+        contentPadding = PaddingValues(horizontal = 4.dp),
+        modifier = Modifier.align(Alignment.BottomEnd).width(68.dp).height(48.dp)
+            .testTag("price-axis-auto")
+            .semantics { stateDescription = if (manualBounds == null) "价格轴自动" else "价格轴手动，点击恢复自动" },
+    ) { Text("自动", fontSize = 12.sp) }
     }
 }
 
@@ -1145,32 +1163,4 @@ private fun directionLabel(direction: String): String = when (direction) {
     "cross_up" -> "上穿"
     "cross_down" -> "下穿"
     else -> "任意"
-}
-
-private data class PriceBounds(val priceMin: Double, val priceMax: Double, val priceRange: Double)
-
-private fun calculatePriceBounds(
-    rows: List<KlineChartRow>,
-    viewport: KlineViewport,
-    showChannel: Boolean,
-    verticalScale: Float,
-): PriceBounds {
-    val visible = rows.subList(viewport.drawStart, viewport.endExclusive)
-    val values = buildList {
-        visible.forEach { row ->
-            add(row.candle.high)
-            add(row.candle.low)
-            if (showChannel) {
-                row.channel.upper?.let(::add)
-                row.channel.lower?.let(::add)
-            }
-        }
-    }
-    val rawMin = values.minOrNull() ?: 0.0
-    val rawMax = values.maxOrNull() ?: 1.0
-    val rawRange = (rawMax - rawMin).coerceAtLeast(0.0000001)
-    val padding = (rawRange * .06).coerceAtLeast(0.0000001)
-    val scaledRange = ((rawRange + padding * 2.0) / verticalScale.toDouble()).coerceAtLeast(0.0000001)
-    val center = (rawMax + rawMin) / 2.0
-    return PriceBounds(center - scaledRange / 2.0, center + scaledRange / 2.0, scaledRange)
 }
