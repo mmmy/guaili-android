@@ -1,6 +1,7 @@
 package com.gouge.guaili.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -12,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -91,6 +94,14 @@ internal fun MarketSignalsContent(
     onOpenSettings: () -> Unit,
     onOpenKline: (KlineTarget) -> Unit,
     modifier: Modifier = Modifier,
+    onLocateTable: ((ServerSignalItem) -> Unit)? = null,
+    embedded: Boolean = false,
+    scopeSymbol: String? = null,
+    scopeInterval: String? = null,
+    selectedKey: MarketLinkKey? = null,
+    onClearScope: () -> Unit = {},
+    restoreAnchor: MarketScrollAnchor? = null,
+    onAnchorRestored: () -> Unit = {},
 ) {
     var showStatus by rememberSaveable { mutableStateOf(false) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
@@ -98,6 +109,25 @@ internal fun MarketSignalsContent(
     val display = state.presentation
     val response = state.snapshot?.response
     val palette = appSignalPalette()
+    val visible = display.signals.filter { (scopeSymbol == null || it.symbol == scopeSymbol) &&
+        (scopeInterval == null || it.signal.runs.any { run -> scopeInterval in run.intervals }) }
+    val rowKeys = buildList {
+        if (state.preferenceError != null) add("preference-error")
+        if (showStatus && display.signals.isNotEmpty() && display.warning != null) add("quality-warning")
+        if (showStatus) add("status")
+        if (display.signals.isEmpty()) add("empty")
+        if (display.signals.isNotEmpty() && visible.isEmpty()) add("scope-empty")
+        if (response != null) addAll(visible.map { "${it.symbol}/${it.signal.id}" })
+    }
+    LaunchedEffect(restoreAnchor, rowKeys) {
+        val anchor = restoreAnchor ?: return@LaunchedEffect
+        if (rowKeys.isNotEmpty()) {
+            withFrameNanos { }
+            val index = rowKeys.indexOf(anchor.key).takeIf { it >= 0 } ?: anchor.index.coerceIn(rowKeys.indices)
+            listState.scrollToItem(index, anchor.offset)
+        }
+        onAnchorRestored()
+    }
     CompositionLocalProvider(LocalSignalPalette provides palette, LocalContentColor provides Color(palette.primary)) {
         Column(modifier.testTag("market-signals-v2").background(Color(palette.background)).padding(10.dp)) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -165,6 +195,11 @@ internal fun MarketSignalsContent(
                 }
             }
             if (state.isRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().testTag("market-v2-loading"))
+            if (scopeSymbol != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(scopeSymbol.removeSuffix("USDT") + (scopeInterval?.let { " · ${serverDisplayInterval(it)}" } ?: ""),
+                    Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                TextButton(onClick = onClearScope, modifier = Modifier.testTag("market-all-signals")) { Text("全部信号") }
+            }
             LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(top = 3.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(SignalCardStyle.CardSpacingDp.dp)) {
                 state.preferenceError?.let { error -> item("preference-error") { SignalNotice(error) } }
@@ -201,8 +236,12 @@ internal fun MarketSignalsContent(
                         display.warning?.let { SignalNotice(it) }
                     }
                 }
-                if (response != null) items(display.signals, key = { "${it.symbol}/${it.signal.id}" }) { item ->
-                    ServerSignalCard(item, response, display.nowMillis, onOpenKline)
+                if (display.signals.isNotEmpty() && visible.isEmpty()) item("scope-empty") {
+                    Text("当前范围无可见信号", Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+                if (response != null) items(visible, key = { "${it.symbol}/${it.signal.id}" }) { item ->
+                    ServerSignalCard(item, response, display.nowMillis, onOpenKline, onLocateTable, embedded,
+                        selectedKey == MarketLinkKey(item.symbol, item.signal.id))
                 }
             }
         }
@@ -216,18 +255,28 @@ private fun SignalNotice(message: String) {
 }
 
 @Composable
-private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResponse, now: Long?, onOpenKline: (KlineTarget) -> Unit) {
+private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResponse, now: Long?, onOpenKline: (KlineTarget) -> Unit,
+    onLocateTable: ((ServerSignalItem) -> Unit)?, embedded: Boolean, selected: Boolean) {
     var expanded by rememberSaveable(item.symbol, item.signal.id) { mutableStateOf(false) }
     val signal = item.signal
     val row = response.results.firstOrNull { it.symbol == item.symbol }
     val presentation = serverSignalPresentation(item, response, now) ?: return
     val palette = LocalSignalPalette.current
     Column(Modifier.fillMaxWidth().testTag("market-v2-card-${item.symbol}-${signal.id}")
-        .background(Color(palette.card))) {
-        CompactSignalCard(presentation, serverMovingAverageLabel(response), expanded,
-            onOpenKline = { onOpenKline(KlineTarget(item.symbol, signal.anchorInterval)) },
+        .background(Color(palette.card))
+        .then(if (selected) Modifier.border(1.dp, MaterialTheme.colorScheme.primary) else Modifier)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) { CompactSignalCard(presentation, serverMovingAverageLabel(response), expanded,
+            onOpenKline = { if (embedded && onLocateTable != null) onLocateTable(item)
+                else onOpenKline(KlineTarget(item.symbol, signal.anchorInterval)) },
             onToggleDetails = { expanded = !expanded },
-            key = "${item.symbol}-${signal.id}")
+            key = "${item.symbol}-${signal.id}") }
+        if (onLocateTable != null) IconButton(
+            onClick = { if (embedded) onOpenKline(KlineTarget(item.symbol, signal.anchorInterval)) else onLocateTable(item) },
+            modifier = Modifier.testTag("market-v2-locate-${item.symbol}-${signal.id}"),
+        ) { Icon(if (embedded) Icons.AutoMirrored.Outlined.ShowChart else Icons.Outlined.GridView,
+            if (embedded) "查看K线" else "定位表格", tint = Color(palette.accent)) }
+        }
         if (expanded) {
             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider(color = Color(palette.badge))

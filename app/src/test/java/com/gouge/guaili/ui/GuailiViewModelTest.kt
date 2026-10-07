@@ -15,6 +15,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -36,6 +37,52 @@ import java.io.IOException
 class GuailiViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    @Test fun temporaryRangeDoesNotPersistAndRejectsResponsesFromAbandonedRange() = runTest {
+        val original = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"), intervals = listOf("D"))
+        val source = FakeSettingsSource(original)
+        val gate = CompletableDeferred<GuailiResult<GuailiResponse>>()
+        val requested = mutableListOf<GuailiSettings>()
+        val vm = GuailiViewModel(source, fetcherFactory = { GuailiFetcher { config ->
+            requested += config
+            if (config.symbols.contains("XAUUSDT")) gate.await()
+            else GuailiResult.Success(responseFor(config, "BTCUSDT", "D", 12))
+        } }, autoRefreshEnabled = false)
+        try {
+            runCurrent()
+            vm.setTemporaryRange("XAUUSDT", listOf("8", "5")); runCurrent()
+            assertEquals(listOf("BTCUSDT", "XAUUSDT"), requested.last().symbols)
+            assertEquals(listOf("D", "8", "5"), requested.last().intervals)
+            assertEquals(original, source.settings.first())
+            vm.setTemporaryRange(null, emptyList()); runCurrent()
+            gate.complete(GuailiResult.Success(responseFor(requested.last(), "XAUUSDT", "8", 99)))
+            advanceUntilIdle()
+            assertEquals(original.symbols, vm.state.value.symbols)
+            assertEquals(original.intervals, vm.state.value.intervals)
+            assertNull(vm.state.value.cells["XAUUSDT"])
+        } finally { vm.clearViewModel() }
+    }
+
+    @Test fun temporaryRangeDoesNotReplaceWidgetSnapshotAndEquivalentSelectionDoesNotFetch() = runTest {
+        val original = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"), intervals = listOf("D"))
+        val saved = mutableListOf<com.gouge.guaili.data.GuailiSnapshot>()
+        var calls = 0
+        val vm = GuailiViewModel(FakeSettingsSource(original), fetcherFactory = { GuailiFetcher { config ->
+            calls++
+            GuailiResult.Success(responseFor(config, config.symbols.last(), config.intervals.last(), 12))
+        } }, snapshotSink = com.gouge.guaili.data.GuailiSnapshotSink { saved += it }, autoRefreshEnabled = false)
+        try {
+            advanceUntilIdle()
+            assertEquals(1, saved.size)
+            vm.setTemporaryRange("BTCUSDT", listOf("D")); advanceUntilIdle()
+            assertEquals(1, calls)
+            vm.setTemporaryRange("XAUUSDT", listOf("8")); advanceUntilIdle()
+            assertEquals(2, calls)
+            assertEquals(1, saved.size)
+            assertEquals(listOf("BTCUSDT"), saved.single().table.symbols)
+            assertEquals(listOf("BTCUSDT", "XAUUSDT"), vm.state.value.symbols)
+        } finally { vm.clearViewModel() }
+    }
 
     @Test
     fun refreshSuccessMapsCellsAndSetsLastUpdatedAt() = runTest {

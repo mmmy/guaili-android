@@ -1,5 +1,6 @@
 package com.gouge.guaili.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -15,10 +16,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ViewList
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Refresh
@@ -47,6 +50,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -69,6 +75,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
+import com.gouge.guaili.data.normalizeServerSignalsBaseUrl
+import com.gouge.guaili.signals.ServerSignalItem
 
 @Composable
 internal fun GuailiScreen(
@@ -81,7 +91,16 @@ internal fun GuailiScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val signalsState by signalsViewModel.state.collectAsStateWithLifecycle()
     val signalListState = rememberLazyListState()
-    val showSignals = signalsState.preferences.view == MarketView.SignalsV2
+    val tableListState = rememberLazyListState()
+    val groupListState = rememberLazyListState()
+    val paneListState = rememberLazyListState()
+    val tableHorizontal = rememberScrollState()
+    val signalContentHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+    var signalRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
+    var paneRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
+    var session by rememberSaveable(stateSaver = MarketLinkSessionSaver) { mutableStateOf(MarketLinkSession()) }
+    val showSignals = (session.viewOverride ?: signalsState.preferences.view) == MarketView.SignalsV2
+    val liveLink = resolveLiveMarketLink(session.selection, signalsState)
     var klineFromSignals by rememberSaveable { mutableStateOf(false) }
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
@@ -99,8 +118,102 @@ internal fun GuailiScreen(
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showHelp by rememberSaveable { mutableStateOf(false) }
     var intervalGroup by rememberSaveable { mutableStateOf(IntervalGroup.All) }
-    val visibleIntervals = remember(state.intervals, intervalGroup) {
-        filterIntervals(state.intervals, intervalGroup)
+    val filteredIntervals = filterIntervals(state.intervals, intervalGroup)
+    val visibleIntervals = linkedVisibleIntervals(filteredIntervals, state.intervals, liveLink?.members?.keys.orEmpty(), session.reveal)
+    val summaries = marketSignalSummaries(signalsState, state.symbols)
+    val density = LocalDensity.current
+    var tableWidthPixels by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var locationHandled by rememberSaveable { androidx.compose.runtime.mutableIntStateOf(0) }
+
+    fun currentOrigin() = MarketLinkOrigin(
+        view = if (showSignals) MarketView.SignalsV2 else MarketView.Table,
+        selection = session.selection, reveal = session.reveal, scopeSymbol = session.scopeSymbol,
+        scopeInterval = session.scopeInterval, narrowPaneOpen = session.narrowPaneOpen,
+        intervalGroup = intervalGroup.name, layoutMode = state.settings.layoutMode.name,
+        cellSymbol = selectedCell?.symbol, cellInterval = selectedCell?.interval,
+        table = tableListState.marketAnchor(), groups = groupListState.marketAnchor(),
+        signals = signalListState.marketAnchor(), pane = paneListState.marketAnchor(),
+        horizontalInterval = visibleIntervals.getOrNull(tableHorizontal.value / with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }.coerceAtLeast(1)),
+        horizontalOffset = tableHorizontal.value % with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }.coerceAtLeast(1),
+    )
+    fun selectStructure(item: ServerSignalItem) {
+        session = session.push(currentOrigin()).copy(selection = MarketLinkKey(item.symbol, item.signal.id),
+            viewOverride = MarketView.Table, reveal = false, narrowPaneOpen = false, locationRequest = session.locationRequest + 1)
+        selectedCell = null
+    }
+    fun showSymbolSignals(symbol: String, interval: String? = null) {
+        session = session.push(currentOrigin()).copy(scopeSymbol = symbol, scopeInterval = interval, narrowPaneOpen = true)
+        selectedCell = null
+        scope.launch { paneListState.scrollToItem(0) }
+    }
+    fun clearLink() {
+        session = MarketLinkSession(baseUrl = session.baseUrl)
+        selectedCell = null
+    }
+    fun returnFromLink() {
+        val origin = session.origins.lastOrNull() ?: return
+        session = session.copy(viewOverride = origin.view, selection = origin.selection, reveal = origin.reveal,
+            scopeSymbol = origin.scopeSymbol, scopeInterval = origin.scopeInterval, narrowPaneOpen = origin.narrowPaneOpen,
+            origins = session.origins.dropLast(1))
+        intervalGroup = IntervalGroup.valueOf(origin.intervalGroup)
+        viewModel.setLayoutMode(LayoutMode.valueOf(origin.layoutMode))
+        selectedCell = state.cells[origin.cellSymbol]?.get(origin.cellInterval)
+        signalRestore = origin.signals
+        paneRestore = origin.pane
+        locationHandled = session.locationRequest
+        scope.launch {
+            androidx.compose.runtime.withFrameNanos { }
+            tableListState.restoreMarketAnchor(origin.table, state.symbols)
+            groupListState.restoreMarketAnchor(origin.groups, state.symbols)
+            val restored = linkedVisibleIntervals(filterIntervals(state.intervals, intervalGroup), state.intervals,
+                resolveLiveMarketLink(origin.selection, signalsState)?.members?.keys.orEmpty(), origin.reveal)
+            val cellWidth = with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }
+            val index = restored.indexOf(origin.horizontalInterval).coerceAtLeast(0)
+            tableHorizontal.scrollTo(index * cellWidth + origin.horizontalOffset)
+        }
+    }
+    fun openSignalKline(item: ServerSignalItem) {
+        klineFromSignals = true
+        klineSymbol = item.symbol
+        klineInterval = item.signal.anchorInterval
+    }
+
+    LaunchedEffect(state.settings.baseUrl, state.settingsLoaded) {
+        if (!state.settingsLoaded) return@LaunchedEffect
+        val source = normalizeServerSignalsBaseUrl(state.settings.baseUrl)
+        if (session.baseUrl != source) {
+            session = MarketLinkSession(baseUrl = source)
+            locationHandled = 0
+        }
+    }
+    LaunchedEffect(session.selection?.symbol, session.reveal, liveLink?.members?.keys, state.settings.baseUrl, state.settingsLoaded) {
+        if (!state.settingsLoaded) return@LaunchedEffect
+        viewModel.setTemporaryRange(session.selection?.symbol,
+            if (session.reveal) liveLink?.members?.keys.orEmpty().toList() else emptyList())
+    }
+    LaunchedEffect(session.locationRequest, state.symbols, visibleIntervals, showSignals, tableLayout, tableWidthPixels) {
+        val link = liveLink
+        if (showSignals || link == null || session.locationRequest == locationHandled || tableWidthPixels == 0) return@LaunchedEffect
+        val symbolIndex = state.symbols.indexOf(link.key.symbol)
+        if (symbolIndex < 0) return@LaunchedEffect
+        if (tableLayout == TableLayout.Table) {
+            tableListState.scrollToItem(symbolIndex)
+            val period = visibleIntervals.indexOfFirst { it in link.members }.coerceAtLeast(0)
+            tableHorizontal.scrollTo(period * with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() })
+        } else {
+            val dimensions = groupedLayoutDimensions((tableWidthPixels / density.density).toInt(), state.settings.groupLayoutSize,
+                state.settings.tableDensity, density.fontScale)
+            val period = visibleIntervals.indexOfFirst { it in link.members }.coerceAtLeast(0)
+            val offset = if (period / dimensions.columns == 0) 0 else with(density) {
+                (dimensions.symbolHeaderHeight + (dimensions.periodHeaderHeight + dimensions.table.cellHeight + dimensions.rowPadding * 2) * (period / dimensions.columns)).roundToPx()
+            }
+            groupListState.scrollToItem(symbolIndex, offset)
+        }
+        locationHandled = session.locationRequest
+    }
+    BackHandler(enabled = klineTarget == null && !showSettings && !showHelp && selectedCell == null &&
+        (session.origins.isNotEmpty() || session.narrowPaneOpen || session.selection != null)) {
+        if (session.origins.isNotEmpty()) returnFromLink() else clearLink()
     }
 
     LaunchedEffect(requestedKlineTarget) {
@@ -116,7 +229,7 @@ internal fun GuailiScreen(
     DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals) {
         fun update(active: Boolean) {
             viewModel.setForeground(active && contentActive && !showSignals)
-            signalsViewModel.setForeground(active && contentActive && showSignals)
+            signalsViewModel.setForeground(active && contentActive)
         }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -170,100 +283,82 @@ internal fun GuailiScreen(
         return
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background,
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 12.dp),
-        ) {
-            MarketViewSelector(signalsState.preferences.view, signalsViewModel::setView)
-            if (showSignals) {
-                MarketSignalsContent(
-                    state = signalsState,
-                    listState = signalListState,
-                    onRefresh = signalsViewModel::refresh,
-                    onToggleSymbol = signalsViewModel::toggleSymbol,
-                    onSelectAll = signalsViewModel::selectAllSymbols,
-                    onToggleKind = signalsViewModel::toggleKind,
-                    onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
-                    onOpenKline = { target ->
-                        klineFromSignals = true
-                        klineSymbol = target.symbol
-                        klineInterval = target.interval
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                Toolbar(
-                    state = state,
-                    compact = compactHeader,
-                    compactFilters = compactFilters,
-                    intervalGroup = intervalGroup,
-                    onSelectIntervalGroup = { intervalGroup = it },
-                    onRefresh = viewModel::refresh,
-                    tableLayout = tableLayout,
-                    onToggleLayout = {
-                        val next = when (tableLayout) {
-                            TableLayout.Table -> LayoutMode.Groups
-                            TableLayout.Groups -> LayoutMode.Table
+    Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }, containerColor = MaterialTheme.colorScheme.background) { innerPadding ->
+        BoxWithConstraints(Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 12.dp)) {
+            val wide = maxWidth / density.fontScale.coerceAtLeast(1f) >= 900.dp && maxHeight >= 400.dp
+            val bottomPaneHeight = (maxHeight * 0.42f).coerceAtMost(360.dp)
+            val paneOpen = !showSignals && if (wide) session.narrowPaneOpen || !signalsState.preferences.widePaneCollapsed else session.narrowPaneOpen
+            val signalContent: @Composable (Boolean) -> Unit = { embedded ->
+                signalContentHolder.SaveableStateProvider(if (embedded) "embedded" else "standalone") {
+                    Column(Modifier.fillMaxSize()) {
+                    if (embedded && session.origins.isNotEmpty() && liveLink == null) TextButton(
+                        onClick = ::returnFromLink, modifier = Modifier.testTag("market-pane-return"),
+                    ) { Text("返回定位前") }
+                    MarketSignalsContent(
+                        state = signalsState, listState = if (embedded) paneListState else signalListState,
+                        onRefresh = signalsViewModel::refresh, onToggleSymbol = signalsViewModel::toggleSymbol,
+                        onSelectAll = signalsViewModel::selectAllSymbols, onToggleKind = signalsViewModel::toggleKind,
+                        onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
+                        onOpenKline = { target -> klineFromSignals = true; klineSymbol = target.symbol; klineInterval = target.interval },
+                        onLocateTable = ::selectStructure, embedded = embedded, selectedKey = session.selection,
+                        scopeSymbol = if (embedded) session.scopeSymbol else null,
+                        scopeInterval = if (embedded) session.scopeInterval else null,
+                        onClearScope = { session = session.copy(scopeSymbol = null, scopeInterval = null); scope.launch { paneListState.scrollToItem(0) } },
+                        restoreAnchor = if (embedded) paneRestore else signalRestore,
+                        onAnchorRestored = { if (embedded) paneRestore = null else signalRestore = null },
+                        modifier = Modifier.weight(1f),
+                    )
+                    }
+                }
+            }
+            val tableContent: @Composable () -> Unit = {
+                Column(Modifier.fillMaxSize().onSizeChanged { tableWidthPixels = it.width }) {
+                    Toolbar(state, compactHeader, compactFilters, intervalGroup, { intervalGroup = it },
+                        { viewModel.refresh(); signalsViewModel.refresh() }, tableLayout,
+                        { viewModel.setLayoutMode(if (tableLayout == TableLayout.Table) LayoutMode.Groups else LayoutMode.Table) },
+                        { onOpenAppSettings?.invoke() ?: run { showSettings = true } }, { showHelp = true },
+                        onToggleSignalPane = {
+                            if (wide) {
+                                session = session.copy(narrowPaneOpen = false)
+                                signalsViewModel.setWidePaneCollapsed(paneOpen)
+                            } else {
+                                session = session.copy(narrowPaneOpen = !paneOpen)
+                            }
+                        },
+                        signalPaneOpen = paneOpen,
+                    )
+                    state.errorMessage?.let { ErrorBanner(it, state.cells.isNotEmpty(), viewModel::refresh) }
+                    if (!compactFilters) IntervalFilters(intervalGroup) { intervalGroup = it }
+                    liveLink?.let { link ->
+                        MarketLinkBar(link, signalsState, state, filteredIntervals, session.reveal, session.origins.isNotEmpty(),
+                            { session = session.copy(reveal = !session.reveal, locationRequest = session.locationRequest + 1) },
+                            { showSymbolSignals(link.key.symbol) }, { link.item?.let(::openSignalKline) }, ::clearLink, ::returnFromLink)
+                    }
+                    Box(Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)) {
+                        when (tableLayout) {
+                            TableLayout.Table -> GuailiTable(state, { selectedCell = it }, Modifier.fillMaxSize(), visibleIntervals,
+                                tableListState, tableHorizontal, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) })
+                            TableLayout.Groups -> GuailiGroupedTable(state, { selectedCell = it }, Modifier.fillMaxSize(), visibleIntervals,
+                                groupListState, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) })
                         }
-                        viewModel.setLayoutMode(next)
-                    },
-                    onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
-                    onOpenHelp = { showHelp = true },
-                )
-
-                state.errorMessage?.let { error ->
-                    ErrorBanner(
-                        message = error,
-                        hasCachedData = state.cells.isNotEmpty(),
-                        onRetry = viewModel::refresh,
-                    )
+                        if (state.isLoading) CircularProgressIndicator(Modifier.align(Alignment.Center))
+                        if (state.isRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                    }
                 }
-
-                if (!compactFilters) {
-                    IntervalFilters(
-                        selected = intervalGroup,
-                        onSelected = { intervalGroup = it },
-                    )
+            }
+            Column(Modifier.fillMaxSize()) {
+                MarketViewSelector(if (showSignals) MarketView.SignalsV2 else MarketView.Table) { view ->
+                    session = session.copy(viewOverride = view)
+                    signalsViewModel.setView(view)
                 }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(bottom = 8.dp),
-                ) {
-                    when (tableLayout) {
-                        TableLayout.Table -> GuailiTable(
-                            state = state,
-                            intervals = visibleIntervals,
-                            onCellClick = { selectedCell = it },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        TableLayout.Groups -> GuailiGroupedTable(
-                            state = state,
-                            intervals = visibleIntervals,
-                            onCellClick = { selectedCell = it },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                    if (state.isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
-                    if (state.isRefreshing) {
-                        LinearProgressIndicator(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.TopCenter),
-                        )
-                    }
+                if (showSignals) Box(Modifier.weight(1f)) { signalContent(false) }
+                else if (wide && paneOpen) Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width((320 * density.fontScale.coerceAtLeast(1f)).dp).fillMaxSize().testTag("market-signal-pane-wide")) { signalContent(true) }
+                    Box(Modifier.weight(1f)) { tableContent() }
+                } else {
+                    Box(Modifier.weight(1f)) { tableContent() }
+                    if (paneOpen) Box(Modifier.fillMaxWidth().height(bottomPaneHeight)
+                        .testTag("market-signal-pane-bottom")) { signalContent(true) }
                 }
             }
         }
@@ -279,6 +374,7 @@ internal fun GuailiScreen(
                 selectedCell = null
             },
             onDismiss = { selectedCell = null },
+            onViewSignals = { showSymbolSignals(cell.symbol, cell.interval) },
         )
     }
 
@@ -301,6 +397,8 @@ private fun Toolbar(
     onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHelp: () -> Unit,
+    onToggleSignalPane: () -> Unit,
+    signalPaneOpen: Boolean,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val singleRow = !compactFilters && compact && maxWidth.value / LocalDensity.current.fontScale >= 700f
@@ -327,6 +425,8 @@ private fun Toolbar(
                     onToggleLayout = onToggleLayout,
                     onOpenSettings = onOpenSettings,
                     onOpenHelp = onOpenHelp,
+                    onToggleSignalPane = onToggleSignalPane,
+                    signalPaneOpen = signalPaneOpen,
                 )
             }
         } else {
@@ -354,6 +454,8 @@ private fun Toolbar(
                         onToggleLayout = onToggleLayout,
                         onOpenSettings = onOpenSettings,
                         onOpenHelp = onOpenHelp,
+                        onToggleSignalPane = onToggleSignalPane,
+                        signalPaneOpen = signalPaneOpen,
                     )
                 }
                 if (compactFilters) {
@@ -377,6 +479,8 @@ private fun ToolbarActions(
     onToggleLayout: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHelp: () -> Unit,
+    onToggleSignalPane: () -> Unit,
+    signalPaneOpen: Boolean,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggleLayout) {
@@ -393,6 +497,15 @@ private fun ToolbarActions(
         }
         IconButton(onClick = onOpenHelp) {
             Icon(Icons.Outlined.Info, contentDescription = "乖离信号帮助")
+        }
+        IconButton(
+            onClick = onToggleSignalPane,
+            modifier = Modifier.testTag("market-signal-pane-toggle"),
+        ) {
+            Icon(
+                Icons.AutoMirrored.Outlined.ShowChart,
+                contentDescription = if (signalPaneOpen) "收起信号栏" else "展开信号栏",
+            )
         }
         IconButton(
             onClick = onRefresh,
@@ -565,3 +678,22 @@ private fun formatTime(epochMillis: Long): String =
 
 private val TimeFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
+
+private val MarketLinkSessionSaver = Saver<MarketLinkSession, String>(
+    save = { Json.encodeToString(it) },
+    restore = { runCatching { Json.decodeFromString<MarketLinkSession>(it) }.getOrNull() },
+)
+
+private fun LazyListState.marketAnchor(): MarketScrollAnchor = MarketScrollAnchor(
+    layoutInfo.visibleItemsInfo.firstOrNull { it.index == firstVisibleItemIndex }?.key?.toString(),
+    firstVisibleItemIndex, firstVisibleItemScrollOffset,
+)
+
+private suspend fun LazyListState.restoreMarketAnchor(anchor: MarketScrollAnchor, keys: List<String>? = null) {
+    val total = keys?.size ?: layoutInfo.totalItemsCount
+    if (total == 0) return
+    val index = keys?.indexOf(anchor.key)?.takeIf { it >= 0 }
+        ?: layoutInfo.visibleItemsInfo.firstOrNull { it.key.toString() == anchor.key }?.index
+        ?: anchor.index
+    scrollToItem(index.coerceIn(0, total - 1), anchor.offset)
+}

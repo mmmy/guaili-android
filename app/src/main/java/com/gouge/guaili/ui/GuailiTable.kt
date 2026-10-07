@@ -18,6 +18,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +44,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiBackgroundArgb
 import com.gouge.guaili.settings.GroupLayoutSize
@@ -54,19 +58,25 @@ private val GridLineColor = Color(0xFF27313B)
 private val MatrixBackground = Color(0xFF11161C)
 
 @Composable
-fun GuailiTable(
+internal fun GuailiTable(
     state: GuailiTableState,
     onCellClick: (GuailiCell) -> Unit,
     modifier: Modifier = Modifier,
     intervals: List<String> = state.intervals,
+    listState: LazyListState = rememberLazyListState(),
+    horizontal: ScrollState = rememberScrollState(),
+    summaries: Map<String, MarketSignalSummary> = emptyMap(),
+    link: LiveMarketLink? = null,
+    onSignalClick: (com.gouge.guaili.signals.ServerSignalItem) -> Unit = {},
+    onSymbolSignals: (String) -> Unit = {},
 ) {
-    val horizontal = rememberScrollState()
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
     }
     val fontScale = LocalDensity.current.fontScale
     val symbolWidth = (symbolPresentation.widthDp * fontScale.coerceAtLeast(1f)).dp
-    val dimensions = tableDimensions(state.settings.tableDensity, fontScale)
+    val baseDimensions = tableDimensions(state.settings.tableDensity, fontScale)
+    val dimensions = baseDimensions.copy(cellHeight = max(baseDimensions.cellHeight.value, 48f * fontScale.coerceAtLeast(1f)).dp)
     val headerHeight = max(dimensions.cellHeight.value, 25.2f * fontScale + 6f).dp
 
     Column(modifier = modifier.background(MatrixBackground)) {
@@ -88,14 +98,17 @@ fun GuailiTable(
             }
         }
 
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().testTag("market-table-list")) {
             items(state.symbols, key = { it }, contentType = { "matrix-row" }) { symbol ->
                 Row {
-                    HeaderCell(
-                        text = symbolPresentation.displayNames.getValue(symbol),
-                        width = symbolWidth,
-                        height = dimensions.cellHeight,
-                    )
+                    Column(Modifier.width(symbolWidth).heightIn(min = dimensions.cellHeight)
+                        .background(Color(0xFF202832)).border(0.5.dp, GridLineColor)) {
+                        Text(symbolPresentation.displayNames.getValue(symbol), Modifier.padding(horizontal = 4.dp),
+                            fontSize = dimensions.valueFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        summaries[symbol]?.let { summary ->
+                            SignalSummaryRow(symbol, summary, onSignalClick, onSymbolSignals, compact = true)
+                        }
+                    }
                     Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
                         intervals.forEach { interval ->
                             ValueCell(
@@ -104,6 +117,7 @@ fun GuailiTable(
                                 interval = interval,
                                 onCellClick = onCellClick,
                                 dimensions = dimensions,
+                                member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
                             )
                         }
                     }
@@ -114,11 +128,16 @@ fun GuailiTable(
 }
 
 @Composable
-fun GuailiGroupedTable(
+internal fun GuailiGroupedTable(
     state: GuailiTableState,
     onCellClick: (GuailiCell) -> Unit,
     modifier: Modifier = Modifier,
     intervals: List<String> = state.intervals,
+    listState: LazyListState = rememberLazyListState(),
+    summaries: Map<String, MarketSignalSummary> = emptyMap(),
+    link: LiveMarketLink? = null,
+    onSignalClick: (com.gouge.guaili.signals.ServerSignalItem) -> Unit = {},
+    onSymbolSignals: (String) -> Unit = {},
 ) {
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
@@ -135,7 +154,7 @@ fun GuailiGroupedTable(
             fontScale = fontScale,
         )
         val intervalRows = remember(intervals, groupDimensions.columns) { intervals.chunked(groupDimensions.columns) }
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().testTag("market-groups-list")) {
             items(state.symbols, key = { it }, contentType = { "symbol-group" }) { symbol ->
                 // Keep the dense, unchanged grid in one layer while its group scrolls.
                 Column(modifier = Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)) {
@@ -143,6 +162,8 @@ fun GuailiGroupedTable(
                         symbol = symbolPresentation.displayNames.getValue(symbol),
                         quote = symbolPresentation.commonQuote,
                         height = groupDimensions.symbolHeaderHeight,
+                        summary = summaries[symbol],
+                        summaryContent = { summaries[symbol]?.let { SignalSummaryRow(symbol, it, onSignalClick, onSymbolSignals) } },
                     )
                     intervalRows.forEach { rowIntervals ->
                         Row(
@@ -164,6 +185,7 @@ fun GuailiGroupedTable(
                                     onCellClick = onCellClick,
                                     dimensions = groupDimensions,
                                     modifier = Modifier.weight(1f),
+                                    member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
                                 )
                             }
                             repeat(groupDimensions.columns - rowIntervals.size) {
@@ -179,7 +201,8 @@ fun GuailiGroupedTable(
 }
 
 @Composable
-private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
+private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp,
+    summary: MarketSignalSummary? = null, summaryContent: @Composable () -> Unit = {}) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -209,6 +232,7 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp) {
                 fontWeight = FontWeight.Medium,
             )
         }
+        if (summary != null) Box(Modifier.weight(1f).padding(start = 8.dp)) { summaryContent() }
     }
 }
 
@@ -220,6 +244,7 @@ private fun GroupedPeriodCell(
     onCellClick: (GuailiCell) -> Unit,
     dimensions: GroupedLayoutDimensions,
     modifier: Modifier = Modifier,
+    member: String? = null,
 ) {
     val trend = cell?.let { trendState(it.longTrend, it.shortTrend) }
     val periodTextColor = trend?.let(::trendTextColor) ?: NeutralTrendTextColor
@@ -239,7 +264,7 @@ private fun GroupedPeriodCell(
                 .border(0.5.dp, GridLineColor),
         ) {
             Text(
-                text = formatInterval(interval),
+                text = formatInterval(interval) + if (member.isNullOrEmpty()) "" else " $member",
                 color = periodTextColor,
                 fontSize = dimensions.periodFontSize,
                 lineHeight = dimensions.periodFontSize * 1.2f,
@@ -255,6 +280,8 @@ private fun GroupedPeriodCell(
             onCellClick = onCellClick,
             dimensions = dimensions.table,
             modifier = Modifier.fillMaxWidth(),
+            member = member,
+            showMemberLabel = false,
         )
     }
 }
@@ -310,6 +337,8 @@ private fun ValueCell(
     onCellClick: (GuailiCell) -> Unit,
     dimensions: TableDimensions,
     modifier: Modifier = Modifier,
+    member: String? = null,
+    showMemberLabel: Boolean = true,
 ) {
     val text = cell?.value?.toString() ?: "—"
     val textColor = if (cell == null) {
@@ -335,6 +364,8 @@ private fun ValueCell(
             )
             .background(background)
             .border(0.5.dp, GridLineColor)
+            .then(if (member != null) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)
+            .testTag("market-cell-$symbol-$interval")
             .then(if (cell != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open cell details") { onCellClick(cell) } else Modifier)
             .semantics {
                 contentDescription = cell?.let {
@@ -345,13 +376,14 @@ private fun ValueCell(
                     true -> "ATR filter passed"
                     false -> "ATR filtered"
                     null -> "ATR filter unavailable"
-                }
+                } + if (member != null) ", 所选实时信号参与周期 $member" else ""
             }
             .padding(horizontal = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
+            modifier = Modifier.padding(top = if (showMemberLabel && !member.isNullOrEmpty()) 9.dp else 0.dp),
             color = textColor,
             fontSize = dimensions.valueFontSize,
             lineHeight = dimensions.valueFontSize * 1.2f,
@@ -360,6 +392,8 @@ private fun ValueCell(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
+        if (showMemberLabel && !member.isNullOrEmpty()) Text(member, Modifier.align(Alignment.TopEnd).padding(end = 3.dp),
+            color = MaterialTheme.colorScheme.onSurface, fontSize = 9.sp, fontWeight = FontWeight.Bold)
     }
 }
 

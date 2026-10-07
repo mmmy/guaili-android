@@ -26,19 +26,7 @@ internal suspend fun widgetRefreshTargets(context: Context, settings: GuailiSett
     }
 }
 
-/** Foreground table refreshes also refresh opted-in V2 widgets. Legacy mode is independent. */
-internal suspend fun refreshServerSignalWidgets(context: Context, settings: GuailiSettings) {
-    val targets = widgetRefreshTargets(context, settings).filter { it.config.mode == WidgetMode.SignalsV2 }
-    if (targets.isEmpty()) return
-    val result = ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(context))
-        .refresh(settings.baseUrl, reuseWithinMillis = 1_000L)
-    targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
-        if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
-        message = (result as? GuailiResult.Failure)?.message) }
-    if (result is GuailiResult.Success) scheduleServerSignalsExpiry(context, result.value)
-}
-
-/** Called by the independent foreground signal screen, including when no widget exists. */
+/** The market's single V2 poller updates widgets in both table and signal views. */
 internal suspend fun updateServerSignalWidgets(context: Context, settings: GuailiSettings,
     result: GuailiResult<ServerSignalsSnapshot>) {
     val targets = widgetRefreshTargets(context, settings).filter { it.config.mode == WidgetMode.SignalsV2 }

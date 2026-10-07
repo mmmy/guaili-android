@@ -9,7 +9,9 @@ import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
 import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.data.GuailiSnapshot
 import com.gouge.guaili.data.assessGuailiTime
+import com.gouge.guaili.data.signalProfile
 import com.gouge.guaili.domain.GuailiCell
+import com.gouge.guaili.domain.guailiIntervalDurationMillis
 import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.settings.GuailiSettingsSource
 import com.gouge.guaili.settings.LayoutMode
@@ -31,6 +33,7 @@ data class GuailiTableState(
     val lastUpdatedAt: Long? = null,
     val errorMessage: String? = null,
     val isStale: Boolean = false,
+    val settingsLoaded: Boolean = false,
 )
 
 class GuailiViewModel(
@@ -52,10 +55,39 @@ class GuailiViewModel(
     private var refreshJob: Job? = null
     private var pendingRefreshSettings: GuailiSettings? = null
     private var pendingRefreshClearsCells: Boolean = false
-    private val refresher = GuailiRefreshUseCase(fetcherFactory, snapshotSink, nowMillis)
+    private val refresher = GuailiRefreshUseCase(fetcherFactory, object : GuailiSnapshotSink {
+        override fun currentDeviceTime() = snapshotSink.currentDeviceTime()
+        override suspend fun read() = snapshotSink.read()
+        override suspend fun save(snapshot: GuailiSnapshot) {
+            // A temporary linked range belongs to this screen, not the shared widget cache.
+            val settings = _state.value.settings
+            if (snapshot.table.symbols == settings.symbols && snapshot.table.intervals == settings.intervals &&
+                snapshot.signalProfile == settings.signalProfile()) {
+                snapshotSink.save(snapshot)
+            }
+        }
+    }, nowMillis)
     private var isForeground: Boolean = true
     private var hasObservedSettings = false
     private var latestSnapshot: GuailiSnapshot? = null
+    private var temporarySymbol: String? = null
+    private var temporaryIntervals: List<String> = emptyList()
+
+    private fun requestSettings(settings: GuailiSettings) = settings.copy(
+        symbols = (settings.symbols + listOfNotNull(temporarySymbol)).distinct(),
+        intervals = if (temporaryIntervals.any { it !in settings.intervals })
+            (settings.intervals + temporaryIntervals).distinct().sortedByDescending(::guailiIntervalDurationMillis)
+            else settings.intervals,
+    )
+
+    fun setTemporaryRange(symbol: String?, intervals: List<String>) {
+        if (temporarySymbol == symbol && temporaryIntervals == intervals) return
+        val previous = requestSettings(_state.value.settings)
+        temporarySymbol = symbol
+        temporaryIntervals = intervals
+        val next = requestSettings(_state.value.settings)
+        if (!sameDataRequest(previous, next)) requestRefresh(next, clearsCells = false)
+    }
 
     init {
         viewModelScope.launch {
@@ -65,13 +97,14 @@ class GuailiViewModel(
                 hasObservedSettings = true
                 _state.value = _state.value.copy(
                     settings = settings,
-                    symbols = settings.symbols,
-                    intervals = settings.intervals,
+                    settingsLoaded = true,
+                    symbols = requestSettings(settings).symbols,
+                    intervals = requestSettings(settings).intervals,
                     cells = if (requestSettingsChanged) emptyMap() else _state.value.cells,
                     isStale = if (requestSettingsChanged) false else _state.value.isStale,
                 )
                 if (requestSettingsChanged) {
-                    requestRefresh(settings, clearsCells = true)
+                    requestRefresh(requestSettings(settings), clearsCells = true)
                 }
                 if (autoRefreshEnabled) {
                     restartAutoRefresh()
@@ -81,7 +114,7 @@ class GuailiViewModel(
     }
 
     fun refresh() {
-        requestRefresh(_state.value.settings, clearsCells = false)
+        requestRefresh(requestSettings(_state.value.settings), clearsCells = false)
     }
 
     fun saveSettings(settings: GuailiSettings) {
@@ -161,7 +194,7 @@ class GuailiViewModel(
 
         when (val result = refresher.refresh(settings)) {
             is GuailiResult.Success -> {
-                if (!sameDataRequest(_state.value.settings, settings)) return
+                if (!sameDataRequest(requestSettings(_state.value.settings), settings)) return
 
                 val snapshot = result.value
                 latestSnapshot = snapshot
@@ -180,7 +213,7 @@ class GuailiViewModel(
                 onSnapshotUpdated()
             }
             is GuailiResult.Failure -> {
-                if (!sameDataRequest(_state.value.settings, settings)) return
+                if (!sameDataRequest(requestSettings(_state.value.settings), settings)) return
 
                 _state.value = _state.value.copy(
                     isLoading = false,

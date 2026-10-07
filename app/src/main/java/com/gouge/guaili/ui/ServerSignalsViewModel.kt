@@ -71,6 +71,7 @@ internal class ServerSignalsViewModel(
     }
 
     fun setView(view: MarketView) = updatePreferences { it.copy(view = view) }
+    fun setWidePaneCollapsed(collapsed: Boolean) = updatePreferences { it.copy(widePaneCollapsed = collapsed) }
     fun toggleSymbol(symbol: String) = updatePreferences { prefs ->
         val selected = prefs.symbols ?: settings.symbols
         prefs.copy(symbols = if (symbol in selected) selected - symbol else selected + symbol)

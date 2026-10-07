@@ -34,6 +34,8 @@ class MarketSignalsIntegrationTest {
     private val settings = SettingsStore(context)
     private val preferences = MarketSignalPreferencesStore(context)
     private val cache = ServerSignalsSnapshotStore(context)
+    private val tableCache = GuailiSnapshotStore(context)
+    private var originalTableSnapshot: GuailiSnapshot? = null
     private lateinit var originalSettings: GuailiSettings
     private lateinit var originalPreferences: MarketSignalPreferences
     private var originalSnapshot: ServerSignalsSnapshot? = null
@@ -42,12 +44,14 @@ class MarketSignalsIntegrationTest {
     private val requests = ConcurrentLinkedQueue<RecordedRequest>()
     @Volatile private var disabled = false
     @Volatile private var layoutFixture = false
+    @Volatile private var expandedCoverage = false
 
     @Before fun isolateMarketData() = runBlocking {
         originalSettings = settings.settings.first()
         originalPreferences = preferences.preferences.first()
         originalSnapshot = cache.read()
         originalFailure = cache.readFailure()
+        originalTableSnapshot = tableCache.read()
         server = MockWebServer().apply {
             dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -56,7 +60,16 @@ class MarketSignalsIntegrationTest {
                         "/api/signals" -> Json.encodeToString(fixture())
                         "/api/klines" -> """{"symbol":"BTCUSDT","intervals":["8"],"limit":300,"closedOnly":false,"series":[]}"""
                         "/api/alerts" -> "[]"
-                        else -> """{"symbols":[],"intervals":[],"results":[],"serverTime":"2026-10-05T00:00:00Z"}"""
+                        else -> {
+                            val symbols = request.requestUrl?.queryParameter("symbols")?.split(',').orEmpty()
+                            val intervals = request.requestUrl?.queryParameter("intervals")?.split(',').orEmpty()
+                            Json.encodeToString(GuailiResponse(symbols, intervals, 3, 500, false, serverTime = System.currentTimeMillis(),
+                                results = symbols.map { symbol -> GuailiSymbolResult(symbol, intervals.map { interval ->
+                                    val point = GuailiPoint(value = 14, guaili = 1.42, longTrend = true, shortTrend = false,
+                                        isClosed = false, availability = "ready", rankFilter = true)
+                                    GuailiSeries(interval, latest = point, data = listOf(point, point, point))
+                                }) }))
+                        }
                     }
                     return MockResponse().setHeader("Content-Type", "application/json").setBody(body)
                 }
@@ -73,6 +86,7 @@ class MarketSignalsIntegrationTest {
         preferences.update { originalPreferences }
         originalSnapshot?.let { cache.save(it) } ?: cache.clear()
         cache.recordFailure(originalFailure)
+        originalTableSnapshot?.let { tableCache.save(it) } ?: tableCache.clear()
         GuailiWidget().updateAll(context)
         server.shutdown()
     }
@@ -119,7 +133,9 @@ class MarketSignalsIntegrationTest {
             await("market-v2-empty")
             assertEquals(listOf("BTCUSDT", "XAUUSDT"), runBlocking { settings.settings.first().symbols })
             compose.onNodeWithTag("market-view-table").performClick()
-            compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-signals-v2").fetchSemanticsNodes().isEmpty() }
+            compose.waitForIdle()
+            if (compose.onAllNodesWithTag("market-signal-pane-wide").fetchSemanticsNodes().isEmpty())
+                compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-signals-v2").fetchSemanticsNodes().isEmpty() }
             compose.onNodeWithContentDescription("Refresh").assertIsDisplayed()
             compose.onNodeWithTag("nav-signals").performClick()
             compose.onNodeWithTag("market-signals-v2").assertDoesNotExist()
@@ -162,11 +178,84 @@ class MarketSignalsIntegrationTest {
             compose.onNodeWithText("服务器信号计算已关闭").assertIsDisplayed()
             capture("market-v2-disabled")
             compose.onNodeWithTag("market-view-table").performClick()
-            compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-signals-v2").fetchSemanticsNodes().isEmpty() }
+            compose.waitForIdle()
+            // Expanded windows keep the live signal pane beside the table by design;
+            // compact windows close it when switching back to the matrix.
+            val expandedPane = compose.onAllNodesWithTag("market-signal-pane-wide").fetchSemanticsNodes().isNotEmpty()
+            if (!expandedPane) {
+                compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-signals-v2").fetchSemanticsNodes().isEmpty() }
+            }
             compose.waitForIdle()
             val count = requests.count { it.requestUrl?.encodedPath == "/api/signals" }
             Thread.sleep(5_500)
-            assertEquals("Hidden v2 view must stop polling", count, requests.count { it.requestUrl?.encodedPath == "/api/signals" })
+            assertTrue("Table summaries must independently poll V2", requests.count { it.requestUrl?.encodedPath == "/api/signals" } > count)
+            compose.onNodeWithTag("nav-settings").performClick()
+            compose.waitForIdle()
+            val hiddenCount = requests.count { it.requestUrl?.encodedPath == "/api/signals" }
+            Thread.sleep(5_500)
+            assertEquals("Leaving market must stop both pollers", hiddenCount, requests.count { it.requestUrl?.encodedPath == "/api/signals" })
+        }
+    }
+
+    @Test fun liveLinksRevealRefreshAndReturnWithoutChangingUserSettings() {
+        runBlocking { settings.save(settings.settings.first().copy(intervals = listOf("D", "8", "5", "3", "2", "1"))) }
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            await("market-summary-BTCUSDT")
+            compose.onNodeWithTag("market-view-v2").performClick()
+            await("market-v2-card-BTCUSDT-btc")
+            compose.onNodeWithTag("market-v2-locate-BTCUSDT-btc").performClick()
+            await("market-link-bar")
+            compose.onNodeWithTag("market-view-table").assertIsSelected()
+            compose.onNodeWithTag("market-link-label").assertTextEquals("BTC · 共+5级")
+            capture("market-link-selected")
+            compose.onNodeWithText("Long", useUnmergedTree = true).performClick()
+            await("market-link-reveal")
+            compose.onNodeWithTag("market-link-reveal").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-cell-BTCUSDT-8").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals(listOf("D", "8", "5", "3", "2", "1"), runBlocking { settings.settings.first().intervals })
+            expandedCoverage = true
+            Thread.sleep(1_100)
+            compose.onNodeWithContentDescription("Refresh").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("BTC · 共+6级").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(10_000) { requests.any { it.requestUrl?.queryParameter("intervals")?.split(',')?.contains("10") == true } }
+            capture("market-link-expanded")
+            scenario.recreate()
+            await("market-link-bar")
+            compose.onNodeWithTag("market-link-label").assertTextEquals("BTC · 共+6级")
+            disabled = true
+            Thread.sleep(1_100)
+            compose.onNodeWithContentDescription("Refresh").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("BTC · 服务器信号计算已关闭").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("market-link-kline").assertIsNotEnabled()
+            compose.onNodeWithTag("market-link-return").performClick()
+            compose.onNodeWithTag("market-view-v2").assertIsSelected()
+            assertEquals(listOf("D", "8", "5", "3", "2", "1"), runBlocking { settings.settings.first().intervals })
+        }
+    }
+
+    @Test fun signalPaneSelectsUnconfiguredSymbolAndKeepsScopeAndChartIndependent() {
+        layoutFixture = true
+        runBlocking { preferences.update { it.copy(symbols = listOf("BTCUSDT", "XAUUSDT", "QQQUSDT")) } }
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            await("market-signal-pane-toggle")
+            if (compose.onAllNodesWithTag("market-signal-pane-wide").fetchSemanticsNodes().isEmpty())
+                compose.onNodeWithTag("market-signal-pane-toggle").performClick()
+            await("market-v2-card-QQQUSDT-conflict")
+            compose.onNodeWithTag("market-v2-kline-QQQUSDT-conflict").performClick()
+            await("market-link-bar")
+            compose.onNodeWithTag("market-link-label").assertTextEquals("QQQ · 分10级")
+            compose.waitUntil(10_000) { requests.any { it.requestUrl?.queryParameter("symbols")?.contains("QQQUSDT") == true } }
+            assertEquals(listOf("BTCUSDT", "XAUUSDT"), runBlocking { settings.settings.first().symbols })
+            capture("market-link-pane")
+            compose.onNodeWithTag("market-link-signals").performClick()
+            await("market-all-signals")
+            compose.onNodeWithTag("market-all-signals").performClick()
+            compose.onNodeWithTag("market-link-kline").performClick()
+            compose.waitUntil(10_000) { requests.any { it.requestUrl?.encodedPath == "/api/klines" && it.requestUrl?.queryParameter("symbol") == "QQQUSDT" } }
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+            await("market-link-bar")
+            compose.onNodeWithTag("market-link-clear").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-link-bar").fetchSemanticsNodes().isEmpty() }
         }
     }
 
@@ -233,7 +322,7 @@ class MarketSignalsIntegrationTest {
     }
     private fun fixture(): ServerSignalsResponse {
         val now = System.currentTimeMillis()
-        val periods = listOf("1", "2", "3", "5", "8")
+        val periods = listOf("1", "2", "3", "5", "8") + if (expandedCoverage) listOf("10") else emptyList()
         val symbols = listOf("BTCUSDT", "XAUUSDT", "QQQUSDT")
         return ServerSignalsResponse(!disabled, if (disabled) "disabled" else "ready", now,
             evaluatedAt = now, indicatorConfig = ServerSignalIndicatorConfig("EMA", 20),
@@ -249,7 +338,7 @@ class MarketSignalsIntegrationTest {
                     else -> listOf(ServerSignalStructure("conflict", "conflict", "negative",
                         listOf(ServerSignalRun("negative", periods), ServerSignalRun("positive", longPeriods)), 5, 10, "240", now - 60_000))
                 } else if (symbol != "BTCUSDT") emptyList() else listOf(ServerSignalStructure("btc", "extreme", "positive",
-                    listOf(ServerSignalRun("positive", periods)), 5, 5, "8", now - 60_000, null, now - 60_000))
+                    listOf(ServerSignalRun("positive", periods)), periods.size, periods.size, "8", now - 60_000, null, now - 60_000))
                 ServerSymbolSignals(symbol, "ready", now,
                     signals = signals,
                     perIntervalQuality = (if (layoutFixture) periods + longPeriods + nearPeriods else periods).map { ServerIntervalEvidence(it, "ready", value = 14, guaili = 1.42,

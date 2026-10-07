@@ -19,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -38,6 +39,7 @@ fun CellDetailSheet(
     cell: GuailiCell,
     onOpenKline: () -> Unit,
     onDismiss: () -> Unit,
+    onViewSignals: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -100,6 +102,9 @@ fun CellDetailSheet(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("View K-line")
             }
+            onViewSignals?.let { action -> TextButton(onClick = action, modifier = Modifier.fillMaxWidth()) {
+                Text("查看该周期的实时信号")
+            } }
         }
     }
 }

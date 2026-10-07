@@ -71,6 +71,8 @@ class GuailiSnapshotStore internal constructor(
         }
     }
 
+    internal suspend fun clear() { dataStore.edit { it.remove(SnapshotKey) } }
+
     companion object {
         private val SnapshotKey = stringPreferencesKey("latest_snapshot")
     }

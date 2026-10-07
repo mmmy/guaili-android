@@ -24,8 +24,6 @@ import com.gouge.guaili.ui.theme.GuailiTheme
 import com.gouge.guaili.widget.GuailiWidget
 import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
-import com.gouge.guaili.widget.refreshServerSignalWidgets
 import com.gouge.xbot.ui.MainViewModel
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +47,6 @@ class MainActivity : ComponentActivity() {
                 settingsSource = settingsStore,
                 snapshotStore = GuailiSnapshotStore(applicationContext),
                 onSnapshotUpdated = {
-                    refreshServerSignalWidgets(applicationContext, settingsStore.settings.first())
                     GuailiWidget().updateAll(applicationContext)
                 },
             ),

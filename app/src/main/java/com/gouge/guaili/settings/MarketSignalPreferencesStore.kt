@@ -22,6 +22,7 @@ internal data class MarketSignalPreferences(
     // null follows the table selection until the user first customizes the signal view.
     val symbols: List<String>? = null,
     val kinds: Set<GuailiSignalKind> = GuailiSignalKind.entries.toSet(),
+    val widePaneCollapsed: Boolean = false,
 )
 
 internal interface MarketSignalPreferencesSource {
