@@ -13,7 +13,7 @@ import retrofit2.Retrofit
 import retrofit2.http.*
 
 interface PriceAlertApi {
-    @GET("api/price-alerts") suspend fun list(@Query("symbol") symbol: String): List<PriceAlertDto>
+    @GET("api/price-alerts") suspend fun list(@Query("symbol") symbol: String?): List<PriceAlertDto>
     @GET("api/price-alerts/{id}") suspend fun get(@Path("id") id: Long): PriceAlertDto
     @POST("api/price-alerts") suspend fun create(@Body body: JsonObject): JsonElement
     @PATCH("api/price-alerts/{id}") suspend fun patch(@Path("id") id: Long, @Body body: JsonObject): JsonElement
@@ -41,6 +41,7 @@ interface PriceAlertGateway {
 
 class PriceAlertRepository(private val api: PriceAlertApi) : PriceAlertGateway {
     override suspend fun list(symbol: String) = call { api.list(symbol) }
+    suspend fun listAll() = call { api.list(null) }
     override suspend fun get(id: Long) = call { api.get(id) }
     override suspend fun market(symbol: String) = call { api.market(symbol) }
     override suspend fun events(id: Long, before: Long?) = call { api.events(id, 200, before) }

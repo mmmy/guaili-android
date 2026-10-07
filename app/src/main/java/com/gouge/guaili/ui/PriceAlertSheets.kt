@@ -250,22 +250,30 @@ private fun AlertCoordinate(label: String, value: String, change: (String) -> Un
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PriceAlertListSheet(alerts: List<PriceAlertDto>, pending: Map<Long, PendingPriceAlert>, error: String?, onDismiss: () -> Unit, onSelect: (Long) -> Unit, onRefresh: () -> Unit,
-    legacy: List<AlertDto> = emptyList(), onLegacySelect: (Long) -> Unit = {}) {
+    legacy: List<AlertDto> = emptyList(), onLegacySelect: (Long) -> Unit = {},
+    title: String = "价格警报", loading: Boolean = false) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(.85f).padding(horizontal = 20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("价格警报 · ${alerts.size + legacy.size}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("$title · ${alerts.size + legacy.size}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "刷新价格警报") }
                 IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "关闭警报列表") }
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (alerts.isEmpty() && legacy.isEmpty()) Text("暂无价格线警报。返回图表，用“水平线”或“趋势线”开始绘图。", Modifier.padding(vertical = 24.dp))
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!loading && error == null && alerts.isEmpty() && legacy.isEmpty()) Text("暂无价格线警报。返回图表，用“水平线”或“趋势线”开始绘图。", Modifier.padding(vertical = 24.dp))
             LazyColumn(Modifier.weight(1f).testTag("price-alert-list")) {
                 items(alerts, key = { it.id }) { alert ->
-                    Column(Modifier.fillMaxWidth().clickable { onSelect(alert.id) }.padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(Modifier.fillMaxWidth().testTag("price-alert-list-${alert.id}").clickable { onSelect(alert.id) }.padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row { Text(alert.name.ifBlank { "价格警报" }, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); Text(pending[alert.id]?.label() ?: alert.stateLabel(), style = MaterialTheme.typography.labelMedium) }
                         Text("${alertDirection(alert.direction)} · ${formatInterval(alert.interval)} · ${if (alert.geometry.kind == "horizontal_segment") "水平线" else "趋势线"}", style = MaterialTheme.typography.bodyMedium)
                         Text("${alertNumber(alert.geometry.first.price)} → ${alertNumber(alert.geometry.second.price)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (alert.geometry.kind == "trend_segment") alert.geometry.priceAt(System.currentTimeMillis())?.let {
+                            Text("当前线价 ${alertNumber(it)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        alert.triggeredAt?.takeIf { alert.status == "triggered" }?.let {
+                            Text("触发于 ${alertDate(it)}", style = MaterialTheme.typography.bodySmall, color = AlertTriggeredColor)
+                        }
                     }
                     HorizontalDivider()
                 }

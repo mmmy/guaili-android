@@ -2,6 +2,8 @@ package com.gouge.guaili.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -58,9 +61,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,9 +77,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.settings.LayoutMode
 import com.gouge.guaili.settings.MarketView
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
@@ -89,10 +92,18 @@ internal fun GuailiScreen(
     onOpenAppSettings: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val alertsViewModel: MarketPriceAlertsViewModel = viewModel(
+        key = "market-price-alerts:${state.settings.baseUrl.trimEnd('/')}",
+        factory = MarketPriceAlertsViewModel.factory(context, state.settings.baseUrl),
+    )
+    val alertsState by alertsViewModel.state.collectAsStateWithLifecycle()
+    val alertSummaries = remember(alertsState) { alertsState.summaries() }
     val signalsState by signalsViewModel.state.collectAsStateWithLifecycle()
     val signalListState = rememberLazyListState()
     val tableListState = rememberLazyListState()
     val groupListState = rememberLazyListState()
+    val focusListState = rememberLazyListState()
     val paneListState = rememberLazyListState()
     val tableHorizontal = rememberScrollState()
     val signalContentHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
@@ -100,6 +111,14 @@ internal fun GuailiScreen(
     var paneRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
     var session by rememberSaveable(stateSaver = MarketLinkSessionSaver) { mutableStateOf(MarketLinkSession()) }
     val showSignals = (session.viewOverride ?: signalsState.preferences.view) == MarketView.SignalsV2
+    val onlySignalCells = signalsState.preferences.onlySignalCells
+    val focusGroups = remember(signalsState.presentation.signals, signalsState.presentation.status, signalsState.snapshot, state.symbols) {
+        signalFocusGroups(signalsState, state.symbols)
+    }
+    var expandedFocusSymbols by rememberSaveable(state.settings.baseUrl) { mutableStateOf(emptyList<String>()) }
+    LaunchedEffect(focusGroups.map { it.symbol }) {
+        expandedFocusSymbols = expandedFocusSymbols.filter { symbol -> focusGroups.any { it.symbol == symbol } }
+    }
     val liveLink = resolveLiveMarketLink(session.selection, signalsState)
     var klineFromSignals by rememberSaveable { mutableStateOf(false) }
     val windowSize = LocalWindowInfo.current.containerSize
@@ -110,8 +129,13 @@ internal fun GuailiScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var selectedCell by remember { mutableStateOf<GuailiCell?>(null) }
+    var selectedCellFromSignals by remember { mutableStateOf(false) }
+    var selectedCellContext by remember { mutableStateOf<String?>(null) }
+    var showDataStatus by rememberSaveable { mutableStateOf(false) }
     var klineSymbol by rememberSaveable { mutableStateOf<String?>(null) }
     var klineInterval by rememberSaveable { mutableStateOf<String?>(null) }
+    var klineAlertId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var alertListSymbol by rememberSaveable(state.settings.baseUrl) { mutableStateOf<String?>(null) }
     val klineTarget = klineSymbol?.let { symbol ->
         klineInterval?.let { interval -> KlineTarget(symbol, interval) }
     }
@@ -135,7 +159,13 @@ internal fun GuailiScreen(
         signals = signalListState.marketAnchor(), pane = paneListState.marketAnchor(),
         horizontalInterval = visibleIntervals.getOrNull(tableHorizontal.value / with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }.coerceAtLeast(1)),
         horizontalOffset = tableHorizontal.value % with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }.coerceAtLeast(1),
+        onlySignalCells = onlySignalCells, focus = focusListState.marketAnchor(), cellFromSignals = selectedCellFromSignals,
     )
+    fun selectCell(cell: GuailiCell, fromSignals: Boolean = false) {
+        selectedCell = cell
+        selectedCellFromSignals = fromSignals
+        selectedCellContext = if (fromSignals) signalFocusCellContext(signalsState) else null
+    }
     fun selectStructure(item: ServerSignalItem) {
         session = session.push(currentOrigin()).copy(selection = MarketLinkKey(item.symbol, item.signal.id),
             viewOverride = MarketView.Table, reveal = false, narrowPaneOpen = false, locationRequest = session.locationRequest + 1)
@@ -157,7 +187,12 @@ internal fun GuailiScreen(
             origins = session.origins.dropLast(1))
         intervalGroup = IntervalGroup.valueOf(origin.intervalGroup)
         viewModel.setLayoutMode(LayoutMode.valueOf(origin.layoutMode))
-        selectedCell = state.cells[origin.cellSymbol]?.get(origin.cellInterval)
+        signalsViewModel.setOnlySignalCells(origin.onlySignalCells)
+        val restoredCell = if (origin.cellFromSignals) focusGroups.firstOrNull { it.symbol == origin.cellSymbol }
+            ?.rows?.flatMap { it.members }?.firstOrNull { it.cell.interval == origin.cellInterval }?.cell
+            else state.cells[origin.cellSymbol]?.get(origin.cellInterval)
+        selectedCell = null
+        restoredCell?.let { selectCell(it, origin.cellFromSignals) }
         signalRestore = origin.signals
         paneRestore = origin.pane
         locationHandled = session.locationRequest
@@ -165,6 +200,7 @@ internal fun GuailiScreen(
             androidx.compose.runtime.withFrameNanos { }
             tableListState.restoreMarketAnchor(origin.table, state.symbols)
             groupListState.restoreMarketAnchor(origin.groups, state.symbols)
+            focusListState.restoreMarketAnchor(origin.focus, focusGroups.map { it.symbol })
             val restored = linkedVisibleIntervals(filterIntervals(state.intervals, intervalGroup), state.intervals,
                 resolveLiveMarketLink(origin.selection, signalsState)?.members?.keys.orEmpty(), origin.reveal)
             val cellWidth = with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() }
@@ -173,9 +209,26 @@ internal fun GuailiScreen(
         }
     }
     fun openSignalKline(item: ServerSignalItem) {
+        klineAlertId = null
         klineFromSignals = true
         klineSymbol = item.symbol
         klineInterval = item.signal.anchorInterval
+    }
+    fun openPriceAlert(alert: com.gouge.guaili.data.PriceAlertDto) {
+        alertsViewModel.acknowledge(listOf(alert))
+        klineFromSignals = false
+        klineSymbol = alert.symbol
+        klineInterval = alert.interval
+        klineAlertId = alert.id
+        alertListSymbol = null
+        selectedCell = null
+    }
+    fun openPeriodAlert(symbol: String, interval: String) {
+        alertsState.preferredAlert(symbol, interval)?.let(::openPriceAlert)
+    }
+    fun openSymbolAlerts(symbol: String) {
+        alertListSymbol = symbol
+        alertsViewModel.refresh()
     }
 
     LaunchedEffect(state.settings.baseUrl, state.settingsLoaded) {
@@ -191,12 +244,15 @@ internal fun GuailiScreen(
         viewModel.setTemporaryRange(session.selection?.symbol,
             if (session.reveal) liveLink?.members?.keys.orEmpty().toList() else emptyList())
     }
-    LaunchedEffect(session.locationRequest, state.symbols, visibleIntervals, showSignals, tableLayout, tableWidthPixels) {
+    LaunchedEffect(session.locationRequest, state.symbols, visibleIntervals, showSignals, tableLayout, tableWidthPixels, onlySignalCells, focusGroups) {
         val link = liveLink
         if (showSignals || link == null || session.locationRequest == locationHandled || tableWidthPixels == 0) return@LaunchedEffect
         val symbolIndex = state.symbols.indexOf(link.key.symbol)
         if (symbolIndex < 0) return@LaunchedEffect
-        if (tableLayout == TableLayout.Table) {
+        if (onlySignalCells) {
+            val index = focusGroups.indexOfFirst { it.symbol == link.key.symbol }
+            if (index >= 0) focusListState.scrollToItem(index)
+        } else if (tableLayout == TableLayout.Table) {
             tableListState.scrollToItem(symbolIndex)
             val period = visibleIntervals.indexOfFirst { it in link.members }.coerceAtLeast(0)
             tableHorizontal.scrollTo(period * with(density) { tableDimensions(state.settings.tableDensity, density.fontScale).cellWidth.roundToPx() })
@@ -219,6 +275,7 @@ internal fun GuailiScreen(
     LaunchedEffect(requestedKlineTarget) {
         requestedKlineTarget?.let { target ->
             klineFromSignals = false
+            klineAlertId = null
             klineSymbol = target.symbol
             klineInterval = target.interval
             onRequestedKlineConsumed()
@@ -226,9 +283,18 @@ internal fun GuailiScreen(
     }
 
     val contentActive = klineTarget == null && !showSettings && !showHelp
-    DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals) {
+    DisposableEffect(lifecycleOwner, alertsViewModel, contentActive, showSignals, state.settingsLoaded) {
+        fun update() = alertsViewModel.setForeground(state.settingsLoaded && contentActive && !showSignals &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        val observer = LifecycleEventObserver { _, _ -> update() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        update()
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); alertsViewModel.setForeground(false) }
+    }
+    val needsTable = !onlySignalCells || expandedFocusSymbols.isNotEmpty()
+    DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals, needsTable) {
         fun update(active: Boolean) {
-            viewModel.setForeground(active && contentActive && !showSignals)
+            viewModel.setForeground(active && contentActive && !showSignals && needsTable)
             signalsViewModel.setForeground(active && contentActive)
         }
         val observer = LifecycleEventObserver { _, event ->
@@ -250,17 +316,19 @@ internal fun GuailiScreen(
     klineTarget?.let { target ->
         KlineScreen(
             baseUrl = state.settings.baseUrl,
-            symbols = if (klineFromSignals) (signalsState.availableSymbols + target.symbol).distinct() else state.settings.symbols,
+            symbols = if (klineFromSignals) (signalsState.availableSymbols + target.symbol).distinct() else (state.settings.symbols + target.symbol).distinct(),
             intervals = if (klineFromSignals) (signalsState.snapshot?.response?.results
                 ?.firstOrNull { it.symbol == target.symbol }?.perIntervalQuality.orEmpty().map { it.interval } +
-                state.settings.intervals + target.interval).distinct() else state.settings.intervals,
+                state.settings.intervals + target.interval).distinct() else (state.settings.intervals + target.interval).distinct(),
             initialSymbol = target.symbol,
             initialInterval = target.interval,
+            initialAlertId = klineAlertId,
             refreshSeconds = state.settings.autoRefreshSeconds,
             closedOnly = if (klineFromSignals) false else state.settings.closedOnly,
             onBack = {
                 klineSymbol = null
                 klineInterval = null
+                klineAlertId = null
             },
         )
         return
@@ -299,7 +367,7 @@ internal fun GuailiScreen(
                         onRefresh = signalsViewModel::refresh, onToggleSymbol = signalsViewModel::toggleSymbol,
                         onSelectAll = signalsViewModel::selectAllSymbols, onToggleKind = signalsViewModel::toggleKind,
                         onOpenSettings = { onOpenAppSettings?.invoke() ?: run { showSettings = true } },
-                        onOpenKline = { target -> klineFromSignals = true; klineSymbol = target.symbol; klineInterval = target.interval },
+                        onOpenKline = { target -> klineAlertId = null; klineFromSignals = true; klineSymbol = target.symbol; klineInterval = target.interval },
                         onLocateTable = ::selectStructure, embedded = embedded, selectedKey = session.selection,
                         scopeSymbol = if (embedded) session.scopeSymbol else null,
                         scopeInterval = if (embedded) session.scopeInterval else null,
@@ -314,7 +382,8 @@ internal fun GuailiScreen(
             val tableContent: @Composable () -> Unit = {
                 Column(Modifier.fillMaxSize().onSizeChanged { tableWidthPixels = it.width }) {
                     Toolbar(state, compactHeader, compactFilters, intervalGroup, { intervalGroup = it },
-                        { viewModel.refresh(); signalsViewModel.refresh() }, tableLayout,
+                        { if (!onlySignalCells || expandedFocusSymbols.isNotEmpty()) viewModel.refresh()
+                            signalsViewModel.refresh(); alertsViewModel.refresh() }, tableLayout,
                         { viewModel.setLayoutMode(if (tableLayout == TableLayout.Table) LayoutMode.Groups else LayoutMode.Table) },
                         { onOpenAppSettings?.invoke() ?: run { showSettings = true } }, { showHelp = true },
                         onToggleSignalPane = {
@@ -326,23 +395,36 @@ internal fun GuailiScreen(
                             }
                         },
                         signalPaneOpen = paneOpen,
+                        signalsState = signalsState, onlySignalCells = onlySignalCells,
+                        onOnlySignalCells = { enabled ->
+                            expandedFocusSymbols = emptyList()
+                            signalsViewModel.setOnlySignalCells(enabled)
+                        },
+                        onStatusClick = { showDataStatus = true },
                     )
-                    state.errorMessage?.let { ErrorBanner(it, state.cells.isNotEmpty(), viewModel::refresh) }
-                    if (!compactFilters) IntervalFilters(intervalGroup) { intervalGroup = it }
+                    if (!onlySignalCells) state.errorMessage?.let { ErrorBanner(it, state.cells.isNotEmpty(), viewModel::refresh) }
                     liveLink?.let { link ->
                         MarketLinkBar(link, signalsState, state, filteredIntervals, session.reveal, session.origins.isNotEmpty(),
                             { session = session.copy(reveal = !session.reveal, locationRequest = session.locationRequest + 1) },
                             { showSymbolSignals(link.key.symbol) }, { link.item?.let(::openSignalKline) }, ::clearLink, ::returnFromLink)
                     }
                     Box(Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp)) {
-                        when (tableLayout) {
-                            TableLayout.Table -> GuailiTable(state, { selectedCell = it }, Modifier.fillMaxSize(), visibleIntervals,
-                                tableListState, tableHorizontal, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) })
-                            TableLayout.Groups -> GuailiGroupedTable(state, { selectedCell = it }, Modifier.fillMaxSize(), visibleIntervals,
-                                groupListState, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) })
+                        if (onlySignalCells) SignalFocusTable(focusGroups, state, signalsState, focusListState,
+                            expandedFocusSymbols, { symbol -> expandedFocusSymbols =
+                                if (symbol in expandedFocusSymbols) expandedFocusSymbols - symbol else expandedFocusSymbols + symbol },
+                            { selectCell(it, true) }, { selectCell(it) }, ::selectStructure,
+                            alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert, Modifier.fillMaxSize(), session.selection)
+                        else when (tableLayout) {
+                            TableLayout.Table -> GuailiTable(state, { selectCell(it) }, Modifier.fillMaxSize(), visibleIntervals,
+                                tableListState, tableHorizontal, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) },
+                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert)
+                            TableLayout.Groups -> GuailiGroupedTable(state, { selectCell(it) }, Modifier.fillMaxSize(), visibleIntervals,
+                                groupListState, summaries, liveLink, ::selectStructure, { showSymbolSignals(it) },
+                                alertSummaries, alertsState.error != null, ::openSymbolAlerts, ::openPeriodAlert)
                         }
-                        if (state.isLoading) CircularProgressIndicator(Modifier.align(Alignment.Center))
-                        if (state.isRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                        if (!onlySignalCells && state.isLoading) CircularProgressIndicator(Modifier.align(Alignment.Center))
+                        if (if (onlySignalCells) signalsState.isRefreshing else state.isRefreshing)
+                            LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                     }
                 }
             }
@@ -365,17 +447,43 @@ internal fun GuailiScreen(
     }
 
     selectedCell?.let { cell ->
+        val periodAlerts = alertSummaries[cell.symbol]?.periods?.get(cell.interval)
+        val waitingReasons = alertsState.alerts.filter {
+            it.symbol == cell.symbol && it.interval == cell.interval && it.status == "active" &&
+                (it.expiresAt == null || it.expiresAt > alertsState.now) && it.dataStatus != "live"
+        }.map { it.stateLabel(alertsState.now) }.distinct().joinToString("、")
         CellDetailSheet(
             cell = cell,
             onOpenKline = {
-                klineFromSignals = false
+                klineFromSignals = selectedCellFromSignals
+                val alert = alertsState.preferredAlert(cell.symbol, cell.interval)
+                klineAlertId = alert?.id
+                alert?.let { alertsViewModel.acknowledge(listOf(it)) }
                 klineSymbol = cell.symbol
                 klineInterval = cell.interval
                 selectedCell = null
             },
             onDismiss = { selectedCell = null },
             onViewSignals = { showSymbolSignals(cell.symbol, cell.interval) },
+            priceAlertDescription = periodAlerts?.description?.let { it + if (waitingReasons.isBlank()) "" else "（$waitingReasons）" },
+            dataContext = selectedCellContext,
         )
+    }
+
+    if (showDataStatus) MarketDataStatusSheet(state, signalsState, onlySignalCells, focusGroups,
+        onRefresh = { if (!onlySignalCells) viewModel.refresh(); signalsViewModel.refresh() },
+        onDismiss = { showDataStatus = false })
+
+    alertListSymbol?.let { symbol ->
+        val symbolAlerts = alertsState.alerts.filter { it.symbol == symbol }.sortedWith(
+            compareByDescending<com.gouge.guaili.data.PriceAlertDto> { it.status == "triggered" }
+                .thenByDescending { it.triggeredAt ?: 0L }.thenByDescending { it.id })
+        // Acknowledge exactly the snapshot shown, so a later trigger remains unread.
+        LaunchedEffect(symbol, symbolAlerts.map { it.triggerKey() }) { alertsViewModel.acknowledge(symbolAlerts) }
+        PriceAlertListSheet(symbolAlerts, emptyMap(), alertsState.error ?: alertsState.seenError,
+            onDismiss = { alertListSymbol = null }, onSelect = { id -> symbolAlerts.firstOrNull { it.id == id }?.let(::openPriceAlert) },
+            onRefresh = { alertsViewModel.refresh(); alertsViewModel.acknowledge(symbolAlerts) },
+            title = "${symbol.removeSuffix("USDT")} · 价格警报", loading = alertsState.loading)
     }
 
 }
@@ -399,72 +507,39 @@ private fun Toolbar(
     onOpenHelp: () -> Unit,
     onToggleSignalPane: () -> Unit,
     signalPaneOpen: Boolean,
+    signalsState: MarketSignalsUiState,
+    onlySignalCells: Boolean,
+    onOnlySignalCells: (Boolean) -> Unit,
+    onStatusClick: () -> Unit,
 ) {
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val singleRow = !compactFilters && compact && maxWidth.value / LocalDensity.current.fontScale >= 700f
-        if (singleRow) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-            ) {
-                Text(
-                    text = "Guaili Matrix",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.width(18.dp))
-                StatusIndicator(state = state, modifier = Modifier.weight(1f))
-                ToolbarActions(
-                    state = state,
-                    onRefresh = onRefresh,
-                    tableLayout = tableLayout,
-                    onToggleLayout = onToggleLayout,
-                    onOpenSettings = onOpenSettings,
-                    onOpenHelp = onOpenHelp,
-                    onToggleSignalPane = onToggleSignalPane,
-                    signalPaneOpen = signalPaneOpen,
-                )
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = if (compactFilters) 2.dp else 6.dp, bottom = if (compactFilters) 0.dp else 4.dp),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = "Guaili Matrix",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    ToolbarActions(
-                        state = state,
-                        onRefresh = onRefresh,
-                        tableLayout = tableLayout,
-                        onToggleLayout = onToggleLayout,
-                        onOpenSettings = onOpenSettings,
-                        onOpenHelp = onOpenHelp,
-                        onToggleSignalPane = onToggleSignalPane,
-                        signalPaneOpen = signalPaneOpen,
-                    )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val showTitle = maxWidth.value / LocalDensity.current.fontScale >= 360f
+        Column(Modifier.fillMaxWidth().padding(top = if (compact) 2.dp else 6.dp)) {
+            Row(Modifier.fillMaxWidth().testTag("market-toolbar-row"), verticalAlignment = Alignment.CenterVertically) {
+                if (showTitle) {
+                    Text("Guaili", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, modifier = Modifier.padding(end = 6.dp))
                 }
-                if (compactFilters) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        StatusIndicator(state, Modifier.weight(1f), compact = true)
-                        CompactIntervalFilter(intervalGroup, onSelectIntervalGroup)
-                    }
-                } else {
-                    StatusIndicator(state = state, modifier = Modifier.fillMaxWidth().padding(start = 2.dp, bottom = 2.dp))
+                StatusIndicator(state, signalsState, onlySignalCells, onStatusClick, Modifier.weight(1f))
+                ToolbarActions(onRefresh, tableLayout, onToggleLayout, onOpenSettings, onOpenHelp,
+                    onToggleSignalPane, signalPaneOpen, onlySignalCells,
+                    if (onlySignalCells) signalsState.isRefreshing else state.isLoading || state.isRefreshing)
+            }
+            Row(Modifier.fillMaxWidth().testTag("market-display-controls"),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.height(48.dp).testTag("market-signal-focus-toggle")
+                    .toggleable(value = onlySignalCells, role = Role.Checkbox, onValueChange = onOnlySignalCells)
+                    .semantics { contentDescription = "仅显示 V2 信号格" }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = onlySignalCells, onCheckedChange = null, modifier = Modifier.size(32.dp))
+                    Text("仅V2信号格", fontSize = 12.sp, maxLines = 1)
+                }
+                Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (onlySignalCells) Text(signalFocusSourceLabel(signalsState), fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("market-focus-source"))
+                else if (compactFilters) CompactIntervalFilter(intervalGroup, onSelectIntervalGroup)
+                else IntervalGroup.entries.forEach { group -> FilterChip(selected = intervalGroup == group,
+                    onClick = { onSelectIntervalGroup(group) }, label = { Text(group.label) }) }
                 }
             }
         }
@@ -473,7 +548,6 @@ private fun Toolbar(
 
 @Composable
 private fun ToolbarActions(
-    state: GuailiTableState,
     onRefresh: () -> Unit,
     tableLayout: TableLayout,
     onToggleLayout: () -> Unit,
@@ -481,9 +555,11 @@ private fun ToolbarActions(
     onOpenHelp: () -> Unit,
     onToggleSignalPane: () -> Unit,
     signalPaneOpen: Boolean,
+    onlySignalCells: Boolean,
+    refreshBusy: Boolean,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onToggleLayout) {
+        IconButton(onClick = onToggleLayout, enabled = !onlySignalCells) {
             Icon(
                 imageVector = when (tableLayout) {
                     TableLayout.Table -> Icons.Outlined.GridView
@@ -509,7 +585,7 @@ private fun ToolbarActions(
         }
         IconButton(
             onClick = onRefresh,
-            enabled = !state.isLoading && !state.isRefreshing,
+            enabled = !refreshBusy,
         ) {
             Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
         }
@@ -520,25 +596,26 @@ private fun ToolbarActions(
 }
 
 @Composable
-private fun StatusIndicator(state: GuailiTableState, modifier: Modifier = Modifier, compact: Boolean = false) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier.horizontalScroll(rememberScrollState()),
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(statusColor(state), CircleShape),
-        )
-        Spacer(modifier = Modifier.width(7.dp))
-        Text(
-            text = statusText(state, compact),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 12.sp,
-            lineHeight = 16.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-        )
+private fun StatusIndicator(
+    state: GuailiTableState,
+    signals: MarketSignalsUiState,
+    onlySignalCells: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val color = if (!onlySignalCells) statusColor(state) else when {
+        signals.presentation.status == "ready" && signals.refreshError == null -> Color(0xFF22C55E)
+        signals.isRefreshing -> MaterialTheme.colorScheme.primary
+        else -> Color(0xFFF59E0B)
+    }
+    Row(modifier.height(48.dp).testTag("market-data-status")
+        .clickable(role = Role.Button, onClickLabel = "查看数据状态详情", onClick = onClick)
+        .semantics { contentDescription = "数据状态：${marketDataStatusLabel(state, signals, onlySignalCells)}，点击查看详情" },
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).background(color, CircleShape))
+        Spacer(Modifier.width(5.dp))
+        Text(marketDataStatusLabel(state, signals, onlySignalCells), color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -594,28 +671,6 @@ private fun ErrorBanner(
     }
 }
 
-@Composable
-private fun IntervalFilters(
-    selected: IntervalGroup,
-    onSelected: (IntervalGroup) -> Unit,
-) {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(vertical = 4.dp),
-    ) {
-        IntervalGroup.entries.forEach { group ->
-            FilterChip(
-                selected = selected == group,
-                onClick = { onSelected(group) },
-                label = { Text(group.label) },
-            )
-        }
-    }
-}
-
 internal enum class IntervalGroup(val label: String) {
     All("All"),
     Short("Short"),
@@ -649,35 +704,12 @@ private fun intervalMinutes(interval: String): Double? {
     return value * multiplier
 }
 
-private fun statusText(state: GuailiTableState, compact: Boolean = false): String {
-    val loadState = when {
-        state.isLoading -> "Loading"
-        state.isRefreshing -> "Refreshing"
-        state.isStale -> "Stale"
-        state.errorMessage != null -> "Offline"
-        else -> "Live"
-    }
-    val updatedAt = state.lastUpdatedAt?.let { "Updated ${formatTime(it)}" } ?: "Not updated"
-    if (compact) {
-        val time = state.lastUpdatedAt?.let(::formatTime) ?: "Not updated"
-        return "$loadState · $time · ${if (state.settings.closedOnly) "Closed" else "Live candles"}"
-    }
-    val candleMode = if (state.settings.closedOnly) "Closed only" else "Live candles"
-    return "$loadState  |  $candleMode  |  $updatedAt  |  ${state.symbols.size} symbols"
-}
-
 @Composable
 private fun statusColor(state: GuailiTableState): Color = when {
-    state.isLoading || state.isRefreshing -> MaterialTheme.colorScheme.primary
     state.isStale || state.errorMessage != null || state.lastUpdatedAt == null -> Color(0xFFF59E0B)
+    state.isLoading || state.isRefreshing -> MaterialTheme.colorScheme.primary
     else -> Color(0xFF22C55E)
 }
-
-private fun formatTime(epochMillis: Long): String =
-    TimeFormatter.format(Instant.ofEpochMilli(epochMillis))
-
-private val TimeFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
 
 private val MarketLinkSessionSaver = Saver<MarketLinkSession, String>(
     save = { Json.encodeToString(it) },

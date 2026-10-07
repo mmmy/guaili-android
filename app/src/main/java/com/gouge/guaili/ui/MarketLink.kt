@@ -100,6 +100,9 @@ internal data class MarketLinkOrigin(
     val pane: MarketScrollAnchor,
     val horizontalInterval: String?,
     val horizontalOffset: Int,
+    val onlySignalCells: Boolean = false,
+    val focus: MarketScrollAnchor = MarketScrollAnchor(),
+    val cellFromSignals: Boolean = false,
 )
 
 @Serializable

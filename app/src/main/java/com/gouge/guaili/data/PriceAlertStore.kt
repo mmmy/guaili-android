@@ -26,7 +26,12 @@ interface PriceAlertJournal {
     suspend fun write(operations: List<PriceAlertOperation>)
 }
 
-class PriceAlertStore(context: Context, baseUrl: String) : PriceAlertJournal {
+interface PriceAlertSeenStore {
+    fun readSeenTriggers(): Set<String>
+    suspend fun saveSeenTriggers(triggers: Set<String>)
+}
+
+class PriceAlertStore(context: Context, baseUrl: String) : PriceAlertJournal, PriceAlertSeenStore {
     private val hash = MessageDigest.getInstance("SHA-256").digest(baseUrl.trimEnd('/').toByteArray())
         .take(12).joinToString("") { "%02x".format(it) }
     private val preferences = context.applicationContext.getSharedPreferences("price-alerts-$hash", Context.MODE_PRIVATE)
@@ -35,6 +40,10 @@ class PriceAlertStore(context: Context, baseUrl: String) : PriceAlertJournal {
     }.orEmpty()
     override suspend fun write(operations: List<PriceAlertOperation>) = withContext(Dispatchers.IO) {
         check(preferences.edit().putString("pending", PriceAlertRepository.json.encodeToString(operations)).commit()) { "无法保存操作记录" }
+    }
+    override fun readSeenTriggers(): Set<String> = preferences.getStringSet("seen-triggers", emptySet()).orEmpty().toSet()
+    override suspend fun saveSeenTriggers(triggers: Set<String>) = withContext(Dispatchers.IO) {
+        check(preferences.edit().putStringSet("seen-triggers", triggers).commit()) { "无法保存警报查看记录" }
     }
     fun preset(): PriceAlertPreset = preferences.getString("preset", null)?.let {
         runCatching { PriceAlertRepository.json.decodeFromString<PriceAlertPreset>(it) }.getOrNull()

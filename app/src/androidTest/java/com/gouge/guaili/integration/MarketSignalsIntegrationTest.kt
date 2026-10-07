@@ -45,6 +45,7 @@ class MarketSignalsIntegrationTest {
     @Volatile private var disabled = false
     @Volatile private var layoutFixture = false
     @Volatile private var expandedCoverage = false
+    @Volatile private var focusFixture = false
 
     @Before fun isolateMarketData() = runBlocking {
         originalSettings = settings.settings.first()
@@ -208,7 +209,7 @@ class MarketSignalsIntegrationTest {
             compose.onNodeWithTag("market-view-table").assertIsSelected()
             compose.onNodeWithTag("market-link-label").assertTextEquals("BTC · 共+5级")
             capture("market-link-selected")
-            compose.onNodeWithText("Long", useUnmergedTree = true).performClick()
+            compose.onNodeWithText("Long", useUnmergedTree = true).performScrollTo().performClick()
             await("market-link-reveal")
             compose.onNodeWithTag("market-link-reveal").performClick()
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("market-cell-BTCUSDT-8").fetchSemanticsNodes().isNotEmpty() }
@@ -306,6 +307,73 @@ class MarketSignalsIntegrationTest {
         }
     }
 
+    @Test fun signalFocusUsesTwoV2RowsAndInlineStatusWithPersistentPreference() {
+        layoutFixture = true
+        focusFixture = true
+        runBlocking { settings.save(settings.settings.first().copy(intervals = listOf("D", "W"), closedOnly = true,
+            layoutMode = LayoutMode.Groups, groupLayoutSize = GroupLayoutSize.TenColumns)) }
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            await("market-summary-BTCUSDT")
+            compose.onNodeWithTag("market-signal-focus-toggle").assertIsOff().performClick()
+            await("market-focus-row-BTCUSDT-near")
+            compose.onNodeWithTag("market-focus-row-BTCUSDT-btc").assertIsDisplayed()
+            compose.onNodeWithTag("market-focus-source").assertTextEquals("V2 · 动态K · EMA20")
+            val cell = hasTestTag("market-cell-BTCUSDT-10") and hasAnyAncestor(hasTestTag("market-focus-row-BTCUSDT-near"))
+            compose.onNode(cell).assertTextContains("1").performClick()
+            await("cell-data-context")
+            compose.onNodeWithTag("cell-data-context").assertTextContains("V2 · 动态K · EMA20", substring = true)
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+            await("market-signal-focus")
+            val status = compose.onNodeWithTag("market-data-status").fetchSemanticsNode().boundsInRoot
+            val toolbar = compose.onNodeWithTag("market-toolbar-row").fetchSemanticsNode().boundsInRoot
+            assertTrue("Status must share the toolbar row", status.top >= toolbar.top && status.bottom <= toolbar.bottom)
+            capture("market-signal-focus")
+            compose.onNodeWithTag("market-data-status").performClick()
+            await("market-data-status-details")
+            compose.onNodeWithText("数据状态").assertIsDisplayed()
+            capture("market-signal-focus-status")
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+            compose.onNodeWithTag("market-focus-expand-BTCUSDT").performClick()
+            await("market-focus-context-BTCUSDT")
+            compose.onNodeWithTag("market-cell-BTCUSDT-D").assertIsDisplayed()
+            compose.onNodeWithTag("market-focus-expand-BTCUSDT").performClick()
+            compose.onNodeWithTag("market-focus-context-BTCUSDT").assertDoesNotExist()
+            scenario.recreate()
+            await("market-focus-row-BTCUSDT-near")
+            compose.onNodeWithTag("market-signal-focus-toggle").assertIsOn()
+            assertTrue(runBlocking { preferences.preferences.first().onlySignalCells })
+            assertEquals(listOf("D", "W"), runBlocking { settings.settings.first().intervals })
+            assertTrue(runBlocking { settings.settings.first().closedOnly })
+            compose.onNodeWithTag("market-signal-focus-toggle").performClick()
+            await("market-groups-list")
+            compose.onNodeWithTag("market-signal-focus").assertDoesNotExist()
+            compose.onNodeWithTag("market-data-status").performClick()
+            await("market-data-status-details")
+            compose.onNodeWithText("表格 · 收盘K · EMA20").assertIsDisplayed()
+        }
+    }
+
+    @Test fun signalFocusShowsConflictAndDropsDisabledSignalsWithoutChangingMode() {
+        layoutFixture = true
+        focusFixture = true
+        runBlocking {
+            settings.save(settings.settings.first().copy(symbols = listOf("QQQUSDT")))
+            preferences.update { it.copy(symbols = listOf("QQQUSDT"), onlySignalCells = true) }
+        }
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            await("market-focus-row-QQQUSDT-conflict")
+            capture("market-signal-focus-conflict")
+            disabled = true
+            Thread.sleep(1_100)
+            compose.onNodeWithContentDescription("Refresh").performClick()
+            await("market-signal-focus-empty")
+            compose.onNode(hasText("服务器信号计算已关闭") and hasAnyAncestor(hasTestTag("market-signal-focus-empty"))).assertIsDisplayed()
+            compose.onNodeWithTag("market-signal-focus-toggle").assertIsOn()
+            compose.onNodeWithTag("market-focus-row-QQQUSDT-conflict").assertDoesNotExist()
+            compose.onNodeWithTag("market-data-status").assertTextContains("已关闭")
+        }
+    }
+
     private fun await(tag: String) = compose.waitUntil(12_000) {
         compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
     }
@@ -341,7 +409,13 @@ class MarketSignalsIntegrationTest {
                     listOf(ServerSignalRun("positive", periods)), periods.size, periods.size, "8", now - 60_000, null, now - 60_000))
                 ServerSymbolSignals(symbol, "ready", now,
                     signals = signals,
-                    perIntervalQuality = (if (layoutFixture) periods + longPeriods + nearPeriods else periods).map { ServerIntervalEvidence(it, "ready", value = 14, guaili = 1.42,
+                    perIntervalQuality = (if (layoutFixture) periods + longPeriods + nearPeriods else periods).map { ServerIntervalEvidence(it, "ready",
+                        value = when { focusFixture && it in nearPeriods -> 1
+                            focusFixture && (symbol == "XAUUSDT" || symbol == "QQQUSDT" && it in periods) -> -14
+                            else -> 14 },
+                        guaili = when { focusFixture && it in nearPeriods -> 0.12
+                            focusFixture && (symbol == "XAUUSDT" || symbol == "QQQUSDT" && it in periods) -> -1.42
+                            else -> 1.42 },
                         longTrend = true, shortTrend = false, isClosed = false) })
             })
     }

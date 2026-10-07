@@ -23,6 +23,7 @@ internal data class MarketSignalPreferences(
     val symbols: List<String>? = null,
     val kinds: Set<GuailiSignalKind> = GuailiSignalKind.entries.toSet(),
     val widePaneCollapsed: Boolean = false,
+    val onlySignalCells: Boolean = false,
 )
 
 internal interface MarketSignalPreferencesSource {

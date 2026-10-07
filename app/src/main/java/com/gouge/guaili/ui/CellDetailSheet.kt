@@ -26,6 +26,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.gouge.guaili.domain.GuailiCell
@@ -40,6 +41,8 @@ fun CellDetailSheet(
     onOpenKline: () -> Unit,
     onDismiss: () -> Unit,
     onViewSignals: (() -> Unit)? = null,
+    priceAlertDescription: String? = null,
+    dataContext: String? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -67,6 +70,14 @@ fun CellDetailSheet(
                 modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
             )
 
+            dataContext?.let {
+                Text(it, Modifier.testTag("cell-data-context").padding(bottom = 10.dp),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            priceAlertDescription?.let {
+                Text("价格警报：$it", Modifier.testTag("cell-price-alerts").padding(bottom = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),

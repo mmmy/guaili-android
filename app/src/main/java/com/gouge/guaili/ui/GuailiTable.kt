@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -17,6 +18,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.lazy.LazyListState
@@ -27,6 +33,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -69,11 +79,16 @@ internal fun GuailiTable(
     link: LiveMarketLink? = null,
     onSignalClick: (com.gouge.guaili.signals.ServerSignalItem) -> Unit = {},
     onSymbolSignals: (String) -> Unit = {},
+    priceAlerts: Map<String, SymbolPriceAlerts> = emptyMap(),
+    alertsUnavailable: Boolean = false,
+    onSymbolAlerts: (String) -> Unit = {},
+    onPeriodAlert: (String, String) -> Unit = { _, _ -> },
 ) {
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
     }
-    val fontScale = LocalDensity.current.fontScale
+    val density = LocalDensity.current
+    val fontScale = density.fontScale
     val symbolWidth = (symbolPresentation.widthDp * fontScale.coerceAtLeast(1f)).dp
     val baseDimensions = tableDimensions(state.settings.tableDensity, fontScale)
     val dimensions = baseDimensions.copy(cellHeight = max(baseDimensions.cellHeight.value, 48f * fontScale.coerceAtLeast(1f)).dp)
@@ -100,14 +115,17 @@ internal fun GuailiTable(
 
         LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().testTag("market-table-list")) {
             items(state.symbols, key = { it }, contentType = { "matrix-row" }) { symbol ->
+                var symbolHeight by remember(symbol) { mutableIntStateOf(0) }
+                val rowDimensions = dimensions.copy(cellHeight = max(dimensions.cellHeight.value, with(density) { symbolHeight.toDp().value }).dp)
                 Row {
-                    Column(Modifier.width(symbolWidth).heightIn(min = dimensions.cellHeight)
+                    Column(Modifier.width(symbolWidth).heightIn(min = dimensions.cellHeight).onSizeChanged { symbolHeight = it.height }
                         .background(Color(0xFF202832)).border(0.5.dp, GridLineColor)) {
                         Text(symbolPresentation.displayNames.getValue(symbol), Modifier.padding(horizontal = 4.dp),
                             fontSize = dimensions.valueFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         summaries[symbol]?.let { summary ->
                             SignalSummaryRow(symbol, summary, onSignalClick, onSymbolSignals, compact = true)
                         }
+                        PriceAlertSummary(symbol, priceAlerts[symbol], alertsUnavailable, { onSymbolAlerts(symbol) }, compact = true)
                     }
                     Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
                         intervals.forEach { interval ->
@@ -116,8 +134,10 @@ internal fun GuailiTable(
                                 symbol = symbol,
                                 interval = interval,
                                 onCellClick = onCellClick,
-                                dimensions = dimensions,
+                                dimensions = rowDimensions,
                                 member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
+                                alerts = priceAlerts[symbol]?.periods?.get(interval),
+                                onAlertClick = { onPeriodAlert(symbol, interval) },
                             )
                         }
                     }
@@ -138,6 +158,10 @@ internal fun GuailiGroupedTable(
     link: LiveMarketLink? = null,
     onSignalClick: (com.gouge.guaili.signals.ServerSignalItem) -> Unit = {},
     onSymbolSignals: (String) -> Unit = {},
+    priceAlerts: Map<String, SymbolPriceAlerts> = emptyMap(),
+    alertsUnavailable: Boolean = false,
+    onSymbolAlerts: (String) -> Unit = {},
+    onPeriodAlert: (String, String) -> Unit = { _, _ -> },
 ) {
     val symbolPresentation = remember(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode) {
         buildSymbolPresentation(state.symbols, state.settings.symbolDisplayMode, state.settings.symbolColumnWidthMode)
@@ -164,6 +188,7 @@ internal fun GuailiGroupedTable(
                         height = groupDimensions.symbolHeaderHeight,
                         summary = summaries[symbol],
                         summaryContent = { summaries[symbol]?.let { SignalSummaryRow(symbol, it, onSignalClick, onSymbolSignals) } },
+                        alertContent = { PriceAlertSummary(symbol, priceAlerts[symbol], alertsUnavailable, { onSymbolAlerts(symbol) }) },
                     )
                     intervalRows.forEach { rowIntervals ->
                         Row(
@@ -186,6 +211,8 @@ internal fun GuailiGroupedTable(
                                     dimensions = groupDimensions,
                                     modifier = Modifier.weight(1f),
                                     member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
+                                    alerts = priceAlerts[symbol]?.periods?.get(interval),
+                                    onAlertClick = { onPeriodAlert(symbol, interval) },
                                 )
                             }
                             repeat(groupDimensions.columns - rowIntervals.size) {
@@ -202,7 +229,8 @@ internal fun GuailiGroupedTable(
 
 @Composable
 private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp,
-    summary: MarketSignalSummary? = null, summaryContent: @Composable () -> Unit = {}) {
+    summary: MarketSignalSummary? = null, summaryContent: @Composable () -> Unit = {},
+    alertContent: @Composable () -> Unit = {}) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -212,6 +240,7 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp,
             .border(0.5.dp, GridLineColor)
             .padding(horizontal = 10.dp),
     ) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = symbol,
             color = Color(0xFFE5E7EB),
@@ -233,11 +262,13 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp,
             )
         }
         if (summary != null) Box(Modifier.weight(1f).padding(start = 8.dp)) { summaryContent() }
+        }
+        alertContent()
     }
 }
 
 @Composable
-private fun GroupedPeriodCell(
+internal fun GroupedPeriodCell(
     interval: String,
     cell: GuailiCell?,
     symbol: String,
@@ -245,6 +276,9 @@ private fun GroupedPeriodCell(
     dimensions: GroupedLayoutDimensions,
     modifier: Modifier = Modifier,
     member: String? = null,
+    alerts: PeriodPriceAlerts? = null,
+    onAlertClick: () -> Unit = {},
+    highlightMember: Boolean = true,
 ) {
     val trend = cell?.let { trendState(it.longTrend, it.shortTrend) }
     val periodTextColor = trend?.let(::trendTextColor) ?: NeutralTrendTextColor
@@ -282,6 +316,9 @@ private fun GroupedPeriodCell(
             modifier = Modifier.fillMaxWidth(),
             member = member,
             showMemberLabel = false,
+            alerts = alerts,
+            onAlertClick = onAlertClick,
+            highlightMember = highlightMember,
         )
     }
 }
@@ -339,6 +376,9 @@ private fun ValueCell(
     modifier: Modifier = Modifier,
     member: String? = null,
     showMemberLabel: Boolean = true,
+    alerts: PeriodPriceAlerts? = null,
+    onAlertClick: () -> Unit = {},
+    highlightMember: Boolean = true,
 ) {
     val text = cell?.value?.toString() ?: "—"
     val textColor = if (cell == null) {
@@ -364,9 +404,14 @@ private fun ValueCell(
             )
             .background(background)
             .border(0.5.dp, GridLineColor)
-            .then(if (member != null) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)
+            .then(if (member != null && highlightMember) Modifier.border(2.dp, MaterialTheme.colorScheme.primary) else Modifier)
+            .then(if ((alerts?.newTriggerCount ?: 0) > 0) Modifier.border(1.dp, AlertTriggeredColor) else Modifier)
             .testTag("market-cell-$symbol-$interval")
-            .then(if (cell != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open cell details") { onCellClick(cell) } else Modifier)
+            .then(when {
+                cell != null -> Modifier.clickable(role = Role.Button, onClickLabel = "Open cell details") { onCellClick(cell) }
+                alerts != null -> Modifier.clickable(role = Role.Button, onClickLabel = "查看价格警报线", onClick = onAlertClick)
+                else -> Modifier
+            })
             .semantics {
                 contentDescription = cell?.let {
                     val trend = trendState(it.longTrend, it.shortTrend).label.lowercase()
@@ -376,14 +421,14 @@ private fun ValueCell(
                     true -> "ATR filter passed"
                     false -> "ATR filtered"
                     null -> "ATR filter unavailable"
-                } + if (member != null) ", 所选实时信号参与周期 $member" else ""
-            }
-            .padding(horizontal = 2.dp),
+                } + (if (member != null) ", ${if (highlightMember) "所选实时信号" else "V2信号"}参与周期 $member" else "") +
+                    (if (alerts != null) "，${alerts.description}" else "")
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            modifier = Modifier.padding(top = if (showMemberLabel && !member.isNullOrEmpty()) 9.dp else 0.dp),
+            modifier = Modifier.padding(horizontal = 2.dp).padding(top = if (showMemberLabel && !member.isNullOrEmpty()) 9.dp else 0.dp),
             color = textColor,
             fontSize = dimensions.valueFontSize,
             lineHeight = dimensions.valueFontSize * 1.2f,
@@ -394,6 +439,42 @@ private fun ValueCell(
         )
         if (showMemberLabel && !member.isNullOrEmpty()) Text(member, Modifier.align(Alignment.TopEnd).padding(end = 3.dp),
             color = MaterialTheme.colorScheme.onSurface, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        alerts?.let {
+            Box(Modifier.align(Alignment.TopStart).padding(3.dp)) {
+                PriceAlertMarker(it, Modifier.testTag("market-period-alert-$symbol-$interval"))
+            }
+        }
+    }
+}
+
+internal val AlertTriggeredColor = Color(0xFFFBBF24)
+private val AlertMonitoringColor = Color(0xFF7DD3FC)
+
+@Composable
+private fun PriceAlertMarker(alerts: PeriodPriceAlerts, modifier: Modifier = Modifier) {
+    val waiting = alerts.newTriggerCount == 0 && alerts.waitingCount == alerts.activeCount
+    val color = if (alerts.newTriggerCount > 0) AlertTriggeredColor else AlertMonitoringColor
+    Box(modifier.size(8.dp).then(
+        if (waiting) Modifier.border(1.5.dp, Color(0xFFCBD5E1), CircleShape)
+        else Modifier.background(color, CircleShape).border(0.5.dp, MatrixBackground, CircleShape)
+    ))
+}
+
+@Composable
+internal fun PriceAlertSummary(symbol: String, alerts: SymbolPriceAlerts?, unavailable: Boolean, onClick: () -> Unit, compact: Boolean = false) {
+    if (alerts == null && !unavailable) return
+    val unread = alerts?.newTriggerCount ?: 0
+    val color = if (unread > 0) AlertTriggeredColor else AlertMonitoringColor
+    val label = if (unavailable) "警报待更新" else "警报 ${alerts?.total ?: 0}"
+    Column(Modifier.testTag("market-alerts-$symbol").clickable(role = Role.Button, onClickLabel = "查看${symbol}价格警报", onClick = onClick)
+        .semantics { contentDescription = "$symbol，$label，新触发 $unread 条${if (unavailable) "，显示上次结果" else ""}" }
+        .padding(horizontal = 4.dp, vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            Icon(if (unread > 0) Icons.Filled.NotificationsActive else Icons.Outlined.Notifications, null, Modifier.size(12.dp), tint = color)
+            Text(label, fontSize = 10.sp, lineHeight = 12.sp, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!compact && unread > 0) Text("· 新触发 $unread", fontSize = 10.sp, lineHeight = 12.sp, color = AlertTriggeredColor, maxLines = 1)
+        }
+        if (compact && unread > 0) Text("新触发 $unread", fontSize = 10.sp, lineHeight = 12.sp, color = AlertTriggeredColor, maxLines = 1)
     }
 }
 

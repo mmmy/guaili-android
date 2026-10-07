@@ -125,6 +125,7 @@ private val EditorSessionSaver = Saver<PriceAlertEditorSession?, String>(
 fun KlineScreen(
     baseUrl: String, symbols: List<String>, intervals: List<String>, initialSymbol: String,
     initialInterval: String, refreshSeconds: Int, closedOnly: Boolean, onBack: () -> Unit,
+    initialAlertId: Long? = null,
 ) {
     val context = LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -144,7 +145,7 @@ fun KlineScreen(
     var cursorIndex by remember { mutableIntStateOf(-1) }
     var cursorPrice by remember { mutableStateOf<Double?>(null) }
     var cursorX by remember { mutableFloatStateOf(0f) }
-    var selectedAlertId by rememberSaveable(baseUrl, symbol) { mutableStateOf<Long?>(null) }
+    var selectedAlertId by rememberSaveable(baseUrl, symbol) { mutableStateOf(initialAlertId.takeIf { symbol == initialSymbol }) }
     var drawingKind by rememberSaveable(symbol, interval) { mutableStateOf<String?>(null) }
     var drawingHasStart by remember { mutableStateOf(false) }
     var cancelGesture by remember { mutableIntStateOf(0) }
@@ -277,6 +278,7 @@ fun KlineScreen(
                         onDrawComplete = { geometry -> drawingKind = null; editor = PriceAlertEditorSession(symbol, interval, geometry); savingEditor = false },
                         onAddAlert = { geometry -> cursorMode = false; editor = PriceAlertEditorSession(symbol, interval, geometry); savingEditor = false },
                         modifier = Modifier.fillMaxSize(),
+                        focusAlertId = initialAlertId,
                     )
                 }
                 selectedAlert?.let { alert ->
@@ -515,6 +517,7 @@ private fun KlineChart(
     onDrawComplete: (PriceAlertGeometry) -> Unit,
     onAddAlert: (PriceAlertGeometry) -> Unit,
     modifier: Modifier = Modifier,
+    focusAlertId: Long? = null,
 ) {
     val currentCursorMode by rememberUpdatedState(cursorMode)
     val currentRows by rememberUpdatedState(rows)
@@ -537,6 +540,7 @@ private fun KlineChart(
     var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(12f)) }
     var rightOffsetBars by remember { mutableFloatStateOf(0f) }
     var verticalScale by remember { mutableFloatStateOf(1f) }
+    var focusedAlertId by remember { mutableStateOf<Long?>(null) }
     var canvasWidth by remember { mutableIntStateOf(1) }
     var canvasHeight by remember { mutableIntStateOf(1) }
     val chartBackground = MaterialTheme.colorScheme.background
@@ -549,6 +553,17 @@ private fun KlineChart(
         visibleBars = min(72, rows.size).toFloat().coerceAtLeast(1f)
         rightOffsetBars = 0f
         verticalScale = 1f
+    }
+
+    LaunchedEffect(focusAlertId, alerts, rows) {
+        val alert = alerts.firstOrNull { it.id == focusAlertId } ?: return@LaunchedEffect
+        if (focusedAlertId == alert.id || rows.isEmpty()) return@LaunchedEffect
+        focusedAlertId = alert.id
+        val geometry = alert.geometry.normalized()
+        if (geometry.extend == "none" && geometry.second.timeMs < rows.last().candle.openTimeMillis) {
+            val index = timeIndex.binarySearch(geometry.second.timeMs).let { if (it >= 0) it else (-it - 1).coerceIn(0, rows.lastIndex) }
+            rightOffsetBars = (rows.lastIndex - index).toFloat()
+        }
     }
 
     Box(modifier = modifier) {
@@ -711,6 +726,13 @@ private fun KlineChart(
                     row.channel.lower?.let(::add)
                 }
             }
+        }.toMutableList()
+        alerts.firstOrNull { it.id == selectedAlertId }?.geometry?.let { geometry ->
+            val firstTime = visible.first().candle.openTimeMillis
+            val lastTime = visible.last().candle.openTimeMillis
+            geometry.priceAt(firstTime)?.let { priceValues.add(it) }
+            geometry.priceAt(lastTime)?.let { priceValues.add(it) }
+            listOf(geometry.first, geometry.second).filter { it.timeMs in firstTime..lastTime }.forEach { priceValues.add(it.price) }
         }
         val rawMin = priceValues.minOrNull() ?: 0.0
         val rawMax = priceValues.maxOrNull() ?: 1.0
