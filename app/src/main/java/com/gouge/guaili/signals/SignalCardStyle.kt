@@ -11,6 +11,8 @@ internal object SignalCardStyle {
     const val VerticalPaddingDp = 4
     const val CardSpacingDp = 5
     const val TitleFontSp = 12
+    const val RangeFontSp = 16
+    const val DescriptionFontSp = 11
     const val BodyFontSp = 10
     const val HeaderFontSp = 13
     val Light = SignalCardPalette(0xFFF9FAFB, 0xFFF1F3F5, 0xFFE3E7EC, 0xFF17191D,

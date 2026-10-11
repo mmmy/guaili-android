@@ -3,6 +3,9 @@ package com.gouge.guaili.widget
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.MetricAffectingSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -116,6 +119,23 @@ class SignalCardSizingTest {
                     visit(parent)
                     assertTrue(fields.any { it.text.toString() == "UNITREE" })
                     assertTrue(fields.any { it.text.toString() == signalPhaseLabel(signal) })
+                    val ranges = if (signal.kind == GuailiSignalKind.Conflict)
+                        signal.runs.map { signalRunRangeLabel(it, signal.transitionOnly) }
+                    else listOf(signalRangeLabel(signal))
+                    val description = fields.single { it.text.toString() == signalTitle(signal) }
+                    ranges.forEach { range ->
+                        val rangeView = fields.single { it.text.toString() == range }
+                        assertTrue("Period range must lead the structure description", rangeView.textSize > description.textSize)
+                        val renderedPaint = TextPaint(rangeView.paint)
+                        (rangeView.text as? Spanned)?.let { text ->
+                            text.getSpans(0, text.length, MetricAffectingSpan::class.java).forEach {
+                                it.updateMeasureState(renderedPaint)
+                                it.updateDrawState(renderedPaint)
+                            }
+                        }
+                        assertTrue("Period range must be bold", renderedPaint.typeface?.isBold == true ||
+                            (renderedPaint.typeface?.weight ?: 400) >= 600 || renderedPaint.isFakeBoldText)
+                    }
                     fields.forEach { text ->
                         val layout = requireNotNull(text.layout)
                         for (line in 0 until layout.lineCount) {

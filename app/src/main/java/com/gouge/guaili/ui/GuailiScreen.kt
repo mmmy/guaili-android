@@ -38,6 +38,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -45,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -583,7 +586,7 @@ private fun Toolbar(
         Column(Modifier.fillMaxWidth().padding(top = if (compact) 2.dp else 6.dp)) {
             Row(Modifier.fillMaxWidth().testTag("market-toolbar-row"), verticalAlignment = Alignment.CenterVertically) {
                 if (showTitle) {
-                    Text("Guaili", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                    Text("Guaili", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, modifier = Modifier.padding(end = 6.dp))
                 }
                 StatusIndicator(state, signalsState, onlySignalCells, onStatusClick, Modifier.weight(1f))
@@ -597,7 +600,7 @@ private fun Toolbar(
                     .toggleable(value = onlySignalCells, role = Role.Checkbox, onValueChange = onOnlySignalCells)
                     .semantics { contentDescription = "仅显示 V2 信号格" }, verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = onlySignalCells, onCheckedChange = null, modifier = Modifier.size(32.dp))
-                    Text("仅V2信号格", fontSize = 12.sp, maxLines = 1)
+                    Text("仅V2信号格", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                 }
                 Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -605,7 +608,12 @@ private fun Toolbar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("market-focus-source"))
                 else if (compactFilters) CompactIntervalFilter(intervalGroup, onSelectIntervalGroup)
                 else IntervalGroup.entries.forEach { group -> FilterChip(selected = intervalGroup == group,
-                    onClick = { onSelectIntervalGroup(group) }, label = { Text(group.label) }) }
+                    onClick = { onSelectIntervalGroup(group) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        selectedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        selectedLabelColor = MaterialTheme.colorScheme.onSurface),
+                    label = { Text(group.label, fontSize = 12.sp, fontWeight = FontWeight.Normal) }) }
                 }
             }
         }
@@ -624,6 +632,7 @@ private fun ToolbarActions(
     onlySignalCells: Boolean,
     refreshBusy: Boolean,
 ) {
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggleLayout, enabled = !onlySignalCells) {
             Icon(
@@ -647,6 +656,7 @@ private fun ToolbarActions(
             Icon(
                 Icons.AutoMirrored.Outlined.ShowChart,
                 contentDescription = if (signalPaneOpen) "收起信号栏" else "展开信号栏",
+                tint = if (signalPaneOpen) MaterialTheme.colorScheme.primary else LocalContentColor.current,
             )
         }
         IconButton(
@@ -658,6 +668,7 @@ private fun ToolbarActions(
         IconButton(onClick = onOpenSettings) {
             Icon(Icons.Outlined.Settings, contentDescription = "Settings")
         }
+    }
     }
 }
 

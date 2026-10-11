@@ -52,7 +52,7 @@ import org.junit.runners.MethodSorters
 class ServerSignalsV2IntegrationTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-    private val localBaseUrl = "http://10.0.2.2:3005/"
+    private val localBaseUrl = InstrumentationRegistry.getArguments().getString("backend_url") ?: "http://10.0.2.2:3005/"
     private val privateWidgetId = 900026
     private val configuredSymbols = listOf(
         "BTCUSDT", "XAUUSDT", "QQQUSDT", "CLUSDT", "CXMTUSDT", "KORUUSDT", "SOXLUSDT", "UNITREEUSDT",

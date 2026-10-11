@@ -81,6 +81,18 @@ internal fun signalPhaseLabel(signal: GuailiSignal): String = when (signal.phase
 internal fun signalRangeLabel(signal: GuailiSignal): String =
     (if (signal.transitionOnly) "原 " else "") + runRange(signal.primaryRun)
 
+internal fun signalRunRangeLabel(run: GuailiSignalRun, original: Boolean): String =
+    (if (original) "原 " else "") + runRange(run)
+
+internal fun signalRunMetaLabel(run: GuailiSignalRun, short: Boolean): String {
+    val direction = when (run.direction) {
+        GuailiSignalDirection.Positive -> "正"
+        GuailiSignalDirection.Negative -> "负"
+        GuailiSignalDirection.Neutral -> "近零"
+    }
+    return "${if (short) "短" else "长"}$direction · ${run.levelCount}级"
+}
+
 internal fun signalRunLabel(run: GuailiSignalRun, short: Boolean, original: Boolean): String {
     val direction = if (run.direction == GuailiSignalDirection.Positive) "正" else "负"
     return "${if (original) "原" else ""}${if (short) "短" else "长"}$direction ${runRange(run)} · ${run.levelCount}级"

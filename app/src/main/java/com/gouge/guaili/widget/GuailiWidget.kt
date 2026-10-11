@@ -500,9 +500,9 @@ private fun WidgetHeader(
         Text(
             text = title,
             style = TextStyle(
-                color = if (darkStyle) GroupedPrimaryText else PrimaryText,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
+                color = if (darkStyle) GroupedSecondaryText else SecondaryText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
             ),
             modifier = GlanceModifier
                 .defaultWeight()
@@ -512,9 +512,9 @@ private fun WidgetHeader(
         Text(
             text = "编辑",
             style = TextStyle(
-                color = AccentText,
+                color = SecondaryText,
                 fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Normal,
             ),
             modifier = GlanceModifier
                 .padding(horizontal = 2.dp, vertical = 4.dp)
@@ -524,9 +524,9 @@ private fun WidgetHeader(
         Text(
             text = if (refreshing) "刷新中…" else "↻ 刷新",
             style = TextStyle(
-                color = AccentText,
+                color = SecondaryText,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Normal,
             ),
             modifier = GlanceModifier
                 .padding(horizontal = 4.dp, vertical = 8.dp)
@@ -591,11 +591,11 @@ internal fun SignalWidgetHeader(snapshot: GuailiSnapshot?, appWidgetId: Int, ref
             modifier = GlanceModifier.padding(horizontal = if (narrow) 3.dp else 4.dp, vertical = 3.dp)
                 .clickable(actionStartActivity(widgetStatusIntent(appWidgetId))), maxLines = 1,
         )
-        Text("编辑", style = TextStyle(color = AccentText, fontSize = if (narrow) 9.sp else 10.sp),
+        Text("编辑", style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
             modifier = GlanceModifier.padding(horizontal = 2.dp, vertical = 3.dp)
                 .clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))), maxLines = 1)
         Text(if (refreshing) "⟳" else if (narrow) "↻" else "↻刷新",
-            style = TextStyle(color = AccentText, fontSize = 11.sp),
+            style = TextStyle(color = SecondaryText, fontSize = 11.sp),
             modifier = GlanceModifier.padding(horizontal = 4.dp, vertical = 3.dp)
                 .then(if (refreshing) GlanceModifier else GlanceModifier.clickable(actionRunCallback<RefreshWidgetAction>())),
             maxLines = 1)
@@ -848,100 +848,48 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
 @Composable
 internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
     val narrow = LocalSize.current.width < 250.dp
-    val wide = LocalSize.current.width >= 320.dp
     Column(modifier = GlanceModifier.fillMaxWidth()) {
-    Column(
-        modifier = GlanceModifier
-            .fillMaxWidth()
-            .background(SignalBackground)
+        Column(modifier = GlanceModifier.fillMaxWidth().background(SignalBackground)
             .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)
-            .clickable(actionStartActivity(klineIntent(signal.symbol, signal.anchorInterval))),
-    ) {
-        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = displaySymbol(signal.symbol),
-            style = TextStyle(
-                color = PrimaryText,
-                fontSize = SignalCardStyle.TitleFontSp.sp,
-                fontWeight = FontWeight.Bold,
-            ),
-            modifier = if (narrow) GlanceModifier.defaultWeight() else GlanceModifier.width(SignalCardStyle.SymbolWidthDp.dp),
-            maxLines = 1,
-        )
-        if (!narrow) {
-            Spacer(modifier = GlanceModifier.width(6.dp))
-            Text(
-                text = signalTitle(signal),
-                style = TextStyle(
-                    color = signalTitleColor(signal),
-                    fontSize = SignalCardStyle.TitleFontSp.sp,
-                    fontWeight = FontWeight.Bold,
-                ),
-                modifier = GlanceModifier.defaultWeight(),
-                maxLines = 1,
-            )
-        }
-        Spacer(modifier = GlanceModifier.width(6.dp))
-        Text(
-            text = "${signal.totalLevelCount}级" + if (narrow && signal.transitionOnly) " · 变化" else "",
-            style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp, fontWeight = FontWeight.Bold),
-            modifier = GlanceModifier.background(SignalBadgeBackground).padding(horizontal = 4.dp, vertical = 2.dp),
-            maxLines = 1,
-        )
-        }
-        Spacer(modifier = GlanceModifier.height(2.dp))
-        if (narrow) {
+            .clickable(actionStartActivity(klineIntent(signal.symbol, signal.anchorInterval)))) {
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(signalTitle(signal).removeSuffix(" · 变化"),
-                    style = TextStyle(color = signalTitleColor(signal), fontSize = 11.sp, fontWeight = FontWeight.Bold),
-                    modifier = GlanceModifier.defaultWeight(), maxLines = 1)
-                Spacer(modifier = GlanceModifier.width(4.dp))
-                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = 9.sp), maxLines = 1)
+                Text(displaySymbol(signal.symbol),
+                    style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.TitleFontSp.sp, fontWeight = FontWeight.Bold),
+                    modifier = GlanceModifier.defaultWeight(), maxLines = 2)
+                Spacer(modifier = GlanceModifier.width(6.dp))
+                Text("${signal.totalLevelCount}级",
+                    style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp),
+                    modifier = GlanceModifier.background(SignalBadgeBackground).padding(horizontal = 4.dp, vertical = 2.dp), maxLines = 1)
             }
-            Spacer(modifier = GlanceModifier.height(2.dp))
-        }
-        if (signal.kind == GuailiSignalKind.Conflict) {
-            if (wide) {
-            Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                signal.runs.forEachIndexed { index, run ->
-                    if (index > 0) Spacer(modifier = GlanceModifier.width(6.dp))
-                    Text(signalRunLabel(run, index == 0, signal.transitionOnly),
-                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp,
-                            textAlign = if (index == 0) TextAlign.Start else TextAlign.End),
-                        modifier = GlanceModifier.defaultWeight(), maxLines = 1)
-                }
+            Text(signalTitle(signal),
+                style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.DescriptionFontSp.sp),
+                modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
+            Column(modifier = GlanceModifier.fillMaxWidth().padding(top = 3.dp, bottom = 3.dp)) {
+                if (signal.kind == GuailiSignalKind.Conflict) {
+                    signal.runs.forEachIndexed { index, run ->
+                        if (index > 0) Spacer(modifier = GlanceModifier.height(4.dp))
+                        Text(signalRunRangeLabel(run, signal.transitionOnly),
+                            style = TextStyle(color = signalTitleColor(signal), fontSize = SignalCardStyle.RangeFontSp.sp,
+                                fontWeight = FontWeight.Bold), modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
+                        Text(signalRunMetaLabel(run, index == 0),
+                            style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 2)
+                    }
+                } else Text(signalRangeLabel(signal),
+                    style = TextStyle(color = signalTitleColor(signal), fontSize = SignalCardStyle.RangeFontSp.sp,
+                        fontWeight = FontWeight.Bold), modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
             }
-            } else {
-                signal.runs.forEachIndexed { index, run ->
-                    Text(signalRunLabel(run, index == 0, signal.transitionOnly),
-                        style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp),
-                        modifier = GlanceModifier.fillMaxWidth(), maxLines = 1)
-                }
-            }
-            Spacer(modifier = GlanceModifier.height(2.dp))
-        }
-        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            if (signal.kind != GuailiSignalKind.Conflict) {
-                Text(signalRangeLabel(signal), style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp),
-                    modifier = GlanceModifier.defaultWeight(), maxLines = 1)
-                Spacer(modifier = GlanceModifier.width(8.dp))
-            }
-            Text(
-                text = signalCompactTrend(signal, maLabel),
-                style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else SignalCardStyle.BodyFontSp.sp,
-                    textAlign = if (wide && signal.kind != GuailiSignalKind.Conflict) TextAlign.Center else TextAlign.Start),
-                modifier = if (signal.kind == GuailiSignalKind.Conflict || wide) GlanceModifier.defaultWeight() else GlanceModifier,
-                maxLines = if (narrow && signal.kind == GuailiSignalKind.Conflict) 2 else 1,
-            )
-            if (!narrow) {
+            if (narrow) Column(modifier = GlanceModifier.fillMaxWidth()) {
+                Text(signalCompactTrend(signal, maLabel), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 3)
+                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 2)
+            } else Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Text(signalCompactTrend(signal, maLabel), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp),
+                    modifier = GlanceModifier.defaultWeight(), maxLines = 3)
                 Spacer(modifier = GlanceModifier.width(8.dp))
                 Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp,
-                    textAlign = TextAlign.End), modifier = if (wide && signal.kind != GuailiSignalKind.Conflict)
-                        GlanceModifier.defaultWeight() else GlanceModifier, maxLines = 1)
+                    textAlign = TextAlign.End), maxLines = 2)
             }
         }
-    }
-    Spacer(modifier = GlanceModifier.height(SignalCardStyle.CardSpacingDp.dp))
+        Spacer(modifier = GlanceModifier.height(SignalCardStyle.CardSpacingDp.dp))
     }
 }
 
@@ -996,9 +944,9 @@ private fun MatrixRow(
         Text(
             text = displaySymbol(symbol),
             style = TextStyle(
-                color = PrimaryText,
+                color = SecondaryText,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Medium,
             ),
             modifier = GlanceModifier.width(SymbolWidth).padding(end = 4.dp),
             maxLines = 1,

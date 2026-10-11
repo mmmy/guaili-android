@@ -124,7 +124,7 @@ internal fun GuailiTable(
                     Column(Modifier.width(symbolWidth).heightIn(min = dimensions.cellHeight).onSizeChanged { symbolHeight = it.height }
                         .background(Color(0xFF202832)).border(0.5.dp, GridLineColor)) {
                         Text(symbolPresentation.displayNames.getValue(symbol), Modifier.padding(horizontal = 4.dp),
-                            fontSize = dimensions.valueFontSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            color = Color(0xFF9CA3AF), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         summaries[symbol]?.let { summary ->
                             SignalSummaryRow(symbol, summary, onSignalClick, onSymbolSignals, compact = true)
                         }
@@ -259,9 +259,9 @@ private fun GroupedSymbolHeader(symbol: String, quote: String?, height: Dp,
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = symbol,
-            color = Color(0xFFE5E7EB),
-            fontSize = 13.sp,
-            lineHeight = 15.6.sp,
+            color = Color(0xFF9CA3AF),
+            fontSize = 12.sp,
+            lineHeight = 14.4.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

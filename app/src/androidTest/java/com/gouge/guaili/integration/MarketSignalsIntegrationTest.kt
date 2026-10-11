@@ -153,14 +153,16 @@ class MarketSignalsIntegrationTest {
             listOf("上方乖离共振", "下方乖离共振", "多周期近均线", "长短周期分歧").forEach {
                 compose.onNodeWithText(it).assertIsDisplayed()
             }
-            compose.onNodeWithText("短负 1m–8m · 5级").assertIsDisplayed()
-            compose.onNodeWithText("长正 60m–240m · 5级").assertIsDisplayed()
+            compose.onNode(hasText("1m–8m") and hasAnyAncestor(hasTestTag("market-v2-card-QQQUSDT-conflict")), useUnmergedTree = true).assertIsDisplayed()
+            compose.onNodeWithText("60m–240m").assertIsDisplayed()
+            compose.onNodeWithText("短负 · 5级").assertIsDisplayed()
+            compose.onNodeWithText("长正 · 5级").assertIsDisplayed()
             listOf("BTCUSDT-btc", "BTCUSDT-near", "XAUUSDT-negative").forEach {
-                assertTrue("Ordinary cards must keep the compact widget height",
-                    compose.onNodeWithTag("market-v2-card-$it").fetchSemanticsNode().boundsInRoot.height <= 64f * compose.density.density)
+                assertTrue("Ordinary cards must fit a compact range-first layout",
+                    compose.onNodeWithTag("market-v2-card-$it").fetchSemanticsNode().boundsInRoot.height <= 96f * compose.density.density * compose.density.fontScale)
             }
-            assertTrue("Conflict cards add only the run row",
-                compose.onNodeWithTag("market-v2-card-QQQUSDT-conflict").fetchSemanticsNode().boundsInRoot.height <= 80f * compose.density.density)
+            assertTrue("Conflict cards must fit both full ranges and metadata",
+                compose.onNodeWithTag("market-v2-card-QQQUSDT-conflict").fetchSemanticsNode().boundsInRoot.height <= 156f * compose.density.density * compose.density.fontScale)
             capture("market-v2-widget-style")
         }
     }
@@ -280,6 +282,12 @@ class MarketSignalsIntegrationTest {
             compose.onNodeWithTag("market-v2-status").performClick()
             await("market-v2-status-details")
             capture("market-v2-live-status")
+            compose.onNodeWithTag("market-v2-status").performClick()
+            val tableRequestedAt = System.currentTimeMillis()
+            runBlocking { preferences.update { it.copy(widePaneCollapsed = true) } }
+            compose.onNodeWithTag("market-view-table").performClick()
+            compose.waitUntil(20_000) { runBlocking { tableCache.read() }?.updatedAt?.let { it >= tableRequestedAt } == true }
+            capture("market-table-live")
         }
     }
 

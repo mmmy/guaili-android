@@ -24,6 +24,8 @@ internal fun signalChangeText(signal: GuailiSignal) = com.gouge.guaili.signals.s
 internal fun signalTrendText(signal: GuailiSignal, maLabel: String) = com.gouge.guaili.signals.signalTrendText(signal, maLabel)
 internal fun signalPhaseLabel(signal: GuailiSignal) = com.gouge.guaili.signals.signalPhaseLabel(signal)
 internal fun signalRangeLabel(signal: GuailiSignal) = com.gouge.guaili.signals.signalRangeLabel(signal)
+internal fun signalRunRangeLabel(run: GuailiSignalRun, original: Boolean) = com.gouge.guaili.signals.signalRunRangeLabel(run, original)
+internal fun signalRunMetaLabel(run: GuailiSignalRun, short: Boolean) = com.gouge.guaili.signals.signalRunMetaLabel(run, short)
 internal fun signalRunLabel(run: GuailiSignalRun, short: Boolean, original: Boolean) = com.gouge.guaili.signals.signalRunLabel(run, short, original)
 internal fun signalCompactTrend(signal: GuailiSignal, maLabel: String) = com.gouge.guaili.signals.signalCompactTrend(signal, maLabel)
 

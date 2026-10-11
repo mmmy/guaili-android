@@ -132,23 +132,27 @@ internal fun MarketSignalsContent(
         Column(modifier.testTag("market-signals-v2").background(Color(palette.background)).padding(10.dp)) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val narrow = maxWidth / LocalDensity.current.fontScale < 320.dp
-                Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(if (narrow) "信号 v2 · ${display.signals.size}条" else "乖离信号 v2 · ${display.signals.size}条",
                         Modifier.weight(1f), fontSize = SignalCardStyle.HeaderFontSp.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     Text(when { state.isRefreshing -> "刷新中"; state.refreshError != null -> "失败"; else -> signalTime(display.fetchedAt) },
-                        Modifier.padding(horizontal = 4.dp).clickable(role = Role.Button) { showStatus = !showStatus },
+                        Modifier.padding(horizontal = 4.dp).clickable(role = Role.Button) { showStatus = !showStatus }
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp).wrapContentSize(Alignment.Center),
                         fontSize = 9.sp, color = Color(if (state.refreshError != null) palette.warning else palette.secondary), maxLines = 1)
                     Text(serverSignalStatusLabel(display, narrow),
                         Modifier.testTag("market-v2-status").padding(horizontal = 4.dp)
-                            .clickable(onClickLabel = "查看信号数据状态", role = Role.Button) { showStatus = !showStatus },
+                            .clickable(onClickLabel = "查看信号数据状态", role = Role.Button) { showStatus = !showStatus }
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp).wrapContentSize(Alignment.Center),
                         fontSize = 9.sp, color = Color(if (display.status == "ready") palette.accent else palette.warning), maxLines = 1)
                     Text("编辑", Modifier.testTag("market-v2-edit").padding(horizontal = 4.dp)
-                        .clickable(role = Role.Button) { showFilters = !showFilters }, fontSize = 10.sp, color = Color(palette.accent))
+                        .clickable(role = Role.Button) { showFilters = !showFilters }
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp).wrapContentSize(Alignment.Center), fontSize = 10.sp, color = Color(palette.secondary))
                     Row(Modifier.testTag("market-v2-refresh").padding(start = 4.dp)
-                        .clickable(enabled = !state.isRefreshing, onClickLabel = "刷新 v2 信号", role = Role.Button, onClick = onRefresh),
+                        .clickable(enabled = !state.isRefreshing, onClickLabel = "刷新 v2 信号", role = Role.Button, onClick = onRefresh)
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Refresh, "刷新 v2 信号", Modifier.size(14.dp), tint = Color(palette.accent))
-                        if (!narrow) Text("刷新", fontSize = 11.sp, color = Color(palette.accent))
+                        Icon(Icons.Outlined.Refresh, "刷新 v2 信号", Modifier.size(14.dp), tint = Color(palette.secondary))
+                        if (!narrow) Text("刷新", fontSize = 11.sp, color = Color(palette.secondary))
                     }
                 }
             }
@@ -191,7 +195,7 @@ internal fun MarketSignalsContent(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("服务器计算 · 实时动态K · ${response?.let(::serverMovingAverageLabel) ?: "均线参数待获取"}",
                         Modifier.weight(1f), fontSize = 10.sp, color = Color(palette.secondary))
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "行情服务设置", tint = Color(palette.accent)) }
+                    IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "行情服务设置", tint = Color(palette.secondary)) }
                 }
             }
             if (state.isRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().testTag("market-v2-loading"))
@@ -275,7 +279,7 @@ private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResp
             onClick = { if (embedded) onOpenKline(KlineTarget(item.symbol, signal.anchorInterval)) else onLocateTable(item) },
             modifier = Modifier.testTag("market-v2-locate-${item.symbol}-${signal.id}"),
         ) { Icon(if (embedded) Icons.AutoMirrored.Outlined.ShowChart else Icons.Outlined.GridView,
-            if (embedded) "查看K线" else "定位表格", tint = Color(palette.accent)) }
+            if (embedded) "查看K线" else "定位表格", tint = Color(palette.secondary)) }
         }
         if (expanded) {
             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -313,47 +317,42 @@ private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResp
 private fun CompactSignalCard(signal: GuailiSignal, maLabel: String, expanded: Boolean,
     onOpenKline: () -> Unit, onToggleDetails: () -> Unit, key: String) {
     val palette = LocalSignalPalette.current
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val wide = maxWidth >= 320.dp
-        Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("market-v2-kline-$key")
-            .combinedClickable(onClickLabel = "查看${signal.symbol} ${serverDisplayInterval(signal.anchorInterval)} K线",
-                onClick = onOpenKline, onLongClickLabel = "查看信号详情", onLongClick = onToggleDetails)
-            .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(signal.symbol.removeSuffix("USDT"), Modifier.width(SignalCardStyle.SymbolWidthDp.dp * LocalDensity.current.fontScale),
-                    fontSize = SignalCardStyle.TitleFontSp.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                Spacer(Modifier.width(6.dp))
-                Text(signalTitle(signal), Modifier.weight(1f), fontSize = SignalCardStyle.TitleFontSp.sp, lineHeight = 14.sp,
-                    fontWeight = FontWeight.Bold, color = Color(palette.titleColor(signal)), maxLines = 1)
-                Spacer(Modifier.width(6.dp))
-                Text("${signal.totalLevelCount}级", Modifier.testTag("market-v2-expand-$key")
-                    .background(Color(palette.badge), RectangleShape)
-                    .clickable(onClickLabel = if (expanded) "收起信号详情" else "展开信号详情", role = Role.Button, onClick = onToggleDetails)
-                    .padding(horizontal = 4.dp, vertical = 2.dp), fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp,
-                    fontWeight = FontWeight.Bold, color = Color(palette.secondary), maxLines = 1)
+    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("market-v2-kline-$key")
+        .combinedClickable(onClickLabel = "查看${signal.symbol} ${serverDisplayInterval(signal.anchorInterval)} K线",
+            onClick = onOpenKline, onLongClickLabel = "查看信号详情", onLongClick = onToggleDetails)
+        .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(signal.symbol.removeSuffix("USDT"), Modifier.weight(1f),
+                fontSize = SignalCardStyle.TitleFontSp.sp, lineHeight = 16.sp,
+                fontWeight = FontWeight.Bold, color = Color(palette.secondary))
+            Text("${signal.totalLevelCount}级", Modifier.testTag("market-v2-expand-$key")
+                .background(Color(palette.badge), RectangleShape)
+                .clickable(onClickLabel = if (expanded) "收起信号详情" else "展开信号详情", role = Role.Button, onClick = onToggleDetails)
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+                fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 14.sp,
+                fontWeight = FontWeight.Normal, color = Color(palette.secondary))
+        }
+        Text(signalTitle(signal), fontSize = SignalCardStyle.DescriptionFontSp.sp,
+            lineHeight = 15.sp, color = Color(palette.secondary))
+        Spacer(Modifier.height(3.dp))
+        if (signal.kind == GuailiSignalKind.Conflict) {
+            signal.runs.forEachIndexed { index, run ->
+                if (index > 0) Spacer(Modifier.height(4.dp))
+                Text(signalRunRangeLabel(run, signal.transitionOnly), Modifier.fillMaxWidth(),
+                    fontSize = SignalCardStyle.RangeFontSp.sp, lineHeight = 21.sp,
+                    fontWeight = FontWeight.Bold, color = Color(palette.titleColor(signal)))
+                Text(signalRunMetaLabel(run, index == 0), fontSize = SignalCardStyle.BodyFontSp.sp,
+                    lineHeight = 14.sp, color = Color(palette.secondary))
             }
-            Spacer(Modifier.height(2.dp))
-            if (signal.kind == GuailiSignalKind.Conflict) {
-                if (wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    signal.runs.forEachIndexed { index, run ->
-                        Text(signalRunLabel(run, index == 0, signal.transitionOnly), Modifier.weight(1f),
-                            fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp, color = Color(palette.secondary),
-                            textAlign = if (index == 0) TextAlign.Start else TextAlign.End)
-                    }
-                } else signal.runs.forEachIndexed { index, run ->
-                    Text(signalRunLabel(run, index == 0, signal.transitionOnly), fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp,
-                        color = Color(palette.secondary))
-                }
-                Spacer(Modifier.height(2.dp))
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (signal.kind != GuailiSignalKind.Conflict) Text(signalRangeLabel(signal), Modifier.weight(1f),
-                    fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp, color = Color(palette.secondary))
-                Text(signalCompactTrend(signal, maLabel), Modifier.weight(1f), fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp,
-                    color = Color(palette.secondary), textAlign = if (signal.kind == GuailiSignalKind.Conflict) TextAlign.Start else TextAlign.Center)
-                Text(signalPhaseLabel(signal), Modifier.weight(1f), fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 12.sp,
-                    color = Color(palette.secondary), textAlign = TextAlign.End)
-            }
+        } else Text(signalRangeLabel(signal), Modifier.fillMaxWidth(),
+            fontSize = SignalCardStyle.RangeFontSp.sp, lineHeight = 21.sp,
+            fontWeight = FontWeight.Bold, color = Color(palette.titleColor(signal)))
+        Spacer(Modifier.height(3.dp))
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(signalCompactTrend(signal, maLabel), fontSize = SignalCardStyle.BodyFontSp.sp,
+                lineHeight = 14.sp, color = Color(palette.secondary))
+            Text(signalPhaseLabel(signal), fontSize = SignalCardStyle.BodyFontSp.sp,
+                lineHeight = 14.sp, color = Color(palette.secondary))
         }
     }
 }
