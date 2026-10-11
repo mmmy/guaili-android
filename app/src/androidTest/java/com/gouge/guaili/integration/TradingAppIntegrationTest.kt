@@ -9,7 +9,7 @@ import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -144,7 +144,7 @@ class TradingAppIntegrationTest {
         ActivityScenario.launch<MainActivity>(hostIntent()).use {
             awaitTag("nav-market")
             compose.onNodeWithTag("nav-market").assertIsSelected()
-            compose.onNodeWithContentDescription("Refresh").assertIsDisplayed()
+            assertMarketRefreshAvailable()
             listOf("nav-market", "nav-signals", "nav-alerts", "nav-settings").forEach {
                 compose.onNodeWithTag(it).assertIsDisplayed()
             }
@@ -160,7 +160,7 @@ class TradingAppIntegrationTest {
             awaitTag("settings-market")
             compose.onNodeWithTag("settings-account").assertIsDisplayed()
             select("nav-market")
-            compose.onNodeWithContentDescription("Refresh").assertIsDisplayed()
+            assertMarketRefreshAvailable()
             assertTrue("Browsing without login must not submit an XBot operation", requests.none {
                 it.method != "GET"
             })
@@ -301,7 +301,7 @@ class TradingAppIntegrationTest {
             awaitTag("xbot-alerts-locked")
             compose.onNodeWithTag("alert-empty").assertDoesNotExist()
             select("nav-market")
-            compose.onNodeWithContentDescription("Refresh").assertIsDisplayed()
+            assertMarketRefreshAvailable()
         }
         assertEquals(marketSettings, runBlocking { SettingsStore(context).settings.first() })
         val login = requests.single { it.requestUrl?.encodedPath == "/api/customer/login" }
@@ -422,7 +422,7 @@ class TradingAppIntegrationTest {
             device.executeShellCommand("settings put secure show_ime_with_hard_keyboard 1")
             ActivityScenario.launch<MainActivity>(hostIntent()).use { scenario ->
                 awaitTag("nav-market")
-                compose.onNodeWithContentDescription("Refresh").assertIsDisplayed()
+                assertMarketRefreshAvailable()
                 capture("01-market")
                 select("nav-signals")
                 awaitText("测试 · 有效多头")
@@ -479,6 +479,15 @@ class TradingAppIntegrationTest {
 
     private fun deliver(intent: Intent) {
         context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+    }
+
+    // The saved market view is user state; all three views expose a refresh action.
+    private fun assertMarketRefreshAvailable() {
+        compose.onNode(
+            hasContentDescription("Refresh") or
+                hasContentDescription("刷新 v2 信号") or
+                hasContentDescription("刷新回调行情"),
+        ).assertIsDisplayed()
     }
 
     private fun select(tag: String) {

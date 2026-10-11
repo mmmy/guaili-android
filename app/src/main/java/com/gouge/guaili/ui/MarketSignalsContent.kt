@@ -70,6 +70,7 @@ internal fun MarketViewSelector(selected: MarketView, onSelect: (MarketView) -> 
             SegmentedButton(
                 selected = selected == view,
                 onClick = { onSelect(view) },
+                icon = {},
                 shape = SegmentedButtonDefaults.itemShape(index, MarketView.entries.size),
                 colors = SegmentedButtonDefaults.colors(
                     activeContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
@@ -77,8 +78,10 @@ internal fun MarketViewSelector(selected: MarketView, onSelect: (MarketView) -> 
                     inactiveContainerColor = MaterialTheme.colorScheme.surface,
                     inactiveContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
-                modifier = Modifier.testTag(if (view == MarketView.Table) "market-view-table" else "market-view-v2"),
-            ) { Text(if (view == MarketView.Table) "表格" else "v2 信号") }
+                modifier = Modifier.heightIn(min = 48.dp).testTag(when (view) {
+                    MarketView.Table -> "market-view-table"; MarketView.SignalsV2 -> "market-view-v2"; MarketView.Pullback -> "market-view-pullback"
+                }),
+            ) { Text(when (view) { MarketView.Table -> "表格"; MarketView.SignalsV2 -> "v2 信号"; MarketView.Pullback -> "回调观察" }) }
         }
     }
 }

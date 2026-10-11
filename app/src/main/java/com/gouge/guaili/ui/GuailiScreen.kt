@@ -131,7 +131,10 @@ internal fun GuailiScreen(
     var signalRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
     var paneRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
     var session by rememberSaveable(stateSaver = MarketLinkSessionSaver) { mutableStateOf(MarketLinkSession()) }
-    val showSignals = (session.viewOverride ?: signalsState.preferences.view) == MarketView.SignalsV2
+    val marketView = session.viewOverride ?: signalsState.preferences.view
+    val showSignals = marketView == MarketView.SignalsV2
+    val showPullback = marketView == MarketView.Pullback
+    val pullbackListState = rememberLazyListState()
     val onlySignalCells = signalsState.preferences.onlySignalCells
     val focusGroups = remember(signalsState.presentation.signals, signalsState.presentation.status, signalsState.snapshot, state.symbols) {
         signalFocusGroups(signalsState, state.symbols)
@@ -173,7 +176,7 @@ internal fun GuailiScreen(
     var locationHandled by rememberSaveable { androidx.compose.runtime.mutableIntStateOf(0) }
 
     fun currentOrigin() = MarketLinkOrigin(
-        view = if (showSignals) MarketView.SignalsV2 else MarketView.Table,
+        view = marketView,
         selection = session.selection, reveal = session.reveal, scopeSymbol = session.scopeSymbol,
         scopeInterval = session.scopeInterval, narrowPaneOpen = session.narrowPaneOpen,
         intervalGroup = intervalGroup.name, layoutMode = state.settings.layoutMode.name,
@@ -322,8 +325,8 @@ internal fun GuailiScreen(
     }
 
     val contentActive = klineTarget == null && !showSettings && !showHelp
-    LaunchedEffect(lifecycleOwner, xbotViewModel, tvState.isAuthenticated, tvState.serverUrl, contentActive, showSignals) {
-        if (!contentActive || showSignals || !tvState.isAuthenticated) return@LaunchedEffect
+    LaunchedEffect(lifecycleOwner, xbotViewModel, tvState.isAuthenticated, tvState.serverUrl, contentActive, showSignals, showPullback) {
+        if (!contentActive || showSignals || showPullback || !tvState.isAuthenticated) return@LaunchedEffect
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             xbotViewModel.loadAlerts(force = true)
             while (true) {
@@ -332,8 +335,8 @@ internal fun GuailiScreen(
             }
         }
     }
-    DisposableEffect(lifecycleOwner, alertsViewModel, contentActive, showSignals, state.settingsLoaded) {
-        fun update() = alertsViewModel.setForeground(state.settingsLoaded && contentActive && !showSignals &&
+    DisposableEffect(lifecycleOwner, alertsViewModel, contentActive, showSignals, showPullback, state.settingsLoaded) {
+        fun update() = alertsViewModel.setForeground(state.settingsLoaded && contentActive && !showSignals && !showPullback &&
             lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         val observer = LifecycleEventObserver { _, _ -> update() }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -341,9 +344,10 @@ internal fun GuailiScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer); alertsViewModel.setForeground(false) }
     }
     val needsTable = !onlySignalCells || expandedFocusSymbols.isNotEmpty()
-    DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals, needsTable) {
+    DisposableEffect(lifecycleOwner, viewModel, signalsViewModel, contentActive, showSignals, showPullback, needsTable) {
         fun update(active: Boolean) {
-            viewModel.setForeground(active && contentActive && !showSignals && needsTable)
+            viewModel.setForeground(active && contentActive && !showSignals && !showPullback && needsTable)
+            signalsViewModel.setPullbackActive(active && contentActive && showPullback)
             signalsViewModel.setForeground(active && contentActive)
         }
         val observer = LifecycleEventObserver { _, event ->
@@ -358,6 +362,7 @@ internal fun GuailiScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.setForeground(false)
+            signalsViewModel.setPullbackActive(false)
             signalsViewModel.setForeground(false)
         }
     }
@@ -404,7 +409,7 @@ internal fun GuailiScreen(
         BoxWithConstraints(Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 12.dp)) {
             val wide = maxWidth / density.fontScale.coerceAtLeast(1f) >= 900.dp && maxHeight >= 400.dp
             val bottomPaneHeight = (maxHeight * 0.42f).coerceAtMost(360.dp)
-            val paneOpen = !showSignals && if (wide) session.narrowPaneOpen || !signalsState.preferences.widePaneCollapsed else session.narrowPaneOpen
+            val paneOpen = !showSignals && !showPullback && if (wide) session.narrowPaneOpen || !signalsState.preferences.widePaneCollapsed else session.narrowPaneOpen
             val signalContent: @Composable (Boolean) -> Unit = { embedded ->
                 signalContentHolder.SaveableStateProvider(if (embedded) "embedded" else "standalone") {
                     Column(Modifier.fillMaxSize()) {
@@ -485,11 +490,21 @@ internal fun GuailiScreen(
                 }
             }
             Column(Modifier.fillMaxSize()) {
-                MarketViewSelector(if (showSignals) MarketView.SignalsV2 else MarketView.Table) { view ->
+                MarketViewSelector(marketView) { view ->
                     session = session.copy(viewOverride = view)
                     signalsViewModel.setView(view)
                 }
-                if (showSignals) Box(Modifier.weight(1f)) { signalContent(false) }
+                if (showPullback) PullbackContent(
+                    state = signalsState, listState = pullbackListState,
+                    onRefresh = signalsViewModel::refresh,
+                    onOnlyCandidates = signalsViewModel::setOnlyPullbackCandidates,
+                    onSound = signalsViewModel::setPullbackSound,
+                    onRules = signalsViewModel::setPullbackRules,
+                    reminders = signalsViewModel.pullbackAlerts,
+                    onOpenKline = { target -> klineAlertId = null; klineFromSignals = true; klineSymbol = target.symbol; klineInterval = target.interval },
+                    modifier = Modifier.weight(1f),
+                )
+                else if (showSignals) Box(Modifier.weight(1f)) { signalContent(false) }
                 else if (wide && paneOpen) Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(Modifier.width((320 * density.fontScale.coerceAtLeast(1f)).dp).fillMaxSize().testTag("market-signal-pane-wide")) { signalContent(true) }
                     Box(Modifier.weight(1f)) { tableContent() }

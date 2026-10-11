@@ -4,6 +4,7 @@ import com.gouge.guaili.data.*
 import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.*
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.*
@@ -44,6 +45,48 @@ class ServerSignalsViewModelTest {
         override fun currentDeviceTime() = time.copy(elapsedMillis = time.elapsedMillis + elapsedOffset())
     }
     private fun ServerSignalsViewModel.close() { javaClass.getMethod("clear\$lifecycle_viewmodel").invoke(this) }
+
+    @Test fun pullbacksShareFullRefreshAndSoundBaselinesIgnoreDisplayFilter() = runTest {
+        val settings = Settings()
+        val prefs = Preferences()
+        val cache = Cache { testScheduler.currentTime }
+        var calls = 0
+        var target = 0.4
+        var sounds = 0
+        val vm = ServerSignalsViewModel(settings, prefs, cache, ServerSignalsRefreshUseCase(
+            ServerSignalsFetcherFactory { ServerSignalsFetcher {
+                calls++
+                val at = now + testScheduler.currentTime
+                GuailiResult.Success(ServerSignalsResponse(true, "ready", at, at,
+                    qualityConfig = ServerSignalQualityConfig(30000, 15000), results = listOf(
+                        ServerSymbolSignals("BTCUSDT", "ready", at, perIntervalQuality =
+                            listOf(0.8, 0.6, 0.5, 0.3, target).mapIndexed { i, g ->
+                                ServerIntervalEvidence((5-i).toString(), "ready", value = (g*10).toInt(), guaili = g,
+                                    marketEventTime = at, isClosed = false)
+                            }))))
+            } }, cache))
+        val observer = backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            vm.pullbackAlerts.collect { sounds++ }
+        }
+        try {
+            runCurrent(); vm.setPullbackActive(true); vm.setForeground(true); runCurrent()
+            assertEquals(1, calls); assertEquals(0, sounds)
+            vm.setPullbackSound(true); runCurrent()
+            advanceTimeBy(1100); target = 0.0; vm.refresh(); runCurrent()
+            assertEquals(2, calls); assertEquals(1, sounds); assertEquals(1, vm.state.value.pullbacks.longHits)
+            vm.setOnlyPullbackCandidates(true); runCurrent(); assertEquals(1, sounds)
+            assertEquals(2, calls) // UI filters never fetch.
+            advanceTimeBy(1100); vm.refresh(); runCurrent(); assertEquals(1, sounds)
+            target = 0.4; advanceTimeBy(1100); vm.refresh(); runCurrent()
+            target = 0.0; advanceTimeBy(1100); vm.refresh(); runCurrent(); assertEquals(2, sounds)
+            vm.setPullbackSound(false); runCurrent()
+            vm.setPullbackSound(true); runCurrent(); assertEquals(2, sounds) // enabling is a silent baseline
+            vm.setPullbackRules(PullbackRules(threshold = 11)); runCurrent(); assertEquals(2, sounds)
+            vm.setForeground(false); val previous = calls
+            advanceTimeBy(20000); runCurrent(); assertEquals(previous, calls)
+            vm.setForeground(true); runCurrent(); assertEquals(2, sounds) // returning is a silent baseline
+        } finally { observer.cancel(); vm.close() }
+    }
 
     @Test fun configuredPhoneIntervalOverridesServerSamplingAndChangesWithoutDuplicateRequests() = runTest {
         val settings = Settings()

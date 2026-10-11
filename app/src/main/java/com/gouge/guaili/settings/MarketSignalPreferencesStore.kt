@@ -14,7 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-internal enum class MarketView { Table, SignalsV2 }
+internal enum class MarketView { Table, SignalsV2, Pullback }
 
 @Serializable
 internal data class MarketSignalPreferences(
@@ -24,6 +24,7 @@ internal data class MarketSignalPreferences(
     val kinds: Set<GuailiSignalKind> = GuailiSignalKind.entries.toSet(),
     val widePaneCollapsed: Boolean = false,
     val onlySignalCells: Boolean = false,
+    val pullback: PullbackPreferences = PullbackPreferences(),
 )
 
 internal interface MarketSignalPreferencesSource {

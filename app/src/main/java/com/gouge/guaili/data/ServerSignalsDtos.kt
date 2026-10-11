@@ -20,7 +20,11 @@ data class ServerSignalsResponse(
     val configError: String? = null,
     val results: List<ServerSymbolSignals> = emptyList(),
     val indicatorConfig: ServerSignalIndicatorConfig? = null,
+    val qualityConfig: ServerSignalQualityConfig? = null,
 )
+
+@Serializable
+data class ServerSignalQualityConfig(val maxMarketAgeMs: Long, val maxResultAgeMs: Long)
 
 @Serializable
 data class ServerSignalIndicatorConfig(val maType: String, val maLength: Int)

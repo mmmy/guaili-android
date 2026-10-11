@@ -6,10 +6,13 @@ import com.gouge.guaili.data.*
 import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.*
 import com.gouge.guaili.signals.*
+import com.gouge.guaili.pullback.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -25,6 +28,7 @@ internal data class MarketSignalsUiState(
     val clockMessage: String = "刷新后校准时间",
     val refreshError: String? = null,
     val autoRefreshSeconds: Int = 5,
+    val pullbacks: PullbackProjection = PullbackProjection(),
 )
 
 internal class ServerSignalsViewModel(
@@ -45,6 +49,15 @@ internal class ServerSignalsViewModel(
     private var expiry: Job? = null
     private var request: Job? = null
     private var requestGeneration = 0
+    private val alerts = PullbackAlerts()
+    private val mutablePullbackAlerts = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val pullbackAlerts = mutablePullbackAlerts.asSharedFlow()
+    private var pullbackActive = false
+    private var projectedSnapshot: ServerSignalsSnapshot? = null
+    private var projectedRules: PullbackRules? = null
+    private var projectedSymbols: List<String> = emptyList()
+    private var projectedBoot: Int? = null
+    private var projection: PullbackProjection = PullbackProjection()
 
     init {
         viewModelScope.launch {
@@ -55,6 +68,8 @@ internal class ServerSignalsViewModel(
                 val sourceChanged = normalizeServerSignalsBaseUrl(settings.baseUrl) !=
                     normalizeServerSignalsBaseUrl(observed.settings.baseUrl)
                 val refreshIntervalChanged = settings.autoRefreshSeconds != observed.settings.autoRefreshSeconds
+                if (sourceChanged || preferences.pullback.rules != observed.preferences.pullback.rules ||
+                    preferences.pullback.soundEnabled != observed.preferences.pullback.soundEnabled) alerts.reset()
                 settings = observed.settings
                 preferences = observed.preferences
                 snapshot = observed.snapshot?.takeIf { it.belongsTo(settings.baseUrl) }
@@ -73,6 +88,21 @@ internal class ServerSignalsViewModel(
     fun setView(view: MarketView) = updatePreferences { it.copy(view = view) }
     fun setOnlySignalCells(enabled: Boolean) = updatePreferences { it.copy(onlySignalCells = enabled) }
     fun setWidePaneCollapsed(collapsed: Boolean) = updatePreferences { it.copy(widePaneCollapsed = collapsed) }
+    fun setOnlyPullbackCandidates(enabled: Boolean) = updatePreferences {
+        it.copy(pullback = it.pullback.copy(onlyCandidates = enabled))
+    }
+    fun setPullbackSound(enabled: Boolean) = updatePreferences {
+        it.copy(pullback = it.pullback.copy(soundEnabled = enabled))
+    }
+    fun setPullbackRules(rules: PullbackRules) {
+        if (rules.error() == null) updatePreferences { it.copy(pullback = it.pullback.copy(rules = rules)) }
+    }
+    fun setPullbackActive(active: Boolean) {
+        if (pullbackActive == active) return
+        pullbackActive = active
+        alerts.reset()
+        rebuild()
+    }
     fun toggleSymbol(symbol: String) = updatePreferences { prefs ->
         val selected = prefs.symbols ?: settings.symbols
         prefs.copy(symbols = if (symbol in selected) selected - symbol else selected + symbol)
@@ -98,6 +128,7 @@ internal class ServerSignalsViewModel(
     fun setForeground(active: Boolean) {
         if (foreground == active) return
         foreground = active
+        alerts.reset()
         polling?.cancel()
         expiry?.cancel()
         request?.cancel()
@@ -160,10 +191,25 @@ internal class ServerSignalsViewModel(
         val device = snapshotSource.currentDeviceTime()
         val display = if (device == null) ServerSignalsState("time_uncertain", "时间暂不可确认，请刷新", "刷新后重新校准时间")
             else serverSignalsState(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds), settings.baseUrl, device)
+        val now = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device).nowMillis else null
+        val rules = preferences.pullback.rules
+        // Reuse sorted evidence between responses; expiry only rebuilds at a quality boundary.
+        if (projectedSnapshot !== snapshot || projectedRules != rules || projectedSymbols != settings.symbols ||
+            projectedBoot != device?.bootCount || now == null && projection.ready ||
+            projection.nextChangeAt?.let { now != null && now >= it } == true) {
+            projection = projectPullbacks(snapshot, rules, settings.symbols, device)
+            projectedSnapshot = snapshot
+            projectedRules = rules
+            projectedSymbols = settings.symbols
+            projectedBoot = device?.bootCount
+        }
+        val appeared = alerts.observe(projection)
+        if (appeared && foreground && pullbackActive && preferences.pullback.soundEnabled) mutablePullbackAlerts.tryEmit(Unit)
         mutableState.value = mutableState.value.copy(
             preferences = preferences, symbols = symbols, snapshot = snapshot,
             availableSymbols = (settings.symbols + snapshot?.response?.results.orEmpty().map { it.symbol } + symbols).distinct(),
             presentation = display,
+            pullbacks = projection,
             autoRefreshSeconds = settings.autoRefreshSeconds.coerceAtLeast(1),
             refreshError = failure?.takeIf {
                 normalizeServerSignalsBaseUrl(it.baseUrl) == normalizeServerSignalsBaseUrl(settings.baseUrl) &&
