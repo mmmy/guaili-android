@@ -5,7 +5,6 @@ import android.media.ToneGenerator
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -18,6 +17,12 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FilterList
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -28,6 +33,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -90,31 +97,13 @@ internal fun PullbackContent(
     DisposableEffect(Unit) { onDispose { tone[0]?.release(); tone[0] = null } }
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 760.dp).fillMaxSize().testTag("pullback-page")) {
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("观察目标", style = MaterialTheme.typography.titleMedium)
-                    Text("前 ${prefs.rules.levels - 1} 级同向 → 第 ${prefs.rules.levels} 级 · 阈值 ${prefs.rules.threshold}",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                TextButton(onClick = { selection = null; parameters = true }, modifier = Modifier.testTag("pullback-parameters")) { Text("参数") }
-                IconButton(onClick = onRefresh, modifier = Modifier.testTag("pullback-refresh")) {
-                    Icon(Icons.Outlined.Refresh, "刷新回调行情", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                val stack = maxWidth / LocalDensity.current.fontScale >= 330.dp
-                val filters: @Composable RowScope.() -> Unit = {
-                    PullbackToggle("只显示回调候选", prefs.onlyCandidates, {
-                        selection = null; onOnlyCandidates(it)
-                    }, "pullback-only-candidates", Modifier.weight(1.65f))
-                    PullbackToggle("声音提醒", prefs.soundEnabled, onSound, "pullback-sound", Modifier.weight(1f))
-                }
-                if (stack) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, content = filters)
-                else Column {
-                    PullbackToggle("只显示回调候选", prefs.onlyCandidates, { selection = null; onOnlyCandidates(it) }, "pullback-only-candidates", Modifier.fillMaxWidth())
-                    PullbackToggle("声音提醒", prefs.soundEnabled, onSound, "pullback-sound", Modifier.fillMaxWidth())
-                }
-            }
+            PullbackToolbar(
+                rules = prefs.rules, onlyCandidates = prefs.onlyCandidates, soundEnabled = prefs.soundEnabled,
+                refreshing = state.isRefreshing,
+                onParameters = { selection = null; parameters = true },
+                onOnlyCandidates = { selection = null; onOnlyCandidates(it) },
+                onSound = onSound, onRefresh = onRefresh,
+            )
             val issueCount = projection.rows.count { it.issue != null }
             Text("${rows.size} 品种 · 多 ${projection.longHits} · 空 ${projection.shortHits}" +
                 if (issueCount > 0) " · $issueCount 品种待确认" else "",
@@ -172,12 +161,60 @@ internal fun PullbackContent(
     }
 }
 
+/** One row at every width/font scale; full names remain available to accessibility services. */
 @Composable
-private fun PullbackToggle(label: String, checked: Boolean, onChanged: (Boolean) -> Unit, tag: String, modifier: Modifier) {
-    Row(modifier.heightIn(min = 48.dp).toggleable(checked, role = Role.Switch, onValueChange = onChanged)
-        .testTag(tag).padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Switch(checked, onCheckedChange = null)
+private fun PullbackToolbar(
+    rules: PullbackRules, onlyCandidates: Boolean, soundEnabled: Boolean, refreshing: Boolean,
+    onParameters: () -> Unit, onOnlyCandidates: (Boolean) -> Unit,
+    onSound: (Boolean) -> Unit, onRefresh: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    BoxWithConstraints(Modifier.fillMaxWidth().testTag("pullback-toolbar")) {
+        val showParameterIcon = maxWidth / LocalDensity.current.fontScale >= 220.dp
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onParameters, modifier = Modifier.weight(1.1f).height(48.dp)
+                .testTag("pullback-parameters").semantics {
+                    contentDescription = "观察参数：连续 ${rules.levels} 级，阈值 ${rules.threshold}，强势背景 ${rules.strongLevels} 级"
+                }, contentPadding = PaddingValues(horizontal = 4.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceVariant)) {
+                if (showParameterIcon) { Icon(Icons.Outlined.Tune, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)) }
+                Text("${rules.levels}级", style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false,
+                    modifier = Modifier.testTag("pullback-toolbar-levels"))
+                Spacer(Modifier.width(4.dp)); Icon(Icons.Outlined.ExpandMore, null, Modifier.size(12.dp))
+            }
+            PullbackToolbarToggle("候选", "只显示回调候选", onlyCandidates, onOnlyCandidates,
+                "pullback-only-candidates", Modifier.weight(1f)) {
+                Icon(if (onlyCandidates) Icons.Outlined.Check else Icons.Outlined.FilterList, null, Modifier.size(18.dp))
+            }
+            PullbackToolbarToggle("声音", "声音提醒", soundEnabled, onSound, "pullback-sound", Modifier.weight(1f)) {
+                Icon(if (soundEnabled) Icons.AutoMirrored.Outlined.VolumeUp else Icons.AutoMirrored.Outlined.VolumeOff,
+                    null, Modifier.size(18.dp))
+            }
+            IconButton(onRefresh, enabled = !refreshing, modifier = Modifier.size(48.dp).testTag("pullback-refresh").semantics { contentDescription = "刷新回调行情" }) {
+                if (refreshing) CircularProgressIndicator(Modifier.size(18.dp), color = colors.onSurfaceVariant, strokeWidth = 2.dp)
+                else Icon(Icons.Outlined.Refresh, null, tint = colors.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PullbackToolbarToggle(
+    label: String, description: String, checked: Boolean, onChanged: (Boolean) -> Unit,
+    tag: String, modifier: Modifier, icon: @Composable () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    IconToggleButton(checked, onChanged, modifier.height(48.dp).testTag(tag).semantics {
+        contentDescription = description; role = Role.Switch
+    }, shape = RoundedCornerShape(12.dp), colors = IconButtonDefaults.iconToggleButtonColors(
+        contentColor = colors.onSurfaceVariant, checkedContainerColor = colors.primary.copy(alpha = 0.16f),
+        checkedContentColor = colors.primary,
+    )) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            icon()
+            Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
+        }
     }
 }
 

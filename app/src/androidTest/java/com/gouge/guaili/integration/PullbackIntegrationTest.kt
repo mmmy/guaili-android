@@ -3,6 +3,8 @@ package com.gouge.guaili.integration
 import android.content.Context
 import android.content.Intent
 import androidx.compose.ui.test.*
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -75,13 +77,27 @@ class PullbackIntegrationTest {
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
             await("pullback-target-BTCUSDT-Long")
             compose.onNodeWithTag("pullback-period-BTCUSDT-Long", useUnmergedTree = true).assertTextEquals("4H")
-            compose.onNodeWithTag("pullback-sound").assertIsOff()
+            assertSingleRowToolbar()
+            compose.onNodeWithTag("pullback-toolbar-levels", useUnmergedTree = true).assertTextEquals("5级")
+            compose.onNodeWithTag("pullback-sound").assertIsOff().performClick()
+            awaitToggle("pullback-sound", true)
+            compose.onNodeWithTag("pullback-sound").performClick()
+            awaitToggle("pullback-sound", false)
             capture("pullback-all")
             compose.onNodeWithTag("pullback-only-candidates").performClick()
+            awaitToggle("pullback-only-candidates", true)
             compose.waitForIdle()
             compose.onNodeWithTag("pullback-target-BTCUSDT-Short").assertDoesNotExist()
             compose.onNodeWithTag("pullback-symbol-AVAXUSDT").assertDoesNotExist()
             capture("pullback-candidates")
+            compose.onNodeWithTag("pullback-only-candidates").performClick()
+            awaitToggle("pullback-only-candidates", false)
+            compose.onNodeWithTag("pullback-target-BTCUSDT-Short").assertExists()
+            compose.onNodeWithTag("pullback-list").performScrollToNode(hasTestTag("pullback-symbol-AVAXUSDT"))
+            compose.onNodeWithTag("pullback-symbol-AVAXUSDT").assertExists()
+            compose.onNodeWithTag("pullback-list").performScrollToNode(hasTestTag("pullback-symbol-BTCUSDT"))
+            compose.onNodeWithTag("pullback-only-candidates").performClick()
+            awaitToggle("pullback-only-candidates", true)
             compose.onNodeWithTag("pullback-target-BTCUSDT-Long").performClick()
             await("pullback-evidence"); capture("pullback-evidence")
             compose.onNodeWithTag("pullback-evidence-close").performClick()
@@ -107,16 +123,19 @@ class PullbackIntegrationTest {
             compose.onNodeWithTag("pullback-levels").performTextReplacement("1")
             compose.onNodeWithTag("pullback-save").performScrollTo().performClick()
             await("pullback-parameter-error")
-            compose.onNodeWithTag("pullback-levels").performScrollTo().performTextReplacement("5")
+            compose.onNodeWithTag("pullback-levels").performScrollTo().performTextReplacement("6")
             compose.onNodeWithTag("pullback-threshold").performTextReplacement("11")
             compose.onNodeWithTag("pullback-advanced").performScrollTo().performClick()
             compose.onNodeWithTag("pullback-minimum").performScrollTo().performTextReplacement("1")
             compose.onNodeWithTag("pullback-reverse").performScrollTo().performTextReplacement("3")
             compose.onNodeWithTag("pullback-save").performScrollTo().performClick()
             compose.onNodeWithTag("pullback-sound").performClick()
-            compose.waitUntil(5000) { runBlocking { prefs.preferences.first().pullback.let { it.rules.threshold == 11 && it.soundEnabled } } }
+            compose.waitUntil(5000) { runBlocking { prefs.preferences.first().pullback.let { it.rules.levels == 6 && it.rules.threshold == 11 && it.soundEnabled } } }
             scenario.recreate(); await("pullback-page")
             compose.onNodeWithTag("pullback-only-candidates").assertIsOn(); compose.onNodeWithTag("pullback-sound").assertIsOn()
+            compose.onNodeWithTag("pullback-toolbar-levels", useUnmergedTree = true).assertTextEquals("6级")
+            assertSingleRowToolbar()
+            capture("pullback-toolbar-on")
             mode = "empty"; refresh(); await("pullback-empty"); capture("pullback-empty")
             mode = "stale"; refresh(); await("pullback-status"); capture("pullback-stale")
             mode = "error"; refresh(); capture("pullback-error")
@@ -156,6 +175,26 @@ class PullbackIntegrationTest {
             compose.onNodeWithTag("pullback-target-AVAXUSDT-Short").assertIsNotSelected()
         }
     }
+    private fun awaitToggle(tag: String, on: Boolean) {
+        val expected = if (on) ToggleableState.On else ToggleableState.Off
+        compose.waitUntil(5000) {
+            compose.onNodeWithTag(tag).fetchSemanticsNode().config[SemanticsProperties.ToggleableState] == expected
+        }
+    }
+
+    private fun assertSingleRowToolbar() {
+        val toolbar = compose.onNodeWithTag("pullback-toolbar").fetchSemanticsNode().boundsInRoot
+        val controls = listOf("pullback-parameters", "pullback-only-candidates", "pullback-sound", "pullback-refresh")
+            .map { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
+        val minimumTouch = 48f * context.resources.displayMetrics.density
+        controls.forEach { bounds ->
+            assertEquals("Toolbar actions must stay on one line", toolbar.center.y, bounds.center.y, 2f)
+            assertTrue("Touch target too small", bounds.width + 1 >= minimumTouch && bounds.height + 1 >= minimumTouch)
+            assertTrue("Action outside toolbar", bounds.left >= toolbar.left && bounds.right <= toolbar.right)
+        }
+        controls.zipWithNext().forEach { (left, right) -> assertTrue("Toolbar targets overlap", left.right <= right.left) }
+    }
+
     private fun refresh() {
         val count = requests.count { it.requestUrl?.encodedPath == "/api/signals" }
         Thread.sleep(1100) // The real shared refresh cache intentionally reuses responses for one second.
@@ -166,6 +205,8 @@ class PullbackIntegrationTest {
     }
     private fun await(tag: String) = compose.waitUntil(15000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
     private fun capture(name: String) {
+        compose.waitForIdle()
+        Thread.sleep(450) // Let the native ripple finish so saved screenshots express toggle state.
         compose.waitForIdle()
         val suffix = InstrumentationRegistry.getArguments().getString("visual_suffix", "phone")
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).takeScreenshot(File(context.getExternalFilesDir(null), "$name-$suffix.png"))
