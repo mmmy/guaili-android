@@ -86,7 +86,7 @@ class SignalCardSizingTest {
     }
 
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    @Test fun normalAndConflictCardsKeepEveryFieldAtThreeWidgetWidths() = runBlocking<Unit> {
+    @Test fun compactCardsKeepFullRangesWithinTwoRowsAtThreeWidgetWidths() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val normal = GuailiSignal("UNITREEUSDT", GuailiSignalKind.Extreme,
             listOf(GuailiSignalRun(GuailiSignalDirection.Negative, listOf("60", "90", "120", "180", "240", "360", "480"), 12)),
@@ -98,7 +98,7 @@ class SignalCardSizingTest {
         val exit = normal.copy(kind = GuailiSignalKind.Compression, phase = GuailiSignalPhase.UpwardDeparture,
             transitionOnly = true)
         for (width in listOf(180, 250, 320)) {
-            for ((index, signal) in listOf(normal, conflict, exit).withIndex()) {
+            for ((index, signal) in listOf(normal, conflict, exit, conflict.copy(transitionOnly = true)).withIndex()) {
                 val remote = GlanceRemoteViews().compose(context, DpSize(width.dp, 240.dp)) {
                     androidx.glance.layout.Column(modifier = GlanceModifier.fillMaxWidth().padding(horizontal = 10.dp)) {
                         SignalRow(signal, "EMA20")
@@ -118,14 +118,15 @@ class SignalCardSizingTest {
                     }
                     visit(parent)
                     assertTrue(fields.any { it.text.toString() == "UNITREE" })
-                    assertTrue(fields.any { it.text.toString() == signalPhaseLabel(signal) })
-                    val ranges = if (signal.kind == GuailiSignalKind.Conflict)
-                        signal.runs.map { signalRunRangeLabel(it, signal.transitionOnly) }
-                    else listOf(signalRangeLabel(signal))
-                    val description = fields.single { it.text.toString() == signalTitle(signal) }
+                    if (signal.kind != GuailiSignalKind.Conflict)
+                        assertTrue(fields.any { it.text.toString() == com.gouge.guaili.signals.signalCompactLabel(signal) })
+                    assertTrue("$width dp summary must stay within two text rows",
+                        parent.measuredHeight <= 64 * context.resources.displayMetrics.density * context.resources.configuration.fontScale)
+                    val ranges = com.gouge.guaili.signals.signalCompactRanges(signal)
+                    val symbol = fields.single { it.text.toString() == "UNITREE" }
                     ranges.forEach { range ->
                         val rangeView = fields.single { it.text.toString() == range }
-                        assertTrue("Period range must lead the structure description", rangeView.textSize > description.textSize)
+                        assertTrue("Period range must lead the symbol", rangeView.textSize > symbol.textSize)
                         val renderedPaint = TextPaint(rangeView.paint)
                         (rangeView.text as? Spanned)?.let { text ->
                             text.getSpans(0, text.length, MetricAffectingSpan::class.java).forEach {
@@ -136,8 +137,9 @@ class SignalCardSizingTest {
                         assertTrue("Period range must be bold", renderedPaint.typeface?.isBold == true ||
                             (renderedPaint.typeface?.weight ?: 400) >= 600 || renderedPaint.isFakeBoldText)
                     }
-                    fields.forEach { text ->
+                    fields.filter { it.text.toString() in ranges }.forEach { text ->
                         val layout = requireNotNull(text.layout)
+                        assertEquals("$width dp full period range must keep one line", 1, layout.lineCount)
                         for (line in 0 until layout.lineCount) {
                             assertEquals("$width dp: truncated ${text.text}", 0, layout.getEllipsisCount(line))
                         }

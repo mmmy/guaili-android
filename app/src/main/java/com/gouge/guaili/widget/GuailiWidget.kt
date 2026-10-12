@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
@@ -47,6 +48,8 @@ import androidx.glance.text.TextAlign
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import androidx.glance.currentState
+import androidx.glance.semantics.contentDescription
+import androidx.glance.semantics.semantics
 import com.gouge.guaili.MainActivity
 import com.gouge.guaili.data.GuailiSnapshot
 import com.gouge.guaili.data.GuailiSnapshotStore
@@ -847,46 +850,63 @@ private fun NoSignalContent(monitoredSymbols: Int, hasEnabledSignalKinds: Boolea
 
 @Composable
 internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
-    val narrow = LocalSize.current.width < 250.dp
+    val context = LocalContext.current
+    val metrics = context.resources.displayMetrics
+    val size = LocalSize.current
+    val padding = if (size.width < 220.dp && context.resources.configuration.fontScale > 1.2f) 2 else SignalCardStyle.HorizontalPaddingDp
+    val conflict = signal.kind == GuailiSignalKind.Conflict
+    val symbol = displaySymbol(signal.symbol)
+    val ranges = remember(signal) { com.gouge.guaili.signals.signalCompactRanges(signal) }
+    val metas = remember(signal) { if (conflict) signal.runs.mapIndexed { index, run -> signalRunMetaLabel(run, index == 0) }
+        else listOf(com.gouge.guaili.signals.signalCompactLabel(signal)) }
+    val plan = remember(signal, size.width, metrics.density, context.resources.configuration.fontScale) {
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        fun width(text: String, sp: Int, bold: Boolean = false): Float {
+            paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp.toFloat(), metrics)
+            paint.typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
+            return paint.measureText(text)
+        }
+        com.gouge.guaili.signals.signalCompactLayout((size.width.value - 20 - 2 * padding) * metrics.density,
+            width(symbol, SignalCardStyle.TitleFontSp), ranges.map { width(it, SignalCardStyle.RangeFontSp, true) },
+            metas.map { width(it, SignalCardStyle.DescriptionFontSp) }, 8 * metrics.density)
+    }
+    val symbolStyle = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.TitleFontSp.sp)
+    val rangeStyle = TextStyle(color = signalTitleColor(signal), fontSize = SignalCardStyle.RangeFontSp.sp, fontWeight = FontWeight.Bold)
+    val metaStyle = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.DescriptionFontSp.sp)
+    val description = remember(signal, maLabel) { "${signal.symbol} · ${signalTitle(signal)} · ${signalSummary(signal, maLabel)} · ${signalCompactTrend(signal, maLabel)} · ${signalPhaseLabel(signal)}" }
     Column(modifier = GlanceModifier.fillMaxWidth()) {
         Column(modifier = GlanceModifier.fillMaxWidth().background(SignalBackground)
-            .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)
+            .semantics { contentDescription = description }
+            .padding(horizontal = padding.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)
             .clickable(actionStartActivity(klineIntent(signal.symbol, signal.anchorInterval)))) {
-            Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(displaySymbol(signal.symbol),
-                    style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.TitleFontSp.sp, fontWeight = FontWeight.Bold),
-                    modifier = GlanceModifier.defaultWeight(), maxLines = 2)
-                Spacer(modifier = GlanceModifier.width(6.dp))
-                Text("${signal.totalLevelCount}级",
-                    style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp),
-                    modifier = GlanceModifier.background(SignalBadgeBackground).padding(horizontal = 4.dp, vertical = 2.dp), maxLines = 1)
-            }
-            Text(signalTitle(signal),
-                style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.DescriptionFontSp.sp),
-                modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
-            Column(modifier = GlanceModifier.fillMaxWidth().padding(top = 3.dp, bottom = 3.dp)) {
-                if (signal.kind == GuailiSignalKind.Conflict) {
-                    signal.runs.forEachIndexed { index, run ->
-                        if (index > 0) Spacer(modifier = GlanceModifier.height(4.dp))
-                        Text(signalRunRangeLabel(run, signal.transitionOnly),
-                            style = TextStyle(color = signalTitleColor(signal), fontSize = SignalCardStyle.RangeFontSp.sp,
-                                fontWeight = FontWeight.Bold), modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
-                        Text(signalRunMetaLabel(run, index == 0),
-                            style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 2)
+            if (conflict) {
+                ranges.forEachIndexed { index, range ->
+                    Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        val symbolWidth = (plan.symbolWidth / metrics.density).dp
+                        if (index == 0) Text(symbol, style = symbolStyle, modifier = GlanceModifier.width(symbolWidth), maxLines = 1)
+                        else Spacer(GlanceModifier.width(symbolWidth))
+                        if (plan.symbolWidth > 0) Spacer(GlanceModifier.width(8.dp))
+                        Text(range, style = rangeStyle, maxLines = 1)
+                        if (plan.showMeta) {
+                            Spacer(GlanceModifier.width(8.dp))
+                            Text(metas[index], style = metaStyle, maxLines = 1)
+                        }
                     }
-                } else Text(signalRangeLabel(signal),
-                    style = TextStyle(color = signalTitleColor(signal), fontSize = SignalCardStyle.RangeFontSp.sp,
-                        fontWeight = FontWeight.Bold), modifier = GlanceModifier.fillMaxWidth(), maxLines = 3)
-            }
-            if (narrow) Column(modifier = GlanceModifier.fillMaxWidth()) {
-                Text(signalCompactTrend(signal, maLabel), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 3)
-                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp), maxLines = 2)
-            } else Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Text(signalCompactTrend(signal, maLabel), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp),
-                    modifier = GlanceModifier.defaultWeight(), maxLines = 3)
-                Spacer(modifier = GlanceModifier.width(8.dp))
-                Text(signalPhaseLabel(signal), style = TextStyle(color = SecondaryText, fontSize = SignalCardStyle.BodyFontSp.sp,
-                    textAlign = TextAlign.End), maxLines = 2)
+                }
+            } else if (plan.inline) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(symbol, style = symbolStyle, maxLines = 1)
+                    Spacer(GlanceModifier.width(8.dp))
+                    Text(ranges.single(), style = rangeStyle, maxLines = 1)
+                    Spacer(GlanceModifier.width(8.dp))
+                    Text(metas.single(), style = metaStyle, maxLines = 1)
+                }
+            } else {
+                Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(symbol, style = symbolStyle, modifier = GlanceModifier.defaultWeight(), maxLines = 1)
+                    Text(metas.single(), style = metaStyle, maxLines = 1)
+                }
+                Text(ranges.single(), style = rangeStyle, maxLines = 1)
             }
         }
         Spacer(modifier = GlanceModifier.height(SignalCardStyle.CardSpacingDp.dp))

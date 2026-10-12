@@ -150,8 +150,8 @@ class MarketSignalsIntegrationTest {
             await("market-view-v2")
             compose.onNodeWithTag("market-view-v2").performClick()
             await("market-v2-card-QQQUSDT-conflict")
-            listOf("上方乖离共振", "下方乖离共振", "多周期近均线", "长短周期分歧").forEach {
-                compose.onNodeWithText(it).assertIsDisplayed()
+            listOf("BTCUSDT-btc", "BTCUSDT-near", "XAUUSDT-negative", "QQQUSDT-conflict").forEach {
+                compose.onNodeWithTag("market-v2-card-$it").assertIsDisplayed()
             }
             compose.onNode(hasText("1m–8m") and hasAnyAncestor(hasTestTag("market-v2-card-QQQUSDT-conflict")), useUnmergedTree = true).assertIsDisplayed()
             compose.onNodeWithText("60m–240m").assertIsDisplayed()
@@ -159,10 +159,14 @@ class MarketSignalsIntegrationTest {
             compose.onNodeWithText("长正 · 5级").assertIsDisplayed()
             listOf("BTCUSDT-btc", "BTCUSDT-near", "XAUUSDT-negative").forEach {
                 assertTrue("Ordinary cards must fit a compact range-first layout",
-                    compose.onNodeWithTag("market-v2-card-$it").fetchSemanticsNode().boundsInRoot.height <= 96f * compose.density.density * compose.density.fontScale)
+                    compose.onNodeWithTag("market-v2-card-$it").fetchSemanticsNode().boundsInRoot.height <= 52f * compose.density.density * compose.density.fontScale)
             }
             assertTrue("Conflict cards must fit both full ranges and metadata",
-                compose.onNodeWithTag("market-v2-card-QQQUSDT-conflict").fetchSemanticsNode().boundsInRoot.height <= 156f * compose.density.density * compose.density.fontScale)
+                compose.onNodeWithTag("market-v2-card-QQQUSDT-conflict").fetchSemanticsNode().boundsInRoot.height <= 56f * compose.density.density * compose.density.fontScale)
+            compose.onNodeWithTag("market-v2-expand-QQQUSDT-conflict").performClick()
+            compose.onNodeWithText("长短周期分歧").assertIsDisplayed()
+            compose.onNodeWithText("参与周期与动态乖离").assertIsDisplayed()
+            compose.onNodeWithTag("market-v2-expand-QQQUSDT-conflict").performClick()
             capture("market-v2-widget-style")
         }
     }

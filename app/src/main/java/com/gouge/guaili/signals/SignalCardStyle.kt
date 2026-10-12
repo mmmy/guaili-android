@@ -8,8 +8,8 @@ import com.gouge.guaili.domain.GuailiSignalKind
 internal object SignalCardStyle {
     const val SymbolWidthDp = 52
     const val HorizontalPaddingDp = 8
-    const val VerticalPaddingDp = 4
-    const val CardSpacingDp = 5
+    const val VerticalPaddingDp = 2
+    const val CardSpacingDp = 2
     const val TitleFontSp = 12
     const val RangeFontSp = 16
     const val DescriptionFontSp = 11

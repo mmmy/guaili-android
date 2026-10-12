@@ -28,7 +28,13 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -287,6 +293,10 @@ private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResp
         if (expanded) {
             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider(color = Color(palette.badge))
+                Text(signalTitle(presentation), style = MaterialTheme.typography.titleSmall)
+                Text(signalSummary(presentation, serverMovingAverageLabel(response)), style = MaterialTheme.typography.bodySmall)
+                Text("${signalCompactTrend(presentation, serverMovingAverageLabel(response))} · ${signalPhaseLabel(presentation)}",
+                    style = MaterialTheme.typography.bodySmall)
                 Text("首次观测：${signalTime(signal.firstObservedAt, true)}", style = MaterialTheme.typography.bodySmall)
                 Text("参与周期与动态乖离", style = MaterialTheme.typography.titleSmall)
                 signal.runs.forEach { run ->
@@ -320,42 +330,65 @@ private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResp
 private fun CompactSignalCard(signal: GuailiSignal, maLabel: String, expanded: Boolean,
     onOpenKline: () -> Unit, onToggleDetails: () -> Unit, key: String) {
     val palette = LocalSignalPalette.current
-    Column(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("market-v2-kline-$key")
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val symbol = signal.symbol.removeSuffix("USDT")
+    val conflict = signal.kind == GuailiSignalKind.Conflict
+    val ranges = remember(signal) { signalCompactRanges(signal) }
+    val metas = remember(signal) { if (conflict) signal.runs.mapIndexed { index, run -> signalRunMetaLabel(run, index == 0) }
+        else listOf(signalCompactLabel(signal)) }
+    val description = remember(signal, maLabel) { "${signal.symbol} · ${signalTitle(signal)} · ${signalSummary(signal, maLabel)} · ${signalCompactTrend(signal, maLabel)} · ${signalPhaseLabel(signal)}" }
+    val symbolStyle = TextStyle(fontSize = SignalCardStyle.TitleFontSp.sp, lineHeight = 16.sp, letterSpacing = 0.sp, color = Color(palette.secondary))
+    val rangeStyle = TextStyle(fontSize = SignalCardStyle.RangeFontSp.sp, lineHeight = 21.sp,
+        fontWeight = FontWeight.Bold, letterSpacing = 0.sp, color = Color(palette.titleColor(signal)))
+    val metaStyle = TextStyle(fontSize = SignalCardStyle.DescriptionFontSp.sp, lineHeight = 15.sp, letterSpacing = 0.sp, color = Color(palette.secondary))
+    BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("market-v2-kline-$key")
+        .semantics { contentDescription = description }
         .combinedClickable(onClickLabel = "查看${signal.symbol} ${serverDisplayInterval(signal.anchorInterval)} K线",
             onClick = onOpenKline, onLongClickLabel = "查看信号详情", onLongClick = onToggleDetails)
         .padding(horizontal = SignalCardStyle.HorizontalPaddingDp.dp, vertical = SignalCardStyle.VerticalPaddingDp.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(signal.symbol.removeSuffix("USDT"), Modifier.weight(1f),
-                fontSize = SignalCardStyle.TitleFontSp.sp, lineHeight = 16.sp,
-                fontWeight = FontWeight.Bold, color = Color(palette.secondary))
-            Text("${signal.totalLevelCount}级", Modifier.testTag("market-v2-expand-$key")
-                .background(Color(palette.badge), RectangleShape)
-                .clickable(onClickLabel = if (expanded) "收起信号详情" else "展开信号详情", role = Role.Button, onClick = onToggleDetails)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-                fontSize = SignalCardStyle.BodyFontSp.sp, lineHeight = 14.sp,
-                fontWeight = FontWeight.Normal, color = Color(palette.secondary))
+        val plan = remember(signal, maxWidth, density.density, density.fontScale, measurer) {
+            fun width(text: String, style: TextStyle) = measurer.measure(AnnotatedString(text), style, maxLines = 1, softWrap = false).size.width.toFloat()
+            signalCompactLayout(with(density) { maxWidth.toPx() }, width(symbol, symbolStyle),
+                ranges.map { width(it, rangeStyle) }, metas.map { width(it, metaStyle) }, with(density) { 8.dp.toPx() })
         }
-        Text(signalTitle(signal), fontSize = SignalCardStyle.DescriptionFontSp.sp,
-            lineHeight = 15.sp, color = Color(palette.secondary))
-        Spacer(Modifier.height(3.dp))
-        if (signal.kind == GuailiSignalKind.Conflict) {
-            signal.runs.forEachIndexed { index, run ->
-                if (index > 0) Spacer(Modifier.height(4.dp))
-                Text(signalRunRangeLabel(run, signal.transitionOnly), Modifier.fillMaxWidth(),
-                    fontSize = SignalCardStyle.RangeFontSp.sp, lineHeight = 21.sp,
-                    fontWeight = FontWeight.Bold, color = Color(palette.titleColor(signal)))
-                Text(signalRunMetaLabel(run, index == 0), fontSize = SignalCardStyle.BodyFontSp.sp,
-                    lineHeight = 14.sp, color = Color(palette.secondary))
+        val details = Modifier.testTag("market-v2-expand-$key")
+            .clickable(onClickLabel = if (expanded) "收起信号详情" else "展开信号详情", role = Role.Button, onClick = onToggleDetails)
+        Column(Modifier.align(Alignment.CenterStart)) {
+            if (conflict) {
+                ranges.forEachIndexed { index, range ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        val symbolWidth = with(density) { plan.symbolWidth.toDp() }
+                        if (index == 0) Text(symbol, details.width(symbolWidth), style = symbolStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        else Spacer(Modifier.width(symbolWidth))
+                        Spacer(Modifier.width(8.dp))
+                        Text(range, style = rangeStyle, maxLines = 1, softWrap = false)
+                        if (plan.showMeta) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(metas[index], style = metaStyle, maxLines = 1)
+                        }
+                    }
+                }
+            } else if (plan.inline) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(symbol, style = symbolStyle, maxLines = 1)
+                    Spacer(Modifier.width(8.dp))
+                    Text(ranges.single(), style = rangeStyle, maxLines = 1, softWrap = false)
+                    Spacer(Modifier.width(8.dp))
+                    Text(metas.single().substringBeforeLast(" · "), style = metaStyle, maxLines = 1)
+                    Spacer(Modifier.weight(1f))
+                    Text("${signal.totalLevelCount}级", details, style = metaStyle, maxLines = 1)
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(symbol, Modifier.weight(1f), style = symbolStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(metas.single().substringBeforeLast(" · "), style = metaStyle, maxLines = 1)
+                        Text("${signal.totalLevelCount}级", details, style = metaStyle, maxLines = 1)
+                    }
+                }
+                Text(ranges.single(), style = rangeStyle, maxLines = 1, softWrap = false)
             }
-        } else Text(signalRangeLabel(signal), Modifier.fillMaxWidth(),
-            fontSize = SignalCardStyle.RangeFontSp.sp, lineHeight = 21.sp,
-            fontWeight = FontWeight.Bold, color = Color(palette.titleColor(signal)))
-        Spacer(Modifier.height(3.dp))
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(signalCompactTrend(signal, maLabel), fontSize = SignalCardStyle.BodyFontSp.sp,
-                lineHeight = 14.sp, color = Color(palette.secondary))
-            Text(signalPhaseLabel(signal), fontSize = SignalCardStyle.BodyFontSp.sp,
-                lineHeight = 14.sp, color = Color(palette.secondary))
         }
     }
 }

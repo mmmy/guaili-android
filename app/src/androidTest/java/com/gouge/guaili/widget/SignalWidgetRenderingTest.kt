@@ -75,7 +75,7 @@ class SignalWidgetRenderingTest {
                         50, device.displayHeight * 3 / 4, 20)
                 }
             }
-            assertTrue(device.wait(Until.hasObject(By.text("长短周期分歧")), 12_000))
+            assertTrue(device.wait(Until.hasObject(By.text("1m–8m")), 12_000))
             val statusBadge = device.findObject(By.text("校时✓"))
                 ?: device.findObject(By.textContains("品种缺失"))
             assertNotNull("Compact status must expose its details", statusBadge)
@@ -83,27 +83,24 @@ class SignalWidgetRenderingTest {
             assertTrue(device.wait(Until.hasObject(By.text("小组件状态")), 5_000))
             assertTrue(device.wait(Until.hasObject(By.textContains("已按服务器时间判断")), 5_000))
             device.pressBack()
-            assertTrue(device.wait(Until.hasObject(By.text("长短周期分歧")), 5_000))
+            assertTrue(device.wait(Until.hasObject(By.text("1m–8m")), 5_000))
             assertFalse(device.hasObject(By.textContains("行情过期")))
-            val title = device.findObject(By.text("长短周期分歧"))
+            val title = device.findObject(By.text("1m–8m"))
             var container = title.parent
             while (container != null && container.findObject(By.clazz("android.widget.ListView")) == null) {
                 container = container.parent
             }
             val list = requireNotNull(container?.findObject(By.clazz("android.widget.ListView")))
             assertNotNull(list.findObject(By.textContains("短负")))
-            assertNotNull(list.findObject(By.textContains("回调观察")))
+            assertNotNull(list.findObject(By.text("15m–60m")))
             device.takeScreenshot(File(context.getExternalFilesDir(null), "widget-signals-top.png"))
             fun fullyVisible(label: String): Boolean {
                 val title = list.findObject(By.text(label)) ?: return false
-                val minimumTitle = (11 * context.resources.displayMetrics.scaledDensity).toInt()
+                val minimumTitle = (15 * context.resources.displayMetrics.scaledDensity).toInt()
                 if (title.visibleBounds.height() < minimumTitle) return false
-                var item = title.parent
-                while (item != null && item.findObject(By.text("EMA20 ↑")) == null) item = item.parent
-                val trend = item?.findObject(By.text("EMA20 ↑")) ?: return false
-                return trend.visibleBounds.height() >= (9 * context.resources.displayMetrics.scaledDensity).toInt()
+                return list.visibleBounds.contains(title.visibleBounds)
             }
-            for (label in listOf("上方乖离共振", "多周期近均线")) {
+            for (label in listOf("1m–60m", "1m–8m")) {
                 repeat(5) {
                     if (!fullyVisible(label)) {
                         val bounds = list.visibleBounds
@@ -116,7 +113,7 @@ class SignalWidgetRenderingTest {
                 assertTrue("Signal title must be visible within its list", row.visibleBounds.height() > 0 &&
                     list.visibleBounds.contains(row.visibleBounds))
             }
-            assertNotNull(list.findObject(By.text("EMA20 ↑")))
+            assertNotNull(list.findObject(By.textContains("近 ·")))
             device.takeScreenshot(File(context.getExternalFilesDir(null), "widget-signals-bottom.png"))
         } finally {
             configs.save(id, originalConfig)
