@@ -9,6 +9,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MarketTvAlertsTest {
+    @Test fun chartNavigationPreservesFullIdentityAndAllowsNativePerpetualsOutsideWatchlist() {
+        assertEquals(KlineTarget("ETHUSDT", "60"), tvKlineTarget("BINANCE:ETHUSDT.P", "60", listOf("BTCUSDT"), listOf("60"), emptyMap()))
+        assertNull(tvKlineTarget("BINANCE:BTCUSDT", "60", listOf("BTCUSDT"), listOf("60"), emptyMap()))
+        assertNull(tvKlineTarget("BYBIT:BTCUSDT.P", "60", listOf("BTCUSDT"), listOf("60"), emptyMap()))
+        assertNull(tvKlineTarget("BINANCE:BTCUSDT.P", "bad", listOf("BTCUSDT"), listOf("60"), emptyMap()))
+        assertEquals(KlineTarget("BTCUSDT", "D"), tvKlineTarget("BINANCE:BTCUSDT.P", "1D", listOf("BTCUSDT"), listOf("D", "1440"), emptyMap()))
+        assertEquals(KlineTarget("BTCUSDT", "1440"), tvKlineTarget("BINANCE:BTCUSDT.P", "1440", listOf("BTCUSDT"), listOf("D"), emptyMap()))
+    }
+
+    @Test fun reverseAliasesRejectAmbiguityAndNeverOverrideExplicitMappings() {
+        val aliases = mapOf("XAUUSDT" to "OANDA:XAUUSD")
+        assertEquals(KlineTarget("XAUUSDT", "W"), tvKlineTarget("oanda:xauusd", "1W", listOf("XAUUSDT"), listOf("W"), aliases))
+        assertNull(tvKlineTarget("BINANCE:XAUUSDT.P", "60", listOf("XAUUSDT"), listOf("60"), aliases))
+        assertNull(tvKlineTarget("OANDA:XAUUSD", "60", listOf("XAUUSDT", "GOLDUSDT"), listOf("60"),
+            aliases + ("GOLDUSDT" to "OANDA:XAUUSD")))
+    }
     private val now = Instant.parse("2026-10-07T12:00:00Z")
     private val config = TvAlertConfigDto("a", cookieId = "account-a", namePre = "_A_",
         startTimeParamIndex = 0, validBarsParamIndex = 1,

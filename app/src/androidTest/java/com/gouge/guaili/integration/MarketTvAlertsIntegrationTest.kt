@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import androidx.compose.ui.test.*
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -50,6 +52,7 @@ class MarketTvAlertsIntegrationTest {
     @Volatile private var submitted = false
     @Volatile private var allowCompletion = false
     @Volatile private var rejectReset = false
+    private val deleted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val device get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
     private val configs = listOf(
         TvAlertConfigDto("a", "测试 · 业务有效期", "account-a", "_A_", startTimeParamIndex = 0, validBarsParamIndex = 1,
@@ -94,6 +97,24 @@ class MarketTvAlertsIntegrationTest {
                         }
                         "/api/customer/tv-alert/alert-process-status" -> if (!submitted) "[]" else Json.encodeToString(listOf(
                             TvAlertProcessDto("a", 1234, if (allowCompletion) "finished" else "running", 1, if (allowCompletion) 1 else 0)))
+                        "/api/customer/tv-alert/delete-by-tv-alert-id" -> {
+                            if (rejectReset) """{"result":false,"msg":"测试拒绝删除"}""" else {
+                                val payload = Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject
+                                deleted.add("${payload.getValue("cookieId").jsonPrimitive.content}:${payload.getValue("alertId").jsonPrimitive.content}")
+                                """{"result":true}"""
+                            }
+                        }
+                        "/api/alerts" -> "[]"
+                        "/api/price-alerts/market" -> Json.encodeToString(PriceAlertMarket("BTCUSDT", "BTCUSDT.P", "0.1", "ready"))
+                        "/api/klines" -> {
+                            val interval = request.requestUrl?.queryParameter("intervals") ?: "60"
+                            Json.encodeToString(KlineEnvelope("BTCUSDT", listOf(interval), 100, false,
+                                series = listOf(KlineSeriesDto(interval, count = 100, data = (0 until 100).map { index ->
+                                    val open = now.minusSeconds((100 - index) * 3600L)
+                                    KlineRowDto("BTCUSDT", interval, KlineCandleDto(open.toString(), open.plusSeconds(3599).toString(),
+                                        100.0, 105.0, 95.0, 102.0, 10.0, 1000.0, 5, true))
+                                }))))
+                        }
                         "/api/price-alerts" -> Json.encodeToString(listOf(PriceAlertDto(1, 1, 1, "BTCUSDT", "60", "BTCUSDT.P",
                             "测试 · 价格穿越", PriceAlertGeometry("horizontal_segment", PriceAlertPoint(1000, 100.0),
                                 PriceAlertPoint(2000, 100.0), "right"), "cross_up", "once", "active",
@@ -158,7 +179,7 @@ class MarketTvAlertsIntegrationTest {
             compose.onNodeWithText("关闭").performClick()
             compose.onNodeWithTag("market-cell-BTCUSDT-60").performClick()
             await("market-tv-reset-account-a-1")
-            compose.onNodeWithText("测试 · 第二账户").assertIsDisplayed()
+            compose.onNodeWithText("测试 · 第二账户").assertExists()
             capture("detail")
             compose.onNodeWithTag("market-tv-reset-account-a-1").performClick()
             compose.onNodeWithText("确认重设警报？").assertIsDisplayed()
@@ -194,6 +215,158 @@ class MarketTvAlertsIntegrationTest {
             compose.onNodeWithTag("market-period-tv-BTCUSDT-60", useUnmergedTree = true).assertTextEquals("TV2")
             capture("matrix")
         }
+    }
+
+    @Test fun tvManagerAndChartNavigateBothWaysAndCancelFocusWithoutRefreshRestoringIt() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            openChartFromTv()
+            makePriceAxisManual()
+            openChartTvList()
+            compose.onNodeWithTag("kline-tv-current").assertContentDescriptionContains("当前周期 2")
+            compose.onNode(hasText("当前警报") and hasAnyAncestor(hasTestTag("kline-tv-entry-account-a-1"))).assertExists()
+            compose.onNode(hasText("当前警报") and hasAnyAncestor(hasTestTag("kline-tv-entry-account-b-1"))).assertDoesNotExist()
+            capture("kline-current")
+            compose.onNodeWithTag("kline-tv-all").performClick()
+            compose.onNodeWithTag("kline-tv-all").assertContentDescriptionContains("全部周期 6")
+            capture("kline-all")
+            compose.onNodeWithTag("kline-tv-current").performClick()
+            compose.onNodeWithTag("kline-tv-manage-account-a-1").performScrollTo().performClick()
+            await("tv-open-kline-account-a-1")
+            compose.onNodeWithTag("nav-alerts").assertIsSelected()
+            device.pressBack()
+            await("open-kline-tv-alerts")
+            assertManualPriceAxis()
+            scenario.recreate()
+            await("open-kline-tv-alerts")
+            assertManualPriceAxis()
+            openChartTvList()
+            compose.onNodeWithText("当前警报").assertDoesNotExist()
+            compose.onNodeWithContentDescription("刷新TV警报").performClick()
+            compose.onNodeWithText("当前警报").assertDoesNotExist()
+            compose.onNodeWithText("关闭").performClick()
+            compose.onNodeWithTag("kline-interval").onChildren().filter(hasClickAction()).onFirst().performClick()
+            compose.onNodeWithText("30m").performClick()
+            openChartTvList()
+            compose.onNodeWithTag("kline-tv-current").assertContentDescriptionContains("当前周期 1")
+            compose.onNodeWithTag("kline-tv-entry-account-a-2").assertExists()
+            compose.onNodeWithText("关闭").performClick()
+            compose.onNodeWithContentDescription("Back").performClick()
+            await("tv-open-kline-account-a-1")
+            compose.onNodeWithTag("nav-alerts").assertIsSelected()
+            assertTrue(requests.none { it.requestUrl?.encodedPath?.contains("add-alerts") == true })
+            assertTrue(requests.none { it.requestUrl?.encodedPath?.contains("delete-by") == true })
+        }
+    }
+
+    @Test fun chartResetAndDeleteRequireConfirmationAndShareResultsAcrossAccountsAndManager() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            openChartFromTv(); openChartTvList()
+            chartMore("account-a", 1, "再设")
+            compose.onNodeWithText("确认再设警报？").assertIsDisplayed()
+            compose.onNodeWithText("取消").performClick()
+            assertFalse(submitted)
+            chartMore("account-a", 1, "再设")
+            compose.onNodeWithText("确认再设").performClick()
+            compose.waitUntil(10_000) { submitted }
+            compose.onNodeWithText("再设中…").assertExists()
+            allowCompletion = true
+            await("kline-tv-entry-account-a-101")
+            assertEquals(1, requests.count { it.requestUrl?.encodedPath == "/api/customer/tv-alert/add-alerts" })
+            chartMore("account-a", 101, "删除")
+            compose.onNodeWithText("删除 TV 警报？").assertIsDisplayed()
+            compose.onNodeWithText("取消").performClick()
+            assertTrue(deleted.isEmpty())
+            chartMore("account-a", 101, "删除")
+            compose.onNodeWithText("删除", useUnmergedTree = true).performClick()
+            compose.waitUntil(10_000) { deleted.contains("account-a:101") }
+            compose.onNodeWithTag("kline-tv-entry-account-a-101").assertDoesNotExist()
+            compose.onNodeWithTag("kline-tv-entry-account-b-1").assertExists()
+            compose.onNodeWithTag("kline-tv-current").assertContentDescriptionContains("当前周期 1")
+            capture("kline-deleted")
+            compose.onNodeWithTag("kline-tv-manage-account-b-1").performScrollTo().performClick()
+            await("tv-open-kline-account-b-1")
+            compose.onNodeWithTag("tv-open-kline-account-a-101").assertDoesNotExist()
+        }
+    }
+
+    @Test fun chartCreationPrefillsExactTickerAndCurrentPeriodAndShowsFailures() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            openChartFromTv(); openChartTvList()
+            compose.onNodeWithTag("kline-tv-add").performClick()
+            await("kline-tv-configs")
+            compose.onNodeWithTag("kline-tv-config-a").performClick()
+            compose.onNodeWithTag("tv-setup-ticker").assertTextContains("BINANCE:BTCUSDT.P")
+            capture("kline-setup")
+            rejectReset = true
+            compose.onNodeWithText("设置 1 个级别").performScrollTo().performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("测试拒绝重设", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            val write = requests.single { it.requestUrl?.encodedPath == "/api/customer/tv-alert/add-alerts" }
+            val payload = Json.parseToJsonElement(write.body.clone().readUtf8()).jsonObject
+            assertEquals("BINANCE:BTCUSDT.P", payload.getValue("symbols").jsonPrimitive.content)
+            assertEquals("60", payload.getValue("periods").jsonPrimitive.content)
+            rejectReset = false
+            allowCompletion = true
+            compose.onNodeWithText("设置 1 个级别").performScrollTo().performClick()
+            await("kline-tv-entry-account-a-101")
+            capture("kline-created")
+            chartMore("account-a", 101, "删除")
+            rejectReset = true
+            compose.onNodeWithText("删除", useUnmergedTree = true).performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithText("测试拒绝删除", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("kline-tv-entry-account-a-101").assertExists()
+            compose.onNodeWithTag("kline-tv-add").assertIsNotEnabled()
+        }
+    }
+
+    private fun openChartFromTv() {
+        await("market-tv-alerts-BTCUSDT")
+        compose.onNodeWithTag("nav-alerts").performClick()
+        await("tv-open-kline-account-a-1")
+        compose.onNodeWithTag("tv-open-kline-account-a-1").performScrollTo().performClick()
+        await("open-kline-tv-alerts")
+    }
+    @Test fun chartOpenedFromMarketReturnsFromManagerAndCandleRefreshDoesNotPollTv() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            await("market-tv-alerts-BTCUSDT")
+            compose.onNodeWithTag("market-cell-BTCUSDT-60").performClick()
+            compose.onNodeWithText("View K-line").performScrollTo().performClick()
+            await("open-kline-tv-alerts")
+            makePriceAxisManual()
+            openChartTvList()
+            compose.onNodeWithTag("kline-tv-current").assertContentDescriptionContains("当前周期 2")
+            val reads = requests.count { it.requestUrl?.encodedPath == "/api/customer/tv-alert/all-alert-list" }
+            Thread.sleep(6_100)
+            assertEquals(reads, requests.count { it.requestUrl?.encodedPath == "/api/customer/tv-alert/all-alert-list" })
+            compose.onNodeWithTag("kline-tv-manage-account-a-1").performScrollTo().performClick()
+            await("tv-open-kline-account-a-1")
+            device.pressBack()
+            await("open-kline-tv-alerts")
+            assertManualPriceAxis()
+            compose.onNodeWithContentDescription("Back").performClick()
+            await("market-tv-alerts-BTCUSDT")
+        }
+    }
+    private fun makePriceAxisManual() {
+        await("price-alert-chart")
+        val density = context.resources.displayMetrics.density
+        compose.onNodeWithTag("price-alert-chart").performTouchInput {
+            swipe(Offset(width - 34 * density, 24 * density),
+                Offset(width - 34 * density, (height * .5f).coerceAtLeast(124 * density)), 600)
+        }
+        assertManualPriceAxis()
+    }
+    private fun assertManualPriceAxis() {
+        await("price-axis-auto")
+        compose.onNodeWithTag("price-axis-auto").assert(SemanticsMatcher.expectValue(
+            SemanticsProperties.StateDescription, "价格轴手动，点击恢复自动"))
+    }
+    private fun openChartTvList() {
+        compose.onNodeWithTag("open-kline-tv-alerts").performScrollTo().performClick()
+        await("kline-tv-list")
+    }
+    private fun chartMore(cookie: String, id: Long, label: String) {
+        compose.onNodeWithTag("kline-tv-more-$cookie-$id").performScrollTo().performClick()
+        compose.onNodeWithText(label).performClick()
     }
 
     @Test fun explicitMappingPersistsAndNeverMergesSpotAndFutures() {
@@ -268,7 +441,7 @@ class MarketTvAlertsIntegrationTest {
             "account-b" -> listOf(alert(1, "_B_第二账户", "60", created = now))
             "account-hidden" -> listOf(alert(99, "_HIDDEN_不应显示", "60"))
             else -> emptyList()
-        }
+        }.filterNot { "$cookie:${it.alertId}" in deleted }
     }
     private fun await(tag: String) = compose.waitUntil(15_000) { compose.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
     private fun capture(name: String) {

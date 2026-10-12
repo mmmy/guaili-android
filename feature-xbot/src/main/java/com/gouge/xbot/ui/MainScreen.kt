@@ -56,6 +56,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gouge.xbot.data.SignalViewDto
+import com.gouge.xbot.data.TvAlertConfigDto
+import com.gouge.xbot.data.TvAlertDto
 import com.gouge.xbot.data.TvAlertSymbolStore
 import com.gouge.xbot.domain.DirectionState
 import com.gouge.xbot.domain.SignalCommentItem
@@ -79,6 +81,8 @@ fun XbotContent(
     widgetTarget: AlertWidgetTarget? = null,
     resumeGeneration: Int = 0,
     onOpenAccount: () -> Unit = {},
+    onOpenKline: ((TvAlertConfigDto, TvAlertDto) -> Unit)? = null,
+    klineUnavailableReason: (TvAlertDto) -> String? = { null },
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current.applicationContext
@@ -122,6 +126,7 @@ fun XbotContent(
                 onAddAlert = viewModel::openAlertSetup, onDeleteAlert = viewModel::deleteTvAlert,
                 onResetAlert = viewModel::resetTvAlert,
                 onRefreshCache = viewModel::refreshTradingViewCache, widgetTarget = widgetTarget,
+                onOpenKline = onOpenKline, klineUnavailableReason = klineUnavailableReason,
             )
         }
     }

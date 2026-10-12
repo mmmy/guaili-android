@@ -377,6 +377,8 @@ internal fun GuailiScreen(
             initialSymbol = target.symbol,
             initialInterval = target.interval,
             initialAlertId = klineAlertId,
+            xbotViewModel = xbotViewModel,
+            onOpenTvAlerts = onOpenTvAlerts,
             refreshSeconds = state.settings.autoRefreshSeconds,
             closedOnly = if (klineFromSignals) false else state.settings.closedOnly,
             onBack = {

@@ -18,6 +18,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,8 +26,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,13 +49,14 @@ fun TvAlertSetupSheet(
     errorMessage: String?,
     onSave: (String, List<String>) -> Unit,
     onDismiss: () -> Unit,
+    initialPeriods: List<String>? = null,
 ) {
-    var tickerInput by remember(config.id, initialTicker) {
+    var tickerInput by rememberSaveable(config.id, initialTicker) {
         mutableStateOf(initialTicker)
     }
-    var selectedPeriods by remember(config.id, config.periods) {
+    var selectedPeriods by rememberSaveable(config.id, config.periods, initialPeriods) {
         mutableStateOf(
-            config.periods
+            initialPeriods?.toSet() ?: config.periods
                 .split(Regex("\\s+"))
                 .filter(String::isNotBlank)
                 .toSet(),
@@ -64,7 +68,8 @@ fun TvAlertSetupSheet(
     val normalizedTicker = tickerResult.getOrNull()
     val tickerError = tickerResult.exceptionOrNull()?.message
 
-    ModalBottomSheet(onDismissRequest = { if (!isSaving) onDismiss() }) {
+    ModalBottomSheet(onDismissRequest = { if (!isSaving) onDismiss() },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -89,7 +94,7 @@ fun TvAlertSetupSheet(
             OutlinedTextField(
                 value = tickerInput,
                 onValueChange = { tickerInput = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("tv-setup-ticker"),
                 enabled = !isSaving,
                 label = { Text("TradingView 品种代码") },
                 placeholder = { Text("例如 ETHUSDT.P 或 NASDAQ:AAPL") },
@@ -171,6 +176,13 @@ fun TvAlertSetupSheet(
                     }
                 }
             }
+            val extraPeriods = selectedPeriods.filter { it !in SignalPeriodOptions }
+            if (extraPeriods.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                extraPeriods.forEach { period ->
+                    FilterChip(selected = true, onClick = { selectedPeriods = selectedPeriods - period },
+                        label = { Text(period) }, enabled = !isSaving)
+                }
+            }
 
             HorizontalDivider()
             Text("其他参数（只读）", style = MaterialTheme.typography.titleMedium)
@@ -201,7 +213,7 @@ fun TvAlertSetupSheet(
                         onSave(ticker, sortSignalPeriods(selectedPeriods))
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("tv-setup-submit"),
                 enabled = normalizedTicker != null && selectedPeriods.isNotEmpty() && !isSaving,
             ) {
                 if (isSaving) {

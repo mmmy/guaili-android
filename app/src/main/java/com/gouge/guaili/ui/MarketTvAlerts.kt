@@ -12,6 +12,7 @@ import java.util.Locale
 
 /** Compare resolution identities, not durations: a 1440-minute bar is not a daily bar. */
 private val tvIntervalPattern = Regex("^(?:[1-9][0-9]*[SDWM]?|[SDWM])$")
+private val nativeTvTickerPattern = Regex("^BINANCE:([A-Z0-9_-]+)\\.P$")
 
 internal fun canonicalTvInterval(raw: String): String? {
     val value = raw.trim().uppercase(Locale.ROOT)
@@ -22,6 +23,22 @@ internal fun canonicalTvInterval(raw: String): String? {
 internal fun defaultMarketTvTicker(symbol: String): String {
     val value = symbol.trim().uppercase(Locale.ROOT)
     return if (':' in value) value else "BINANCE:$value" + if (value.endsWith(".P")) "" else ".P"
+}
+
+/** A reverse mapping is safe only when exactly one market instrument has this full TV identity. */
+internal fun tvKlineTarget(ticker: String, resolution: String, symbols: List<String>,
+    intervals: List<String>, mappings: Map<String, String>): KlineTarget? {
+    val identity = canonicalTvInterval(resolution) ?: return null
+    val matches = symbols.distinct().filter { symbol ->
+        (mappings[symbol] ?: defaultMarketTvTicker(symbol)).equals(ticker.trim(), ignoreCase = true)
+    }
+    if (matches.size > 1) return null
+    val nativeTicker = nativeTvTickerPattern.matchEntire(ticker.trim().uppercase(Locale.ROOT))
+    val nativeSymbol = nativeTicker?.groupValues?.get(1)?.takeIf { it !in mappings }
+    val symbol = matches.singleOrNull() ?: nativeSymbol ?: return null
+    // Prefer the market spelling for D/W aliases; retain a valid period outside the toolbar presets.
+    val interval = intervals.firstOrNull { canonicalTvInterval(it) == identity } ?: resolution.trim().uppercase(Locale.ROOT)
+    return KlineTarget(symbol, interval)
 }
 
 internal data class MarketTvAlertEntry(

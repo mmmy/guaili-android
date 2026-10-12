@@ -2,6 +2,8 @@ package com.gouge.xbot.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MoreVert
@@ -97,6 +99,8 @@ fun TvAlertScreen(
     modifier: Modifier = Modifier,
     onRefreshCache: (() -> Unit)? = null,
     widgetTarget: AlertWidgetTarget? = null,
+    onOpenKline: ((TvAlertConfigDto, TvAlertDto) -> Unit)? = null,
+    klineUnavailableReason: (TvAlertDto) -> String? = { null },
 ) {
     val visibleConfigs = state.alertConfigs.filter { it.id in state.visibleAlertIds }
     val now = rememberAlertTime()
@@ -207,6 +211,8 @@ fun TvAlertScreen(
                         targetAlertId = widgetTarget?.takeIf { it.configId == config.id }?.alertId,
                         targetGeneration = widgetTarget?.generation ?: 0,
                         onAddAlert = { onAddAlert(config) },
+                        onOpenKline = onOpenKline?.let { open -> { alert -> open(config, alert) } },
+                        klineUnavailableReason = klineUnavailableReason,
                         deletingAlert = state.deletingTvAlert,
                         resettingAlert = state.resettingTvAlert,
                         actionsEnabled = !state.isLoadingAlerts && !state.isChangingAlerts,
@@ -331,6 +337,8 @@ private fun TvAlertConfigCard(
     actionsEnabled: Boolean,
     onResetAlert: (TvAlertDto) -> Unit,
     onDeleteAlert: (TvAlertDto) -> Unit,
+    onOpenKline: ((TvAlertDto) -> Unit)? = null,
+    klineUnavailableReason: (TvAlertDto) -> String? = { null },
     targetAlertId: Long? = null,
     targetGeneration: Long = 0,
 ) {
@@ -417,6 +425,9 @@ private fun TvAlertConfigCard(
                         onReset = { onResetAlert(alert) },
                         deleteEnabled = actionsEnabled,
                         onDelete = { onDeleteAlert(alert) },
+                        onOpenKline = onOpenKline?.let { open -> { open(alert) } },
+                        klineUnavailableReason = klineUnavailableReason(alert),
+                        navigationKey = "${config.cookieId}-${alert.alertId}",
                     )
                     if (index < visibleAlerts.lastIndex || alerts.size > CollapsedAlertCount) {
                         HorizontalDivider()
@@ -455,6 +466,9 @@ private fun TvAlertRow(
     onDelete: () -> Unit,
     isTarget: Boolean = false,
     targetGeneration: Long = 0,
+    onOpenKline: (() -> Unit)? = null,
+    klineUnavailableReason: String? = null,
+    navigationKey: String = "",
 ) {
     val bringIntoView = remember { BringIntoViewRequester() }
     LaunchedEffect(isTarget, targetGeneration) {
@@ -466,17 +480,19 @@ private fun TvAlertRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(
-                text = alert.tickerLabel(),
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = alert.resolution.ifBlank { "-" },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(Modifier.weight(1f).heightIn(min = 48.dp)
+                .testTag("tv-open-kline-$navigationKey")
+                .clickable(enabled = onOpenKline != null && klineUnavailableReason == null,
+                    onClickLabel = "查看${alert.tickerLabel()} ${alert.resolution} K线",
+                    onClick = { onOpenKline?.invoke() }),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(alert.tickerLabel(), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
+                    color = if (onOpenKline != null && klineUnavailableReason == null) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(alert.resolution.ifBlank { "-" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Surface(
                 color = if (alert.active) {
                     MaterialTheme.colorScheme.surfaceContainerHigh
@@ -523,6 +539,10 @@ private fun TvAlertRow(
             expiry = businessExpiry,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
         )
+        if (onOpenKline != null && klineUnavailableReason != null) {
+            Text(klineUnavailableReason, Modifier.padding(bottom = 8.dp),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

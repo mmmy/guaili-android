@@ -63,6 +63,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -124,10 +125,13 @@ private val EditorSessionSaver = Saver<PriceAlertEditorSession?, String>(
 )
 
 @Composable
-fun KlineScreen(
+internal fun KlineScreen(
     baseUrl: String, symbols: List<String>, intervals: List<String>, initialSymbol: String,
     initialInterval: String, refreshSeconds: Int, closedOnly: Boolean, onBack: () -> Unit,
     initialAlertId: Long? = null,
+    xbotViewModel: com.gouge.xbot.ui.MainViewModel? = null,
+    initialTvAlert: com.gouge.xbot.ui.TvAlertDeletionKey? = null,
+    onOpenTvAlerts: (MarketTvAlertEntry?) -> Unit = {},
 ) {
     val context = LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -158,6 +162,7 @@ fun KlineScreen(
     var legacyId by rememberSaveable { mutableStateOf<Long?>(null) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val chartStateHolder = rememberSaveableStateHolder()
     val lifecycleOwner = LocalLifecycleOwner.current
     var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     var nextRefreshAt by remember { mutableLongStateOf(0L) }
@@ -220,6 +225,9 @@ fun KlineScreen(
                 { viewModel.load(symbol, interval, closedOnly, force = true); alertViewModel.refresh(symbol) }, onBack,
                 refreshSeconds, nextRefreshAt, foreground)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                xbotViewModel?.let { tvViewModel ->
+                    KlineTvAlertsEntry(baseUrl, symbol, interval, foreground, tvViewModel, initialTvAlert, onOpenTvAlerts)
+                }
                 TextButton(enabled = state.rows.isNotEmpty(), modifier = Modifier.testTag("draw-horizontal-alert"), onClick = {
                     drawingKind = "horizontal_segment"; drawingHasStart = false; cursorMode = false; selectedAlertId = null; cancelGesture++
                 }) { Icon(Icons.Outlined.HorizontalRule, null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(6.dp)); Text("水平线") }
@@ -267,7 +275,7 @@ fun KlineScreen(
                 when {
                     state.isLoading -> CircularProgressIndicator()
                     state.rows.isEmpty() -> Text("暂无 K 线数据")
-                    else -> key(symbol, interval) { KlineChart(
+                    else -> chartStateHolder.SaveableStateProvider("$symbol:$interval") { KlineChart(
                         rows = state.rows, alerts = alerts, pending = alertState.pending, selectedAlertId = selectedAlertId,
                         drawingKind = drawingKind, drawingExtend = preset.extend, tickSize = market?.step(), interval = interval, cancelGesture = cancelGesture,
                         cursorMode = cursorMode, cursorIndex = cursorIndex, cursorPrice = cursorPrice, cursorX = cursorX,
@@ -356,10 +364,9 @@ private fun KlineToolbar(
                 .weight(1f)
                 .horizontalScroll(rememberScrollState()),
         ) {
-            KlineSelector(symbol, symbols, onSymbolSelected)
-            KlineSelector(formatInterval(interval), intervals, onIntervalSelected) {
-                formatInterval(it)
-            }
+            KlineSelector(symbol, symbols, onSymbolSelected, modifier = Modifier.testTag("kline-symbol"))
+            KlineSelector(formatInterval(interval), intervals, onIntervalSelected,
+                modifier = Modifier.testTag("kline-interval"), optionLabel = { formatInterval(it) })
         }
         Box(Modifier.size(48.dp)) {
             IconButton(onClick = onRefresh, enabled = !isBusy, modifier = Modifier.fillMaxSize()) {
@@ -377,9 +384,10 @@ private fun KlineSelector(
     options: List<String>,
     onSelected: (String) -> Unit,
     optionLabel: (String) -> String = { it },
+    modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier) {
         TextButton(onClick = { expanded = true }) {
             Text(value, maxLines = 1)
             Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
@@ -538,11 +546,14 @@ internal fun KlineChart(
     var frozenTransform by remember { mutableStateOf<AlertChartTransform?>(null) }
     LaunchedEffect(drawingKind, cancelGesture) { firstDrawingPoint = null; drawingPointer = null; onDrawingStart(false) }
 
-    var visibleBars by remember { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(1f)) }
-    var rightOffsetBars by remember { mutableFloatStateOf(0f) }
-    var manualBounds by remember { mutableStateOf<PriceBounds?>(null) }
-    var previousLastTime by remember { mutableStateOf(timeIndex.lastOrNull()) }
-    var focusedAlertId by remember { mutableStateOf<Long?>(null) }
+    var visibleBars by rememberSaveable { mutableFloatStateOf(min(72, rows.size).toFloat().coerceAtLeast(1f)) }
+    var rightOffsetBars by rememberSaveable { mutableFloatStateOf(0f) }
+    var manualBounds by rememberSaveable(stateSaver = androidx.compose.runtime.saveable.Saver<PriceBounds?, List<Double>>(
+        save = { it?.let { bounds -> listOf(bounds.priceMin, bounds.priceMax) } ?: emptyList() },
+        restore = { if (it.size == 2) PriceBounds(it[0], it[1]) else null }
+    )) { mutableStateOf<PriceBounds?>(null) }
+    var previousLastTime by rememberSaveable { mutableStateOf(timeIndex.lastOrNull()) }
+    var focusedAlertId by rememberSaveable { mutableStateOf<Long?>(null) }
     var canvasWidth by remember { mutableIntStateOf(1) }
     var canvasHeight by remember { mutableIntStateOf(1) }
     val chartBackground = MaterialTheme.colorScheme.background
