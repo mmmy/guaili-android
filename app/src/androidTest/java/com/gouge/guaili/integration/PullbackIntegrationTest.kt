@@ -144,6 +144,49 @@ class PullbackIntegrationTest {
             assertTrue(requests.filter { it.requestUrl?.encodedPath == "/api/signals" }.all { it.requestUrl?.queryParameter("symbols") == null })
         }
     }
+    @Test fun entryPeriodOpensItsOwnKlineAndDivisorSavesCancelsAndRestores() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            await("pullback-entry-BTCUSDT-Long")
+            val entry = compose.onNodeWithTag("pullback-entry-BTCUSDT-Long")
+            entry.assertTextEquals("10m")
+            val bounds = entry.fetchSemanticsNode().boundsInRoot
+            val period = compose.onNodeWithTag("pullback-period-BTCUSDT-Long", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val minimum = 48f * context.resources.displayMetrics.density
+            assertTrue(bounds.width + 1 >= minimum && bounds.height + 1 >= minimum)
+            assertTrue("Period targets must not overlap", period.right <= bounds.left)
+            assertEquals("Periods should align vertically", period.center.y, bounds.center.y, 2f)
+            capture("pullback-entry-all")
+            entry.performTouchInput { click() }
+            compose.waitUntil(15000) { requests.any { it.requestUrl?.encodedPath == "/api/klines" } }
+            val query = requests.first { it.requestUrl?.encodedPath == "/api/klines" }.requestUrl!!
+            assertEquals("BTCUSDT", query.queryParameter("symbol")); assertEquals("10", query.queryParameter("intervals"))
+            compose.onNodeWithTag("pullback-evidence").assertDoesNotExist()
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack(); await("pullback-page")
+            compose.onNodeWithTag("pullback-target-BTCUSDT-Long").assertIsNotSelected()
+            compose.onNodeWithTag("pullback-parameters").performClick(); await("pullback-parameters-sheet")
+            compose.onNodeWithTag("pullback-entry-divisor").performScrollTo().performTextReplacement("0")
+            compose.onNodeWithTag("pullback-save").performScrollTo().performClick(); await("pullback-parameter-error")
+            assertEquals(20, runBlocking { prefs.preferences.first().pullback.rules.entryDivisor })
+            compose.onNodeWithTag("pullback-entry-divisor").performScrollTo().performTextReplacement("16")
+            compose.onNodeWithContentDescription("取消参数修改").performClick()
+            assertEquals(20, runBlocking { prefs.preferences.first().pullback.rules.entryDivisor })
+            compose.onNodeWithTag("pullback-parameters").performClick(); await("pullback-parameters-sheet")
+            compose.onNodeWithTag("pullback-entry-divisor").performScrollTo().performTextReplacement("16")
+            scenario.onActivity { activity ->
+                val keyboard = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                keyboard.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+            }
+            compose.onNodeWithTag("pullback-save").performScrollTo()
+            capture("pullback-entry-parameters")
+            compose.onNodeWithTag("pullback-save").performScrollTo().performClick()
+            compose.waitUntil(5000) { runBlocking { prefs.preferences.first().pullback.rules.entryDivisor == 16 } }
+            scenario.recreate(); await("pullback-entry-BTCUSDT-Long")
+            compose.onNodeWithTag("pullback-entry-BTCUSDT-Long").assertTextEquals("15m")
+            capture("pullback-entry-restored")
+            refresh()
+            compose.onNodeWithTag("pullback-target-BTCUSDT-Long").assertIsNotSelected()
+        }
+    }
     @Test fun deployedBackendSuppliesRealFullPeriodEvidence() {
         runBlocking { settings.save(savedSettings.copy(baseUrl = "http://139.180.203.107:3005/", autoRefreshSeconds = 60)) }
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {

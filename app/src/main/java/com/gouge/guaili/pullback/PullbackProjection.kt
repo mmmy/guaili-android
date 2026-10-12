@@ -26,6 +26,7 @@ internal data class PullbackCandidate(
     val strongCount: Int,
     /** References immutable evidence from this projection's original server snapshot. */
     val evidence: List<ServerIntervalEvidence>,
+    val entryInterval: String? = null,
 ) {
     val target: ServerIntervalEvidence get() = evidence.last()
 }
@@ -127,7 +128,8 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
                     abs(g) * 10 <= rules.reverseLimit -> PullbackPhase.Reverse; else -> PullbackPhase.Extended }
                 val highlight = phase == PullbackPhase.Touch && strength != PullbackStrength.Ordinary ||
                     phase == PullbackPhase.Reverse && strength == PullbackStrength.Strong
-                return PullbackCandidate(direction, strength, phase, highlight, count, evidence)
+                return PullbackCandidate(direction, strength, phase, highlight, count, evidence,
+                    MarketPeriods.nearestSmaller(pullbackPeriodMillis(target.interval)!!, rules.entryDivisor))
             }
             return null
         }

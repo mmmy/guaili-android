@@ -6,6 +6,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PullbackProjectionTest {
+    @Test fun fixedEntryPeriodsMatchDesktopAndChooseNearestStrictlySmaller() {
+        assertEquals(28, MarketPeriods.all.size)
+        MarketPeriods.all.forEach { assertEquals(it.durationMillis, pullbackPeriodMillis(it.interval)) }
+        assertTrue(MarketPeriods.all.zipWithNext().all { (a, b) -> a.durationMillis < b.durationMillis })
+        fun entry(period: String, divisor: Int = 20) = MarketPeriods.nearestSmaller(pullbackPeriodMillis(period)!!, divisor)
+        assertEquals("120", entry("2D")); assertEquals("180", entry("2D", 16))
+        assertEquals("120", entry("2D", 24)); assertEquals("2", entry("5", 2))
+        assertEquals("10S", entry("15S")); assertNull(entry("10S"))
+        assertNull(entry("2D", 0)); assertNull(entry("2D", 1001))
+    }
+    @Test fun projectionCachesRecommendedPeriodIndependentOfAvailableSmallEvidence() {
+        val base = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0))
+        val source = change(base) { row -> row.copy(perIntervalQuality =
+            row.perIntervalQuality.zip(listOf("10D", "W", "4D", "3D", "2D")).map { (e, period) -> e.copy(interval = period) }) }
+        assertEquals("120", project(source).rows.single().long!!.entryInterval)
+        assertEquals("180", project(source, PullbackRules(entryDivisor = 16)).rows.single().long!!.entryInterval)
+    }
     private val now = 1000000L
     private val device = GuailiDeviceTime(now, 100000, 1)
     private fun fixture(values: List<Double>): ServerSignalsSnapshot {

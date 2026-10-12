@@ -132,6 +132,10 @@ internal fun PullbackContent(
                             if (!prefs.onlyCandidates || candidate?.highlighted == true) PullbackTarget(
                                 row, direction, candidate,
                                 selection?.let { it.symbol == row.symbol && it.candidate.direction == direction } == true,
+                                onEntryKline = { interval ->
+                                    selection = null
+                                    onOpenKline(KlineTarget(row.symbol, interval))
+                                },
                             ) {
                                 if (selection?.let { it.symbol == row.symbol && it.candidate.direction == direction } == true) selection = null
                                 else if (candidate != null) {
@@ -219,7 +223,8 @@ private fun PullbackToolbarToggle(
 }
 
 @Composable
-private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candidate: PullbackCandidate?, isSelected: Boolean, onClick: () -> Unit) {
+private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candidate: PullbackCandidate?, isSelected: Boolean,
+    onEntryKline: (String) -> Unit, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val highlighted = candidate?.highlighted == true
     val directional = if (direction == PullbackDirection.Long) colors.secondary else colors.error
@@ -231,15 +236,30 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
         .clickable(enabled = candidate != null, role = Role.Button, onClick = onClick)
         .semantics { selected = isSelected }.testTag("pullback-target-${row.symbol}-${direction.name}")
         .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
+        Column {
             Text(direction.label, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-            Text(candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "—",
-                style = if (highlighted) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.headlineMedium,
-                fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
-                color = if (candidate == null) colors.onSurfaceVariant else periodColor,
-                modifier = Modifier.testTag("pullback-period-${row.symbol}-${direction.name}"))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "—",
+                    style = if (highlighted) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.headlineMedium,
+                    fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
+                    color = if (candidate == null) colors.onSurfaceVariant else periodColor,
+                    modifier = Modifier.testTag("pullback-period-${row.symbol}-${direction.name}"))
+                if (candidate != null) {
+                    val interval = candidate.entryInterval
+                    val label = remember(interval) { interval?.let(::pullbackPeriodLabel) ?: "—" }
+                    Box(Modifier.padding(start = 8.dp).sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .clickable(enabled = interval != null, role = Role.Button, onClickLabel = "打开入场小级别 K 线") {
+                            interval?.let(onEntryKline)
+                        }.semantics {
+                            contentDescription = if (interval == null) "无更小级别" else "${row.symbol} 入场参考 $label，打开 K 线"
+                        }.testTag("pullback-entry-${row.symbol}-${direction.name}"), contentAlignment = Alignment.Center) {
+                        Text(label, style = MaterialTheme.typography.titleMedium, color = colors.onSurfaceVariant,
+                            maxLines = 1, softWrap = false)
+                    }
+                }
+            }
         }
-        Column(Modifier.weight(1.25f).padding(start = 12.dp)) {
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(if (candidate == null) row.issue ?: "同向级数不足" else "乖离 ${signed(candidate.target.value)}",
                 style = MaterialTheme.typography.bodySmall, color = if (candidate == null && row.issue != null) colors.error else colors.onSurfaceVariant)
             candidate?.let { Text("${it.strength.label} · ${it.phase.label}", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant) }
@@ -289,6 +309,7 @@ private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit,
     var strong by rememberSaveable { mutableStateOf(rules.strongLevels.toString()) }
     var minimum by rememberSaveable { mutableStateOf(rules.minInterval) }
     var reverse by rememberSaveable { mutableStateOf(rules.reverseLimit.toString()) }
+    var entryDivisor by rememberSaveable { mutableStateOf(rules.entryDivisor.toString()) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -302,6 +323,8 @@ private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit,
             PullbackNumberField("强弱阈值 T（|乖离值| ≥ T）", threshold, { threshold = it }, "pullback-threshold")
             PullbackNumberField("强势所需背景级数 K", strong, { strong = it }, "pullback-strong-levels")
             Text("弱势：背景全部低于 T；强势：背景至少 K 级达到 T；其余为普通。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PullbackNumberField("入场倍数（回调周期 ÷ 倍数）", entryDivisor, { entryDivisor = it }, "pullback-entry-divisor")
+            Text("从固定周期中取最接近的更小级别，例如 2D ÷ 20 → 2H。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton({ advanced = !advanced }, Modifier.testTag("pullback-advanced")) { Text(if (advanced) "收起高级参数" else "高级参数") }
             if (advanced) {
                 OutlinedTextField(minimum, { minimum = it }, label = { Text("最小目标级别（分钟 / S / D / W）") }, singleLine = true,
@@ -313,7 +336,8 @@ private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit,
                 TextButton(onDismiss) { Text("取消") }
                 Button({
                     val parsed = PullbackRules(levels.toIntOrNull() ?: -1, threshold.toIntOrNull() ?: -1,
-                        strong.toIntOrNull() ?: -1, minimum.trim().uppercase(), reverse.toIntOrNull() ?: -1)
+                        strong.toIntOrNull() ?: -1, minimum.trim().uppercase(), reverse.toIntOrNull() ?: -1,
+                        entryDivisor.toIntOrNull() ?: -1)
                     error = parsed.error()
                     if (error == null) onSave(parsed)
                 }, Modifier.testTag("pullback-save")) { Text("保存") }

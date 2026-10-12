@@ -16,9 +16,15 @@ class PullbackPreferencesTest {
     }
     @Test fun allRulesAndSwitchesRoundTripWithoutChangingTableOrV2Preferences() {
         val prefs = MarketSignalPreferences(view = MarketView.Pullback, symbols = listOf("BTCUSDT"), onlySignalCells = true,
-            pullback = PullbackPreferences(PullbackRules(7, 20, 3, "15", 2), true, true))
+            pullback = PullbackPreferences(PullbackRules(7, 20, 3, "15", 2, 16), true, true))
         assertEquals(prefs, json.decodeFromString<MarketSignalPreferences>(json.encodeToString(prefs)))
         assertNull(prefs.pullback.rules.error())
         assertNotNull(PullbackRules(levels = 1).error()); assertNotNull(PullbackRules(reverseLimit = -1).error())
+    }
+    @Test fun entryDivisorMigratesAndRejectsInvalidValues() {
+        val old = json.decodeFromString<PullbackPreferences>("""{"rules":{"levels":5,"threshold":10,"strongLevels":2}}""")
+        assertEquals(20, old.rules.entryDivisor)
+        for (divisor in listOf(0, 1, 1001)) assertNotNull(PullbackRules(entryDivisor = divisor).error())
+        for (divisor in listOf(2, 20, 1000)) assertNull(PullbackRules(entryDivisor = divisor).error())
     }
 }

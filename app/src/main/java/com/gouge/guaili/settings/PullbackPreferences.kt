@@ -10,6 +10,7 @@ internal data class PullbackRules(
     val strongLevels: Int = 2,
     val minInterval: String = "1",
     val reverseLimit: Int = 3,
+    val entryDivisor: Int = 20,
 ) {
     fun error(): String? = when {
         levels !in 2..64 -> "连续级数须为 2–64"
@@ -17,6 +18,7 @@ internal data class PullbackRules(
         strongLevels !in 1 until levels -> "强势级数须为 1–${levels - 1}，只计背景级别"
         pullbackPeriodMillis(minInterval) == null -> "最小级别请输入分钟数字或 S / D / W，例如 1、15、30S、D"
         reverseLimit !in 0..1000 -> "反向容差须为 0–1000"
+        entryDivisor !in 2..1000 -> "入场倍数须为 2–1000"
         else -> null
     }
 }
