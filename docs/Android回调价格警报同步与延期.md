@@ -63,3 +63,11 @@
 [GuailiAndroid-v0.5.0.apk](../dist/pullback-price-alerts/GuailiAndroid-v0.5.0.apk) 为 Release 构建，沿用现有开发证书，v2/v3 签名验证通过。可覆盖安装同证书旧版并保留配置；不是生产发布证书。此前版本包保留，最终校验和、日志与测试摘要见同目录 `build-manifest.json` 和 `使用说明.txt`。
 
 模拟器使用本次新建的独立 AVD；安装前备份记录在 `build/device-backups/`，每个集成测试恢复原设置和缓存。未覆盖用户原有手机/模拟器的安装或清空应用数据。
+
+## 0.5.1 回调行精简（2026-10-14）
+
+按用户反馈移除主行上方重复的“多头／空头”文字与额外 Column。多上空下及多绿空红保留，级别朗读补齐方向；主级别 32/28sp、小级别 16sp、独立触摸区域 48dp 保留。主行最小高度改为 64dp，上下内距各 8dp；窄屏大字体仍自然增高，依据标题和警报意图保留方向。长期约定已同步 PRODUCT、DESIGN 及回调局部规范。
+
+Release 构建与 lintDebug 通过（0 错误、46 条现存警告），签名 v2/v3、zipalign、版本号 0.5.1 / 8 检查通过。最终签名包在独立 QA 模拟器覆盖安装，普通手机 3 项原生集成测试通过：警报分组/主显示持久化/准确 K 线跳转、候选筛选/选择撤销/刷新不复选、推荐小周期及参数保存/取消/重建。360dp/150%、320dp/150%、宽屏/130% 各 1 项警报分组与导航测试通过，累计 6 项；系统日夜模式均覆盖。截图批量核查文字层次、换行和对齐，无需二次修改。测试请求使用隔离服务，不修改线上记录。未使用物理手机验证。
+
+[普通手机](assets/pullback-compact/main-phone.png) · [360dp / 150%](assets/pullback-compact/main-narrow360.png) · [320dp / 150%](assets/pullback-compact/main-narrow320.png) · [宽屏 / 130%](assets/pullback-compact/main-wide.png)。构建日志 `build/pullback-compact-build.log`，集成日志 `build/pullback-compact/*-tests.log`；[签名安装包](../dist/pullback-compact/GuailiAndroid-v0.5.1.apk) 及同目录 `build-manifest.json` 提供校验和与验证摘要。

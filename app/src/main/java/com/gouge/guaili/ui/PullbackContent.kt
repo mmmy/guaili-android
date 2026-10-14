@@ -325,16 +325,17 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
         .background(if (highlighted) colors.surfaceVariant else Color.Transparent, shape).then(selectedBorder)
         .clickable(enabled = candidate != null, role = Role.Button, onClick = onClick)
         .semantics { selected = isSelected }.testTag("pullback-target-${row.symbol}-${direction.name}")
-        .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp)) {
+        .heightIn(min = 64.dp).padding(horizontal = 12.dp, vertical = 8.dp)) {
         val stacked = maxWidth / LocalDensity.current.fontScale < 280.dp
-        val label: @Composable () -> Unit = { Column {
-            Text(direction.label, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        val label: @Composable () -> Unit = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "—",
                     style = if (highlighted) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.headlineMedium,
                     fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
                     color = if (candidate == null) colors.onSurfaceVariant else periodColor,
-                    modifier = Modifier.testTag("pullback-period-${row.symbol}-${direction.name}"))
+                    modifier = Modifier.semantics {
+                        contentDescription = "${direction.label}，回调级别 ${candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "无"}"
+                    }.testTag("pullback-period-${row.symbol}-${direction.name}"))
                 if (candidate != null) {
                     val interval = candidate.entryInterval
                     val label = remember(interval) { interval?.let(::pullbackPeriodLabel) ?: "—" }
@@ -349,7 +350,7 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
                     }
                 }
             }
-        } }
+        }
         if (stacked) Column {
             label()
             if (candidate == null) Text(row.issue ?: "同向级数不足", style = MaterialTheme.typography.bodySmall, color = colors.error)

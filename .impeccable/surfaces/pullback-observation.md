@@ -11,11 +11,11 @@ Mode: Operate. 继承 [PRODUCT.md](../../PRODUCT.md) 与 [DESIGN.md](../../DESIG
 
 ## 观察重点与布局
 
-入口为「行情 → 回调观察」，与表格、V2 并列。每品种多头在上、空头在下，目标级别直接表达方向与候选重要性。品种用于定位；乖离、强度、阶段、参数摘要和控件保持辅助层。此层次与多绿空红只适用于回调页，不改矩阵、V2、K 线和小组件已有语义。
+入口为「行情 → 回调观察」，与表格、V2 并列。每品种多头在上、空头在下，目标级别直接表达方向与候选重要性。2026-10-14 用户要求移除主行上方重复的“多头／空头”文字，节省纵向空间；候选筛选只剩一行时仍有方向色及无障碍描述，依据标题与警报意图保留方向。品种用于定位；乖离、强度、阶段、参数摘要和控件保持辅助层。此层次与多绿空红只适用于回调页，不改矩阵、V2、K 线和小组件已有语义。
 
-候选目标为 Material 3 headlineLarge（32sp / Bold），等待目标为 headlineMedium（28sp / Medium）。多头映射 secondary（当前 #A7F3D0），空头映射 error（当前 #FFB4AB）；候选直接使用方向色，等待从 onSurfaceVariant 向方向色混合 55%。候选背景 surfaceVariant 为中性 #202832，等待背景透明；选中以 primary 的 1dp 边框单独表达。品种 labelMedium 与乖离／说明 bodySmall 为 12sp，方向及采样时间 labelSmall 为 11sp；辅助信息用 onSurfaceVariant，错误与不可用原因保持 error 可读。
+候选目标为 Material 3 headlineLarge（32sp / Bold），等待目标为 headlineMedium（28sp / Medium）。多头映射 secondary（当前 #A7F3D0），空头映射 error（当前 #FFB4AB）；候选直接使用方向色，等待从 onSurfaceVariant 向方向色混合 55%。候选背景 surfaceVariant 为中性 #202832，等待背景透明；选中以 primary 的 1dp 边框单独表达。品种 labelMedium 与乖离／说明 bodySmall 为 12sp，采样时间 labelSmall 为 11sp；辅助信息用 onSurfaceVariant，错误与不可用原因保持 error 可读。
 
-应用在系统日夜模式下均沿用独立深色 GuailiTheme。目标行圆角 12dp、最小高度 72dp、横向内距 12dp、纵向内距 10dp；文字放大可增高。2026-10-12 用户确认工具栏只保留一行：级数参数入口、候选、声音、刷新，固定 56dp 高，控件至少 48dp、间距 8dp。候选／声音为图标＋短标签的 IconToggleButton，可直接切换；开启时使用 primary 16% 淡色底层／primary 原色文字，以及勾选／发声图标。保留完整无障碍名称和开关状态。移除重复观察标题及常驻规则摘要，完整参数在级数入口查看。窄屏、大字体也不换行；宽度／fontScale 小于 220dp 时参数入口省略 Tune 图标，级数与下拉标记始终可见。宽屏沿用导航侧栏，观察内容居中且最大 760dp。按品种稳定键复用 LazyColumn；底部面板可滚动，参数避让输入法。
+应用在系统日夜模式下均沿用独立深色 GuailiTheme。目标行圆角 12dp、最小高度 64dp、横向内距 12dp、纵向内距 8dp；文字放大可增高。2026-10-12 用户确认工具栏只保留一行：级数参数入口、候选、声音、刷新，固定 56dp 高，控件至少 48dp、间距 8dp。候选／声音为图标＋短标签的 IconToggleButton，可直接切换；开启时使用 primary 16% 淡色底层／primary 原色文字，以及勾选／发声图标。保留完整无障碍名称和开关状态。移除重复观察标题及常驻规则摘要，完整参数在级数入口查看。窄屏、大字体也不换行；宽度／fontScale 小于 220dp 时参数入口省略 Tune 图标，级数与下拉标记始终可见。宽屏沿用导航侧栏，观察内容居中且最大 760dp。按品种稳定键复用 LazyColumn；底部面板可滚动，参数避让输入法。
 
 ## 参数、判定与质量
 
