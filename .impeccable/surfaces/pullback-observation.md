@@ -11,6 +11,8 @@ Mode: Operate. 继承 [PRODUCT.md](../../PRODUCT.md) 与 [DESIGN.md](../../DESIG
 
 ## 观察重点与布局
 
+2026-10-14 用户确认：正常无合格目标时只保留 `—`，不显示“同向级数不足”等说明。只有异常原因可在无目标行显示；窄屏纵向布局与常规横向布局一致，原警报内容和触摸区域保留。
+
 入口为「行情 → 回调观察」，与表格、V2 并列。每品种多头在上、空头在下，目标级别直接表达方向与候选重要性。2026-10-14 用户要求移除主行上方重复的“多头／空头”文字，节省纵向空间；候选筛选只剩一行时仍有方向色及无障碍描述，依据标题与警报意图保留方向。品种用于定位；乖离、强度、阶段、参数摘要和控件保持辅助层。此层次与多绿空红只适用于回调页，不改矩阵、V2、K 线和小组件已有语义。
 
 候选目标为 Material 3 headlineLarge（32sp / Bold），等待目标为 headlineMedium（28sp / Medium）。多头映射 secondary（当前 #A7F3D0），空头映射 error（当前 #FFB4AB）；候选直接使用方向色，等待从 onSurfaceVariant 向方向色混合 55%。候选背景 surfaceVariant 为中性 #202832，等待背景透明；选中以 primary 的 1dp 边框单独表达。品种 labelMedium 与乖离／说明 bodySmall 为 12sp，采样时间 labelSmall 为 11sp；辅助信息用 onSurfaceVariant，错误与不可用原因保持 error 可读。

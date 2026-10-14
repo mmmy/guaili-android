@@ -353,12 +353,12 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
         }
         if (stacked) Column {
             label()
-            if (candidate == null) Text(row.issue ?: "同向级数不足", style = MaterialTheme.typography.bodySmall, color = colors.error)
+            if (candidate == null) row.issue?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
             alertContent()
         } else Row(verticalAlignment = Alignment.CenterVertically) {
             label()
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                if (candidate == null) Text(row.issue ?: "同向级数不足", style = MaterialTheme.typography.bodySmall, color = colors.error)
+                if (candidate == null) row.issue?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
                 alertContent()
             }
         }
