@@ -120,7 +120,7 @@ class ServerSignalsViewModelTest {
         } finally { vm.close() }
     }
 
-    @Test fun slowPhoneRefreshStillExpiresOldSignalsAndAllowsManualRefresh() = runTest {
+    @Test fun slowPhoneRefreshKeepsSignalsBetweenScheduledRequestsAndAllowsManualRefresh() = runTest {
         val settings = Settings()
         settings.save(settings.settings.value.copy(autoRefreshSeconds = 60))
         val cache = Cache { testScheduler.currentTime }
@@ -135,8 +135,8 @@ class ServerSignalsViewModelTest {
             assertEquals(1, vm.state.value.presentation.signals.size)
             advanceTimeBy(16_000); runCurrent()
             assertEquals(1, calls)
-            assertEquals("stale", vm.state.value.presentation.status)
-            assertTrue(vm.state.value.presentation.signals.isEmpty())
+            assertEquals("ready", vm.state.value.presentation.status)
+            assertEquals(1, vm.state.value.presentation.signals.size)
             vm.refresh(); runCurrent()
             assertEquals(2, calls)
             assertEquals(1, vm.state.value.presentation.signals.size)
@@ -170,6 +170,52 @@ class ServerSignalsViewModelTest {
         } finally { vm.close() }
     }
 
+    @Test fun thirtySecondRefreshRetainsPullbacksDuringRequestThenExpiresAndRebuildsWhenIntervalChanges() = runTest {
+        val settings = Settings()
+        settings.save(settings.settings.value.copy(autoRefreshSeconds = 30))
+        val cache = Cache { testScheduler.currentTime }
+        val waiting = CompletableDeferred<GuailiResult<ServerSignalsResponse>>()
+        var calls = 0
+        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+            ServerSignalsFetcherFactory { ServerSignalsFetcher {
+                if (++calls > 1) waiting.await() else {
+                    val at = now + testScheduler.currentTime
+                    val source = response(at)
+                    GuailiResult.Success(source.copy(qualityConfig = ServerSignalQualityConfig(30_000, 15_000),
+                        results = source.results.map { row -> row.copy(perIntervalQuality =
+                            listOf(0.8, 0.6, 0.5, 0.3, 0.0).mapIndexed { i, g ->
+                                ServerIntervalEvidence((5-i).toString(), "ready", value = (g*10).toInt(), guaili = g,
+                                    marketEventTime = at, isClosed = false)
+                            }) }))
+                }
+            } }, cache,
+        ))
+        try {
+            runCurrent(); vm.setForeground(true); runCurrent()
+            assertEquals(1, calls)
+            advanceTimeBy(31_000); runCurrent()
+            assertEquals(2, calls)
+            assertTrue(vm.state.value.isRefreshing)
+            assertEquals("ready", vm.state.value.presentation.status)
+            assertTrue(vm.state.value.pullbacks.rows.first().hasCandidate)
+            advanceTimeBy(11_000); runCurrent()
+            assertTrue(vm.state.value.pullbacks.ready) // Exact 42-second boundary remains valid.
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals("stale", vm.state.value.presentation.status)
+            assertEquals("手机刷新超时，请检查连接后刷新", vm.state.value.pullbacks.message)
+            assertFalse(vm.state.value.pullbacks.ready)
+            waiting.complete(GuailiResult.Failure("offline")); runCurrent()
+            settings.save(settings.settings.value.copy(autoRefreshSeconds = 60)); runCurrent()
+            assertEquals(2, calls)
+            assertTrue(vm.state.value.pullbacks.ready)
+            assertEquals("ready", vm.state.value.presentation.status)
+            settings.save(settings.settings.value.copy(autoRefreshSeconds = 5)); runCurrent()
+            assertEquals(2, calls)
+            assertFalse(vm.state.value.pullbacks.ready)
+            assertEquals("stale", vm.state.value.presentation.status)
+        } finally { vm.close() }
+    }
+
     @Test fun failedRefreshKeepsValidCacheAndExpiryTimerHidesItWithoutAnotherResponse() = runTest {
         val cache = Cache()
         var calls = 0
@@ -186,7 +232,7 @@ class ServerSignalsViewModelTest {
             assertEquals(1, vm.state.value.presentation.signals.size)
             assertTrue(vm.state.value.presentation.warning!!.contains("offline"))
             assertEquals("offline", vm.state.value.refreshError)
-            cache.time = cache.time.copy(elapsedMillis = 116_000)
+            cache.time = cache.time.copy(elapsedMillis = 118_000)
             advanceTimeBy(1_000); runCurrent()
             assertEquals("stale", vm.state.value.presentation.status)
             assertTrue(vm.state.value.presentation.signals.isEmpty())

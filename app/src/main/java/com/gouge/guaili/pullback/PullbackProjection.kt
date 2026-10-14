@@ -48,7 +48,7 @@ internal data class PullbackProjection(
 
 /** Mirrors the desktop rules. Missing/filtered/duplicated levels occupy their axis position. */
 internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackRules,
-    symbols: List<String>, device: GuailiDeviceTime?): PullbackProjection {
+    symbols: List<String>, device: GuailiDeviceTime?, refreshIntervalMillis: Long? = null): PullbackProjection {
     val response = snapshot?.response
     val universe = (symbols + response?.results.orEmpty().map { it.symbol }).distinct()
     fun unavailable(message: String) = PullbackProjection(universe.map { PullbackRow(it, issue = message) }, message)
@@ -64,15 +64,26 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
     if (quality.maxResultAgeMs !in 1..86400000 || quality.maxMarketAgeMs !in 1..86400000)
         return unavailable("服务端有效期信息无效")
     val lifetime = quality.maxResultAgeMs
+    val cacheLifetime = serverSignalsPhoneCacheLifetime(response, refreshIntervalMillis)
+    val evidenceTime = serverSignalsEvidenceTime(response, now, refreshIntervalMillis)
     val sampled = response.evaluatedAt
-    if (time.cacheAgeMillis == null || time.cacheAgeMillis > lifetime || sampled == null ||
-        sampled <= 0 || sampled > now + 2000 || now - sampled > lifetime)
-        return unavailable("行情快照过期或采样时间异常，请刷新")
+    if (sampled == null || sampled <= 0)
+        return unavailable("后端尚无有效采样，请刷新")
+    if (sampled > evidenceTime + 2000)
+        return unavailable("后端采样时间异常，请刷新")
+    if (evidenceTime - sampled > lifetime)
+        return unavailable("后端采样停滞，请检查后端服务")
+    if (time.cacheAgeMillis == null || time.cacheAgeMillis > cacheLifetime)
+        return unavailable("手机刷新超时，请检查连接后刷新")
     if (response.candleMode != "live" || response.evaluationMode != "sampled_live" ||
         response.ruleVersion !in listOf("", "live-v1") || response.status !in listOf("ready", "degraded", "warming_up"))
         return unavailable("服务器状态暂不可判断，请检查版本")
-    var deadline = response.serverTime + lifetime + 1
+    var deadline = response.serverTime + cacheLifetime + 1
     fun expires(at: Long, span: Long) {
+        // Foreground evidence is validated at response time and retained until
+        // the next configured refresh plus request allowance. It does not age
+        // independently and disappear halfway through a healthy polling cycle.
+        if (refreshIntervalMillis != null) return
         val end = at + span + 1
         if (end > now && end < deadline) deadline = end
         // Evidence with a future market timestamp becomes usable when it enters the allowed skew.
@@ -85,8 +96,8 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
         val matches = bySymbol[symbol].orEmpty()
         if (matches.size != 1) return@map PullbackRow(symbol, issue = "缺少或重复的品种证据")
         val row = matches.single()
-        if (row.sampledAt <= 0 || row.sampledAt > now + 2000 || now - row.sampledAt > lifetime)
-            return@map PullbackRow(symbol, issue = "品种快照过期")
+        if (row.sampledAt <= 0 || row.sampledAt > evidenceTime + 2000 || evidenceTime - row.sampledAt > lifetime)
+            return@map PullbackRow(symbol, issue = "品种采样异常或停滞")
         if (row.dataStatus !in listOf("ready", "degraded", "warming_up"))
             return@map PullbackRow(symbol, issue = when (row.dataStatus) {
                 "stale" -> "行情过期"; "recovering" -> "行情恢复中"; "filtered" -> "级别已过滤"; else -> "行情暂不可用"
@@ -106,7 +117,7 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
             val at = e.marketEventTime ?: return false
             return e.availability == "ready" && e.isClosed == false && g.isFinite() &&
                 g * 10 >= Int.MIN_VALUE && g * 10 <= Int.MAX_VALUE && e.value == (g * 10).toInt() &&
-                at > 0 && at <= now + 2000 && now - at <= quality.maxMarketAgeMs
+                at > 0 && at <= evidenceTime + 2000 && evidenceTime - at <= quality.maxMarketAgeMs
         }
         val ordered = axis.values.reversed().map { it?.takeIf(::eligible) }
         fun detect(direction: PullbackDirection): PullbackCandidate? {

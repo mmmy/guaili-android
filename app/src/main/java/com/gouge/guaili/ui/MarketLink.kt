@@ -1,10 +1,10 @@
 package com.gouge.guaili.ui
 
 import com.gouge.guaili.domain.guailiIntervalDurationMillis
+import com.gouge.guaili.data.serverSignalsResultLifetime
 import com.gouge.guaili.settings.MarketView
 import com.gouge.guaili.signals.ServerSignalItem
 import com.gouge.guaili.signals.serverSignalKind
-import com.gouge.guaili.signals.serverSignalsCacheLifetime
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -63,8 +63,8 @@ internal fun marketSignalSummaries(state: MarketSignalsUiState, symbols: List<St
             state.preferences.kinds.isEmpty() -> "类型已关闭"
             state.presentation.status !in setOf("ready", "degraded") -> state.presentation.message
             row == null -> "服务器未计算"
-            state.presentation.nowMillis != null && row.sampledAt > 0 &&
-                state.presentation.nowMillis - row.sampledAt > serverSignalsCacheLifetime(state.snapshot!!.response) -> "采样过期"
+            row.sampledAt > 0 &&
+                state.snapshot.response.serverTime - row.sampledAt > serverSignalsResultLifetime(state.snapshot.response) -> "采样过期"
             row.dataStatus == "stale" -> "数据过期"
             row.dataStatus == "recovering" -> "恢复中"
             row.dataStatus == "warming_up" -> "预热中"

@@ -101,6 +101,7 @@ internal fun serverSignalsState(
     config: ServerSignalDisplayConfig,
     baseUrl: String,
     deviceTime: GuailiDeviceTime,
+    refreshIntervalMillis: Long? = null,
 ): ServerSignalsState {
     val failureMessage = failure?.takeIf {
         normalizeServerSignalsBaseUrl(it.baseUrl) == normalizeServerSignalsBaseUrl(baseUrl) &&
@@ -124,20 +125,33 @@ internal fun serverSignalsState(
         return ServerSignalsState("time_uncertain", time.unavailableReason ?: "时间暂不可确认", "刷新后重新校准时间",
             fetchedAt = time.fetchedAtMillis)
     }
-    val lifetime = serverSignalsCacheLifetime(response)
+    val lifetime = if (refreshIntervalMillis == null) serverSignalsCacheLifetime(response) else serverSignalsResultLifetime(response)
+    val cacheLifetime = if (refreshIntervalMillis == null) lifetime else serverSignalsPhoneCacheLifetime(response, refreshIntervalMillis)
+    val evidenceTime = serverSignalsEvidenceTime(response, now, refreshIntervalMillis)
     val evaluatedAt = response.evaluatedAt
-    if (time.cacheAgeMillis == null || time.cacheAgeMillis > lifetime ||
-        evaluatedAt != null && (evaluatedAt > now + 2_000L || now - evaluatedAt > lifetime)) {
-        val cached = time.cacheAgeMillis == null || time.cacheAgeMillis > lifetime
-        val future = evaluatedAt != null && evaluatedAt > now + 2_000L
+    if (time.cacheAgeMillis == null || time.cacheAgeMillis > cacheLifetime ||
+        evaluatedAt != null && (evaluatedAt <= 0 || evaluatedAt > evidenceTime + 2_000L || evidenceTime - evaluatedAt > lifetime)) {
+        val future = evaluatedAt != null && (evaluatedAt <= 0 || evaluatedAt > evidenceTime + 2_000L)
+        val samplingStale = evaluatedAt != null && evidenceTime - evaluatedAt > lifetime
+        if (refreshIntervalMillis == null) {
+            val cached = time.cacheAgeMillis == null || time.cacheAgeMillis > cacheLifetime
+            return ServerSignalsState("stale",
+                when { future -> "服务器采样时间异常，暂无法判断信号";
+                    cached -> "手机快照已过期，请刷新"; else -> "服务器采样结果已过期，暂无法判断信号" },
+                when { future -> "采样时间晚于服务器校准时间";
+                    cached -> "刷新获取最新快照"; else -> "等待服务器恢复采样" },
+                warning = failureMessage, sampledAt = evaluatedAt, fetchedAt = time.fetchedAtMillis, nowMillis = now,
+                qualityLabel = when { future -> "时间异常"; cached -> "快照过期"; else -> "采样超时" },
+                compactQualityLabel = when { future -> "时间异常"; cached -> "缓存旧"; else -> "采样旧" })
+        }
         return ServerSignalsState("stale",
             when { future -> "服务器采样时间异常，暂无法判断信号";
-                cached -> "手机快照已过期，请刷新"; else -> "服务器采样结果已过期，暂无法判断信号" },
+                samplingStale -> "后端采样停滞，请检查后端服务"; else -> "手机刷新超时，请检查连接后刷新" },
             when { future -> "采样时间晚于服务器校准时间";
-                cached -> "刷新获取最新快照"; else -> "等待服务器恢复采样" },
+                samplingStale -> "等待服务器恢复采样"; else -> "刷新获取最新快照" },
             warning = failureMessage, sampledAt = evaluatedAt, fetchedAt = time.fetchedAtMillis, nowMillis = now,
-            qualityLabel = when { future -> "时间异常"; cached -> "快照过期"; else -> "采样超时" },
-            compactQualityLabel = when { future -> "时间异常"; cached -> "缓存旧"; else -> "采样旧" })
+            qualityLabel = when { future -> "时间异常"; samplingStale -> "采样停滞"; else -> "刷新超时" },
+            compactQualityLabel = when { future -> "时间异常"; samplingStale -> "采样旧"; else -> "缓存旧" })
     }
     if (response.candleMode != "live" || response.status !in setOf("ready", "degraded", "warming_up")) {
         return ServerSignalsState("unknown", "服务器状态暂不可判断", "刷新或检查服务器版本",
@@ -147,7 +161,7 @@ internal fun serverSignalsState(
     val missing = config.symbols.filter { symbol -> selected.none { it.symbol == symbol } }
     val signals = if (evaluatedAt == null) emptyList() else selected.flatMap { row ->
         if (row.dataStatus !in setOf("ready", "degraded") || row.sampledAt <= 0L ||
-            row.sampledAt > now + 2_000L || now - row.sampledAt > lifetime) emptyList()
+            row.sampledAt > evidenceTime + 2_000L || evidenceTime - row.sampledAt > lifetime) emptyList()
         else serverSignalCandidates(row.signals.filter { signal ->
             serverSignalKind(signal.kind) in config.enabledSignalKinds && validServerSignal(signal) &&
                 signal.runs.flatMap { it.intervals }.all { interval ->

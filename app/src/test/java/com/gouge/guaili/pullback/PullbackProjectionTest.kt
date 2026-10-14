@@ -85,6 +85,39 @@ class PullbackProjectionTest {
         assertEquals(now + 15001, project(s).nextChangeAt)
         assertTrue(project(s.copy(response = s.response.copy(status = "degraded"))).rows.single().hasCandidate)
     }
+    @Test fun phoneKeepsEvidenceAcrossThirtyAndSixtySecondPollingCyclesThenTimesOut() {
+        val s = fixture(listOf(0.8, 0.6, 0.5, 0.3, 0.0))
+        for (interval in listOf(30_000L, 60_000L)) {
+            fun at(elapsed: Long) = projectPullbacks(s, PullbackRules(), listOf("BTCUSDT"),
+                device.copy(elapsedMillis = device.elapsedMillis + elapsed), interval)
+            for (elapsed in listOf(16_000L, interval, interval + 12_000)) {
+                val p = at(elapsed)
+                assertTrue(p.ready)
+                assertTrue("Polling interval must also preserve per-period market evidence", p.rows.single().hasCandidate)
+            }
+            assertEquals(now + interval + 12_001, at(0).nextChangeAt)
+            assertEquals("手机刷新超时，请检查连接后刷新", at(interval + 12_001).message)
+            assertFalse(at(interval + 12_001).ready)
+        }
+    }
+    @Test fun longPhoneIntervalNeverMakesAlreadyStaleServerEvidenceValid() {
+        val s = fixture(listOf(0.8, 0.6, 0.5, 0.3, 0.0))
+        fun phone(snapshot: ServerSignalsSnapshot) = projectPullbacks(snapshot, PullbackRules(),
+            listOf("BTCUSDT"), device, 60_000)
+        assertEquals("后端采样停滞，请检查后端服务",
+            phone(s.copy(response = s.response.copy(evaluatedAt = now - 15_001))).message)
+        assertEquals("后端采样时间异常，请刷新",
+            phone(s.copy(response = s.response.copy(evaluatedAt = now + 2_001))).message)
+        assertFalse(phone(s.copy(response = s.response.copy(evaluatedAt = null))).ready)
+        val staleSymbol = phone(change(s) { it.copy(sampledAt = now - 15_001) }).rows.single()
+        assertEquals("品种采样异常或停滞", staleSymbol.issue)
+        assertFalse(staleSymbol.hasCandidate)
+        val staleMarket = phone(change(s) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.map {
+            it.copy(marketEventTime = now - 30_001)
+        }) }).rows.single()
+        assertFalse(staleMarket.hasCandidate)
+        assertNotNull(staleMarket.issue)
+    }
     @Test fun candidateSoundIsBatchedDeduplicatedAndUnknownDoesNotRearm() {
         val s = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0))
         val p = project(s)

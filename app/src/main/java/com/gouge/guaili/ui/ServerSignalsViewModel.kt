@@ -57,6 +57,7 @@ internal class ServerSignalsViewModel(
     private var projectedRules: PullbackRules? = null
     private var projectedSymbols: List<String> = emptyList()
     private var projectedBoot: Int? = null
+    private var projectedRefreshIntervalMillis: Long? = null
     private var projection: PullbackProjection = PullbackProjection()
 
     init {
@@ -198,18 +199,21 @@ internal class ServerSignalsViewModel(
         val symbols = preferences.symbols ?: settings.symbols
         val device = snapshotSource.currentDeviceTime()
         val display = if (device == null) ServerSignalsState("time_uncertain", "时间暂不可确认，请刷新", "刷新后重新校准时间")
-            else serverSignalsState(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds), settings.baseUrl, device)
+            else serverSignalsState(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds), settings.baseUrl, device,
+                refreshIntervalMillis())
         val now = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device).nowMillis else null
         val rules = preferences.pullback.rules
         // Reuse sorted evidence between responses; expiry only rebuilds at a quality boundary.
         if (projectedSnapshot !== snapshot || projectedRules != rules || projectedSymbols != settings.symbols ||
-            projectedBoot != device?.bootCount || now == null && projection.ready ||
+            projectedBoot != device?.bootCount || projectedRefreshIntervalMillis != refreshIntervalMillis() ||
+            now == null && projection.ready ||
             projection.nextChangeAt?.let { now != null && now >= it } == true) {
-            projection = projectPullbacks(snapshot, rules, settings.symbols, device)
+            projection = projectPullbacks(snapshot, rules, settings.symbols, device, refreshIntervalMillis())
             projectedSnapshot = snapshot
             projectedRules = rules
             projectedSymbols = settings.symbols
             projectedBoot = device?.bootCount
+            projectedRefreshIntervalMillis = refreshIntervalMillis()
         }
         val appeared = alerts.observe(projection)
         if (appeared && foreground && pullbackActive && preferences.pullback.soundEnabled) mutablePullbackAlerts.tryEmit(Unit)

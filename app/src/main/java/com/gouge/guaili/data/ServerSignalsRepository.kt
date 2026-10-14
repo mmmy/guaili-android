@@ -38,7 +38,8 @@ class ServerSignalsRepository(private val api: ServerSignalsApiService) {
         private val wireJson = Json { ignoreUnknownKeys = true }
         private val sharedClient by lazy {
             OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
+                .readTimeout(8, TimeUnit.SECONDS)
+                .callTimeout(SERVER_SIGNALS_REQUEST_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS).build()
         }
         fun create(baseUrl: String): ServerSignalsRepository {
             val retrofit = Retrofit.Builder()
