@@ -40,7 +40,9 @@ internal class MarketSignalPreferencesStore(context: Context) : MarketSignalPref
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun decode(raw: String?) = raw?.let {
-        runCatching { json.decodeFromString<MarketSignalPreferences>(it) }.getOrNull()
+        runCatching { json.decodeFromString<MarketSignalPreferences>(it).let { prefs ->
+            if (prefs.pullback.extensionBars in 1..1000) prefs else prefs.copy(pullback = prefs.pullback.copy(extensionBars = 20))
+        } }.getOrNull()
     } ?: MarketSignalPreferences()
 
     override val preferences = store.data.catch { error ->

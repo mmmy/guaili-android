@@ -41,6 +41,7 @@ internal fun calculatePriceBounds(
     viewport: KlineViewport,
     showChannel: Boolean,
     selectedGeometry: PriceAlertGeometry? = null,
+    includeFutureGeometry: Boolean = false,
 ): PriceBounds {
     var minimum = Double.POSITIVE_INFINITY
     var maximum = Double.NEGATIVE_INFINITY
@@ -67,6 +68,10 @@ internal fun calculatePriceBounds(
         if (selectedGeometry.first.timeMs in firstTime..lastTime) include(selectedGeometry.first.price)
         if (selectedGeometry.second.timeMs in firstTime..lastTime) include(selectedGeometry.second.price)
     }
+    if (includeFutureGeometry && selectedGeometry?.valid() == true) {
+        include(selectedGeometry.first.price)
+        include(selectedGeometry.second.price)
+    }
     if (!minimum.isFinite() || !maximum.isFinite()) return PriceBounds(0.0, 1.0)
     val center = minimum / 2.0 + maximum / 2.0
     val minSpan = minimumPriceSpan(center)
@@ -77,10 +82,10 @@ internal fun calculatePriceBounds(
 }
 
 /** A historical time anchor stays on the same bars when a live candle is appended. */
-internal fun reconcileKlineRightOffset(previousLastTime: Long?, times: LongArray, visibleBars: Float, offset: Float): Float {
+internal fun reconcileKlineRightOffset(previousLastTime: Long?, times: LongArray, visibleBars: Float, offset: Float, futureBars: Float = 0f): Float {
     if (times.isEmpty()) return 0f
     val previousIndex = previousLastTime?.let { times.binarySearch(it) } ?: -1
     val appended = if (previousIndex >= 0) times.lastIndex - previousIndex else 0
-    val adjusted = if (offset > 0f) offset + appended else offset
-    return adjusted.coerceIn(-(visibleBars - 3f).coerceAtLeast(0f), (times.size - visibleBars).coerceAtLeast(0f))
+    val adjusted = if (offset > 0f || futureBars > 0f) offset + appended else offset
+    return adjusted.coerceIn(-maxOf((visibleBars - 3f).coerceAtLeast(0f), futureBars), (times.size - visibleBars).coerceAtLeast(0f))
 }

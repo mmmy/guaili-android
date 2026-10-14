@@ -28,4 +28,7 @@ internal data class PullbackPreferences(
     val rules: PullbackRules = PullbackRules(),
     val onlyCandidates: Boolean = false,
     val soundEnabled: Boolean = false,
+    val extensionBars: Int = 20,
+    // Per service + symbol + direction; never share IDs between different services.
+    val primaryAlerts: Map<String, Long> = emptyMap(),
 )

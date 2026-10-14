@@ -119,6 +119,11 @@ internal fun GuailiScreen(
         factory = MarketPriceAlertsViewModel.factory(context, state.settings.baseUrl),
     )
     val alertsState by alertsViewModel.state.collectAsStateWithLifecycle()
+    val priceWriter: PriceAlertsViewModel = viewModel(key = "price-alerts:${state.settings.baseUrl}",
+        factory = PriceAlertsViewModel.factory(context, state.settings.baseUrl))
+    val priceWriteState by priceWriter.state.collectAsStateWithLifecycle()
+    LaunchedEffect(priceWriter, alertsViewModel) { priceWriter.confirmations.collect { alertsViewModel.accept(it) } }
+    LaunchedEffect(priceWriter, alertsState.alerts) { priceWriter.synchronize(alertsState.alerts) }
     val alertSummaries = remember(alertsState) { alertsState.summaries() }
     val signalsState by signalsViewModel.state.collectAsStateWithLifecycle()
     val signalListState = rememberLazyListState()
@@ -242,7 +247,7 @@ internal fun GuailiScreen(
     }
     fun openPriceAlert(alert: com.gouge.guaili.data.PriceAlertDto) {
         alertsViewModel.acknowledge(listOf(alert))
-        klineFromSignals = false
+        klineFromSignals = showPullback
         klineSymbol = alert.symbol
         klineInterval = alert.interval
         klineAlertId = alert.id
@@ -335,9 +340,12 @@ internal fun GuailiScreen(
             }
         }
     }
-    DisposableEffect(lifecycleOwner, alertsViewModel, contentActive, showSignals, showPullback, state.settingsLoaded) {
-        fun update() = alertsViewModel.setForeground(state.settingsLoaded && contentActive && !showSignals && !showPullback &&
-            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    DisposableEffect(lifecycleOwner, alertsViewModel, priceWriter, contentActive, showSignals, showPullback, state.settingsLoaded) {
+        fun update() {
+            val active = state.settingsLoaded && contentActive && !showSignals && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+            alertsViewModel.setForeground(active)
+            if (active && showPullback) priceWriter.recoverPending()
+        }
         val observer = LifecycleEventObserver { _, _ -> update() }
         lifecycleOwner.lifecycle.addObserver(observer)
         update()
@@ -498,13 +506,16 @@ internal fun GuailiScreen(
                 }
                 if (showPullback) PullbackContent(
                     state = signalsState, listState = pullbackListState,
-                    onRefresh = signalsViewModel::refresh,
+                    onRefresh = { signalsViewModel.refresh(); alertsViewModel.refresh(); priceWriter.recoverPending() },
                     onOnlyCandidates = signalsViewModel::setOnlyPullbackCandidates,
                     onSound = signalsViewModel::setPullbackSound,
                     onRules = signalsViewModel::setPullbackRules,
                     reminders = signalsViewModel.pullbackAlerts,
                     onOpenKline = { target -> klineAlertId = null; klineFromSignals = true; klineSymbol = target.symbol; klineInterval = target.interval },
                     modifier = Modifier.weight(1f),
+                    priceAlerts = alertsState, priceWriter = priceWriter, writeState = priceWriteState,
+                    serviceKey = state.settings.baseUrl, onOpenPriceAlert = ::openPriceAlert,
+                    onParameters = signalsViewModel::setPullbackParameters, onPrimaryAlert = signalsViewModel::setPullbackPrimary,
                 )
                 else if (showSignals) Box(Modifier.weight(1f)) { signalContent(false) }
                 else if (wide && paneOpen) Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

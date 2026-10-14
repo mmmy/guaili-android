@@ -67,7 +67,7 @@ internal fun PriceAlertSelectionBar(
                 Text(pending?.label() ?: alert.stateLabel(), style = MaterialTheme.typography.labelMedium,
                     color = if (pending?.phase == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
             }
-            Text("${alert.symbol} · 绑定 ${formatInterval(alert.interval)} · ${alertDirection(alert.direction)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${alert.symbol} · 绑定 ${formatInterval(alert.interval)} · ${alertIntentLabel(alert.intent)} · ${alertDirection(alert.direction)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AlertIcon("编辑警报", Icons.Outlined.Edit, pending == null, onEdit)
                 AlertIcon(if (alert.status == "active") "暂停警报" else "重新启用警报", if (alert.status == "active") Icons.Outlined.Pause else Icons.Outlined.PlayArrow, pending == null, onToggle)
@@ -112,6 +112,7 @@ internal fun PriceAlertEditorSheet(
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var name by rememberSaveable { mutableStateOf(original?.name ?: storedText("name") ?: preset.name) }
     var direction by rememberSaveable { mutableStateOf(original?.direction ?: storedText("direction") ?: preset.direction) }
+    var intent by rememberSaveable { mutableStateOf(original?.intent ?: storedText("intent") ?: preset.intent) }
     var enabled by rememberSaveable { mutableStateOf(storedText("status")?.let { it == "active" } ?: (original?.status != "disabled" && original?.status != "expired")) }
     var expires by rememberSaveable { mutableStateOf((original?.expiresAt ?: storedText("expiresAt")?.toLongOrNull())?.let(::alertDate).orEmpty()) }
     var firstPrice by rememberSaveable { mutableStateOf(alertNumber(geometry.first.price)) }
@@ -143,6 +144,12 @@ internal fun PriceAlertEditorSheet(
                 when (tab) {
                     0 -> {
                         OutlinedTextField(name, { name = it }, label = { Text("警报名称") }, singleLine = true, enabled = !locked, modifier = Modifier.fillMaxWidth())
+                        Text("交易意图", style = MaterialTheme.typography.titleSmall)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val choices = if (intent !in PriceAlertIntents) linkedMapOf(intent to "未分类") + PriceAlertIntents else PriceAlertIntents
+                            choices.forEach { (value, text) -> FilterChip(intent == value, { intent = value }, enabled = !locked,
+                                label = { Text(text) }, modifier = Modifier.testTag("price-alert-intent-$value")) }
+                        }
                         Text("价格 ${alertDirection(direction)} ${if (geometry.kind == "horizontal_segment") "水平线段" else "趋势线"}", style = MaterialTheme.typography.titleSmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("cross_any", "cross_up", "cross_down").forEach { value -> FilterChip(direction == value, { direction = value }, enabled = !locked, label = { Text(alertDirection(value)) }) }
@@ -226,12 +233,13 @@ internal fun PriceAlertEditorSheet(
                             val fields = buildJsonObject {
                                 if (original == null) { put("symbol", session.symbol); put("interval", session.interval); put("frequency", "once") }
                                 put("tvSymbol", tvSymbol.trim()); put("name", name.trim()); put("direction", direction)
+                                if (intent in PriceAlertIntents || intent == "unclassified") put("intent", intent)
                                 if (original == null || g != original.geometry) put("geometry", PriceAlertRepository.json.encodeToJsonElement(g))
                                 put("expiresAt", expiry?.let(::JsonPrimitive) ?: JsonNull)
                                 editorMonitoringStatus(original, enabled)?.let { put("status", it) }
                                 put("webhookUrl", webhook.trim()); put("messageTemplate", template); put("label", label); put("color", color); put("lineWidth", lineWidth)
                             }
-                            onSave(fields, if (saveDefault) PriceAlertPreset(name, direction, webhook.trim(), template, label, color, lineWidth, extend) else null)
+                            onSave(fields, if (saveDefault) PriceAlertPreset(name, direction, webhook.trim(), template, label, color, lineWidth, extend, intent) else null)
                         }
                     }) { Text(if (pending?.phase == "retrying") "读取中" else if (locked) "保存中" else if (enabled) "保存警报" else "保存暂停线段") }
                 }

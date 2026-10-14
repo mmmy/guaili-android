@@ -97,6 +97,14 @@ internal class ServerSignalsViewModel(
     fun setPullbackRules(rules: PullbackRules) {
         if (rules.error() == null) updatePreferences { it.copy(pullback = it.pullback.copy(rules = rules)) }
     }
+    fun setPullbackParameters(rules: PullbackRules, extensionBars: Int) {
+        if (rules.error() == null && extensionBars in 1..1000) updatePreferences {
+            it.copy(pullback = it.pullback.copy(rules = rules, extensionBars = extensionBars))
+        }
+    }
+    fun setPullbackPrimary(key: String, id: Long) = updatePreferences {
+        it.copy(pullback = it.pullback.copy(primaryAlerts = it.pullback.primaryAlerts + (key to id)))
+    }
     fun setPullbackActive(active: Boolean) {
         if (pullbackActive == active) return
         pullbackActive = active

@@ -189,8 +189,8 @@ internal fun KlineScreen(
         }
     }
     LaunchedEffect(alertState.notice) { alertState.notice?.let { snackbar.showSnackbar(it); alertViewModel.clearNotice() } }
-    LaunchedEffect(alertState.pending, savingEditor) {
-        if (savingEditor && editor != null && (editor?.existing?.id ?: 0L) !in alertState.pending) {
+    LaunchedEffect(alertState.pending, savingEditor, alertState.conflict) {
+        if (savingEditor && editor != null && alertState.conflict == null && (editor?.existing?.id ?: 0L) !in alertState.pending) {
             selectedAlertId = editor?.existing?.id ?: alertState.alerts.firstOrNull { it.symbol == editor?.symbol }?.id
             editor = null; savingEditor = false
         }
@@ -305,6 +305,17 @@ internal fun KlineScreen(
                 }
             }
         }
+    }
+    alertState.conflict?.let { conflict ->
+        AlertDialog(onDismissRequest = { alertViewModel.dismissConflict(); savingEditor = false },
+            title = { Text("已有同意图的启用警报") },
+            text = { Text("${conflict.existing.symbol} · ${formatInterval(conflict.existing.interval)} · ${alertIntentLabel(conflict.existing.intent)}\n替换会暂停已有警报，保留其记录和历史。") },
+            confirmButton = { TextButton({ alertViewModel.replaceConflict() }, Modifier.testTag("price-alert-conflict-replace")) { Text("替换已有") } },
+            dismissButton = { Row {
+                TextButton({ alertViewModel.dismissConflict(); savingEditor = false; editor = PriceAlertEditorSession(conflict.existing.symbol,
+                    conflict.existing.interval, conflict.existing.geometry, conflict.existing) }, Modifier.testTag("price-alert-conflict-edit")) { Text("编辑已有") }
+                TextButton({ alertViewModel.dismissConflict(); savingEditor = false }) { Text("取消") }
+            } })
     }
     editor?.let { session ->
         key(session) {
@@ -554,6 +565,7 @@ internal fun KlineChart(
     )) { mutableStateOf<PriceBounds?>(null) }
     var previousLastTime by rememberSaveable { mutableStateOf(timeIndex.lastOrNull()) }
     var focusedAlertId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var focusFutureBars by rememberSaveable { mutableFloatStateOf(0f) }
     var canvasWidth by remember { mutableIntStateOf(1) }
     var canvasHeight by remember { mutableIntStateOf(1) }
     val chartBackground = MaterialTheme.colorScheme.background
@@ -564,7 +576,7 @@ internal fun KlineChart(
 
     LaunchedEffect(timeIndex) {
         visibleBars = visibleBars.coerceIn(1f, rows.size.toFloat().coerceAtLeast(1f))
-        rightOffsetBars = reconcileKlineRightOffset(previousLastTime, timeIndex, visibleBars, rightOffsetBars)
+        rightOffsetBars = reconcileKlineRightOffset(previousLastTime, timeIndex, visibleBars, rightOffsetBars, focusFutureBars)
         previousLastTime = timeIndex.lastOrNull()
     }
 
@@ -573,18 +585,25 @@ internal fun KlineChart(
         if (focusedAlertId == alert.id || rows.isEmpty()) return@LaunchedEffect
         focusedAlertId = alert.id
         val geometry = alert.geometry.normalized()
+        if (geometry.extend == "none" && geometry.first.timeMs > timeIndex.last()) {
+            val intervalMs = alertIntervalMillis(interval)
+            val midpoint = ((geometry.first.timeMs.toDouble() - timeIndex.last()) + (geometry.second.timeMs.toDouble() - timeIndex.last())) / intervalMs / 2.0
+            rightOffsetBars = -(visibleBars / 2f + midpoint.toFloat()).coerceAtMost(100_000f)
+            focusFutureBars = -rightOffsetBars
+            manualBounds = null
+        }
         if (geometry.extend == "none" && geometry.second.timeMs < rows.last().candle.openTimeMillis) {
             val index = timeIndex.binarySearch(geometry.second.timeMs).let { if (it >= 0) it else (-it - 1).coerceIn(0, rows.lastIndex) }
             rightOffsetBars = (rows.lastIndex - index).toFloat()
         }
     }
 
-    val liveViewport = remember(rows.size, visibleBars, rightOffsetBars) {
-        calculateKlineViewport(rows.size, visibleBars, rightOffsetBars)
+    val liveViewport = remember(rows.size, visibleBars, rightOffsetBars, focusFutureBars) {
+        calculateKlineViewport(rows.size, visibleBars, rightOffsetBars, focusFutureBars)
     }
     val selectedGeometry = selectedAlertId?.let { id -> pending[id]?.geometry ?: alerts.firstOrNull { it.id == id }?.geometry }
-    val autoBounds = remember(rows, liveViewport, showChannel, selectedGeometry) {
-        calculatePriceBounds(rows, liveViewport, showChannel, selectedGeometry)
+    val autoBounds = remember(rows, liveViewport, showChannel, selectedGeometry, focusFutureBars) {
+        calculatePriceBounds(rows, liveViewport, showChannel, selectedGeometry, focusFutureBars > 0f)
     }
     val currentAutoBounds by rememberUpdatedState(autoBounds)
 
@@ -598,7 +617,7 @@ internal fun KlineChart(
             .testTag("price-alert-chart")
             .pointerInput(canvasWidth, canvasHeight, drawingKind, cancelGesture, interval) {
                 var lastAxisTapAt = 0L
-                fun viewport() = calculateKlineViewport(currentRows.size, visibleBars, rightOffsetBars)
+                fun viewport() = calculateKlineViewport(currentRows.size, visibleBars, rightOffsetBars, focusFutureBars)
                 fun bounds() = manualBounds ?: currentAutoBounds
                 fun plotRight() = (canvasWidth - rightPaddingPx).coerceAtLeast(leftPaddingPx + 1f)
                 fun transform(): AlertChartTransform {
@@ -672,7 +691,7 @@ internal fun KlineChart(
                                 val distance = (active[1].position - active[0].position).getDistance()
                                 val center = (active[0].position.x + active[1].position.x) / 2f
                                 pinchDistance?.let { if (it > 0) zoomBy(distance / it) }
-                                pinchCenter?.let { before -> rightOffsetBars = (rightOffsetBars + (center - before) * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-(visibleBars - 3f).coerceAtLeast(0f), (currentRows.size - visibleBars).coerceAtLeast(0f)) }
+                                pinchCenter?.let { before -> rightOffsetBars = (rightOffsetBars + (center - before) * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-maxOf((visibleBars - 3f).coerceAtLeast(0f), focusFutureBars), (currentRows.size - visibleBars).coerceAtLeast(0f)) }
                                 pinchDistance = distance; pinchCenter = center
                                 event.changes.forEach { it.consume() }; continue
                             }
@@ -715,7 +734,7 @@ internal fun KlineChart(
                                     if (timePanned || abs(totalX) > viewConfiguration.touchSlop) {
                                         val moveX = if (timePanned) dx else totalX
                                         timePanned = true
-                                        rightOffsetBars = (rightOffsetBars + moveX * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-(visibleBars - 3f).coerceAtLeast(0f), (currentRows.size - visibleBars).coerceAtLeast(0f))
+                                        rightOffsetBars = (rightOffsetBars + moveX * visibleBars / (plotRight() - leftPaddingPx)).coerceIn(-maxOf((visibleBars - 3f).coerceAtLeast(0f), focusFutureBars), (currentRows.size - visibleBars).coerceAtLeast(0f))
                                     }
                                     val totalY = change.position.y - down.position.y
                                     if (down.position.y in mapping.top..mapping.bottom && (pricePanned || abs(totalY) > viewConfiguration.touchSlop)) {
@@ -752,7 +771,7 @@ internal fun KlineChart(
         val chartRows = frozenRows ?: rows
         if (chartRows.isEmpty()) return@Canvas
 
-        val viewport = calculateKlineViewport(chartRows.size, visibleBars, rightOffsetBars)
+        val viewport = calculateKlineViewport(chartRows.size, visibleBars, rightOffsetBars, focusFutureBars)
         val visible = chartRows.subList(viewport.drawStart, viewport.endExclusive)
         val plotLeft = leftPaddingPx
         val plotRight = size.width - rightPaddingPx
@@ -1036,12 +1055,13 @@ internal fun calculateKlineViewport(
     rowCount: Int,
     visibleBars: Float,
     rightOffsetBars: Float,
+    futureBars: Float = 0f,
 ): KlineViewport {
     require(rowCount > 0)
     val visibleSpan = visibleBars.coerceIn(1f, rowCount.toFloat())
     // Keep a small future margin so the latest candles can be dragged toward
     // the left edge, as in TradingView, instead of stopping at the right edge.
-    val minimumOffset = -(visibleSpan - 3f).coerceAtLeast(0f)
+    val minimumOffset = -maxOf((visibleSpan - 3f).coerceAtLeast(0f), futureBars.coerceIn(0f, 100_000f))
     val maximumOffset = (rowCount - visibleSpan).coerceAtLeast(0f)
     val offset = rightOffsetBars.coerceIn(minimumOffset, maximumOffset)
     if (offset < 0f) {

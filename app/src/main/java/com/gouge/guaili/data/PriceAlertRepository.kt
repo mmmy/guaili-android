@@ -21,6 +21,8 @@ interface PriceAlertApi {
     @GET("api/price-alerts/mutations/{mutationId}") suspend fun mutation(@Path("mutationId") mutationId: String): JsonElement
     @GET("api/price-alerts/market") suspend fun market(@Query("symbol") symbol: String): PriceAlertMarket
     @GET("api/price-alerts/{id}/events") suspend fun events(@Path("id") id: Long, @Query("limit") limit: Int, @Query("beforeArmGeneration") before: Long?): List<PriceAlertEvent>
+    @GET("api/klines") suspend fun latest(@Query("symbol") symbol: String, @Query("intervals") interval: String,
+        @Query("limit") limit: Int = 1, @Query("closedOnly") closedOnly: Boolean = false): KlineEnvelope
 }
 
 sealed interface PriceAlertResult<out T> {
@@ -37,6 +39,7 @@ interface PriceAlertGateway {
     suspend fun events(id: Long, before: Long? = null): PriceAlertResult<List<PriceAlertEvent>>
     suspend fun send(operation: PriceAlertOperation): PriceAlertResult<JsonElement>
     suspend fun recover(mutationId: String): PriceAlertResult<JsonElement>
+    suspend fun latest(symbol: String, interval: String): PriceAlertResult<KlineEnvelope> = PriceAlertResult.Failure("最新 K 线暂不可用", 503)
 }
 
 class PriceAlertRepository(private val api: PriceAlertApi) : PriceAlertGateway {
@@ -46,6 +49,7 @@ class PriceAlertRepository(private val api: PriceAlertApi) : PriceAlertGateway {
     override suspend fun market(symbol: String) = call { api.market(symbol) }
     override suspend fun events(id: Long, before: Long?) = call { api.events(id, 200, before) }
     override suspend fun recover(mutationId: String) = call { api.mutation(mutationId) }
+    override suspend fun latest(symbol: String, interval: String) = call { api.latest(symbol, interval) }
     override suspend fun send(operation: PriceAlertOperation) = call {
         when (operation.method) {
             "create" -> api.create(operation.body)

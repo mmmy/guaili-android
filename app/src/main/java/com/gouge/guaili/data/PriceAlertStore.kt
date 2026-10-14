@@ -19,6 +19,8 @@ data class PriceAlertOperation(
     val queuedGeometry: PriceAlertGeometry? = null,
     val isUndo: Boolean = false,
     val requiresUserRetry: Boolean = false,
+    val purpose: String = "",
+    val extensionBars: Int? = null,
 ) { val key: Long get() = alertId ?: 0L }
 
 interface PriceAlertJournal {

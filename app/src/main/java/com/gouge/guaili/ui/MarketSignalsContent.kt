@@ -71,6 +71,8 @@ private fun appSignalPalette(): SignalCardPalette {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MarketViewSelector(selected: MarketView, onSelect: (MarketView) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+    val compactPullbackLabel = maxWidth / androidx.compose.ui.platform.LocalDensity.current.fontScale < 280.dp
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         MarketView.entries.forEachIndexed { index, view ->
             SegmentedButton(
@@ -87,8 +89,10 @@ internal fun MarketViewSelector(selected: MarketView, onSelect: (MarketView) -> 
                 modifier = Modifier.heightIn(min = 48.dp).testTag(when (view) {
                     MarketView.Table -> "market-view-table"; MarketView.SignalsV2 -> "market-view-v2"; MarketView.Pullback -> "market-view-pullback"
                 }),
-            ) { Text(when (view) { MarketView.Table -> "表格"; MarketView.SignalsV2 -> "v2 信号"; MarketView.Pullback -> "回调观察" }) }
+              ) { Text(when (view) { MarketView.Table -> "表格"; MarketView.SignalsV2 -> "v2 信号"; MarketView.Pullback -> if (compactPullbackLabel) "回调" else "回调观察" },
+                  maxLines = 1, softWrap = false, modifier = Modifier.semantics { contentDescription = when (view) { MarketView.Table -> "表格"; MarketView.SignalsV2 -> "v2 信号"; MarketView.Pullback -> "回调观察" } }) }
         }
+    }
     }
 }
 

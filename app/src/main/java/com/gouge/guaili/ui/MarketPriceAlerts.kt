@@ -71,11 +71,48 @@ internal class MarketPriceAlertsViewModel(
     private var refreshJob: Job? = null
     private var pollJob: Job? = null
     private val seenWriter = Mutex()
+    private val saved = mutableMapOf<Long, com.gouge.guaili.data.PriceAlertDto?>()
+    private var changeGeneration = 0L
+    private var boundaryJob: Job? = null
+    private var foreground = false
+    private var refreshAgain = false
+
+    fun accept(confirmation: PriceAlertConfirmation) {
+        val id = confirmation.alert?.id ?: confirmation.operation.alertId ?: return
+        val alert = confirmation.alert
+        changeGeneration++
+        saved[id] = alert
+        val previous = mutable.value.alerts.firstOrNull { it.id == id }
+        if (alert == null || previous == null || alert.revision >= previous.revision) {
+            mutable.value = mutable.value.copy(alerts = mutable.value.alerts.filterNot { it.id == id } + listOfNotNull(alert), now = nowMillis())
+        }
+        if (foreground) {
+            if (refreshJob?.isActive == true) refreshAgain = true else refresh()
+        }
+        scheduleBoundary()
+    }
+    private fun scheduleBoundary() {
+        boundaryJob?.cancel()
+        if (!foreground) return
+        val now = nowMillis()
+        val next = mutable.value.alerts.asSequence().filter { it.status == "active" }.flatMap {
+            sequenceOf(it.expiresAt, it.geometry.first.timeMs.takeIf { _ -> it.geometry.extend != "both" },
+                it.geometry.second.timeMs.takeIf { _ -> it.geometry.extend == "none" }?.let { end -> if (end < Long.MAX_VALUE) end + 1 else end })
+        }.filterNotNull().filter { it > now }.minOrNull() ?: return
+        boundaryJob = viewModelScope.launch {
+            delay((next - now).coerceAtMost(86_400_000))
+            mutable.value = mutable.value.copy(now = nowMillis())
+            scheduleBoundary()
+        }
+    }
 
     fun setForeground(active: Boolean) {
+        if (foreground == active) return
+        foreground = active
         pollJob?.cancel()
         pollJob = null
-        if (!active) { refreshJob?.cancel(); mutable.value = mutable.value.copy(loading = false); return }
+        if (!active) { refreshJob?.cancel(); boundaryJob?.cancel(); mutable.value = mutable.value.copy(loading = false); return }
+        scheduleBoundary()
         pollJob = viewModelScope.launch {
             while (true) {
                 refresh()
@@ -87,16 +124,32 @@ internal class MarketPriceAlertsViewModel(
     fun refresh() {
         if (refreshJob?.isActive == true) return
         refreshJob = viewModelScope.launch {
+            val generation = changeGeneration
             mutable.value = mutable.value.copy(loading = true, now = nowMillis())
             try {
                 when (val result = load()) {
-                    is PriceAlertResult.Success -> mutable.value = mutable.value.copy(
-                        alerts = result.value, loading = false, error = null, now = nowMillis())
+                    is PriceAlertResult.Success -> {
+                        val records = result.value.associateBy { it.id }.toMutableMap()
+                        val iterator = saved.iterator()
+                        while (iterator.hasNext()) {
+                            val (id, alert) = iterator.next()
+                            val incoming = records[id]
+                            if (alert == null) records.remove(id)
+                            else if (incoming != null && incoming.revision < alert.revision || incoming == null && generation != changeGeneration) records[id] = alert
+                            if (generation == changeGeneration && (alert == null || incoming == null || incoming.revision >= alert.revision)) iterator.remove()
+                        }
+                        mutable.value = mutable.value.copy(alerts = records.values.toList(), loading = false, error = null, now = nowMillis())
+                        scheduleBoundary()
+                    }
                     is PriceAlertResult.Failure -> mutable.value = mutable.value.copy(
                         loading = false, error = "价格警报状态更新失败，显示上次结果。${result.message}", now = nowMillis())
                 }
             } finally {
-                mutable.value = mutable.value.copy(loading = false)
+                if (refreshJob === coroutineContext[Job]) {
+                    mutable.value = mutable.value.copy(loading = false)
+                    refreshJob = null
+                    if (foreground && refreshAgain) { refreshAgain = false; refresh() }
+                }
             }
         }
     }

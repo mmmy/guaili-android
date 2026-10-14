@@ -5,10 +5,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.gouge.guaili.data.*
+import com.gouge.guaili.pullback.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -32,10 +35,16 @@ data class PriceAlertsState(
     val error: String? = null,
     val notice: String? = null,
     val loading: Boolean = false,
+    val extensionPreview: PriceAlertExtensionPreview? = null,
+    val extensionUndo: PriceAlertExtensionUndo? = null,
+    val extensionReceipt: PriceAlertExtensionReceipt? = null,
+    val conflict: PriceAlertConflict? = null,
 )
 
 /** Each alert has one immutable in-flight request and at most one newer geometry. */
-class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journal: PriceAlertJournal) : ViewModel() {
+class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journal: PriceAlertJournal,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val elapsedMillis: () -> Long = android.os.SystemClock::elapsedRealtime) : ViewModel() {
     private val mutable = MutableStateFlow(PriceAlertsState(pending = journal.read().associate {
         it.key to if (it.requiresUserRetry) PendingPriceAlert(it, "failed", "上次修改未保存，可重试或放弃") else PendingPriceAlert(it, "uncertain")
     }))
@@ -47,6 +56,95 @@ class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journ
     private var loadJob: Job? = null
     private var loadSymbol = ""
     private val historyJobs = mutableMapOf<Long, Job>()
+    private var previewJob: Job? = null
+    private var previewGeneration = 0
+    private val confirmed = MutableSharedFlow<PriceAlertConfirmation>(extraBufferCapacity = 32)
+    val confirmations = confirmed.asSharedFlow()
+
+    fun synchronize(alerts: List<PriceAlertDto>) {
+        val current = mutable.value.alerts.associateBy { it.id }
+        val incoming = alerts.filterNot { it.id in deleted }.map { current[it.id]?.takeIf { old -> old.revision > it.revision } ?: it }
+        mutable.value = mutable.value.copy(alerts = incoming)
+    }
+    fun recoverPending() { mutable.value.pending.filterValues { it.phase == "uncertain" }.keys.toList().forEach { run(it, recovering = true) } }
+    fun closeExtensionPreview() {
+        previewGeneration++; previewJob?.cancel(); previewJob = null
+        mutable.value = mutable.value.copy(extensionPreview = null)
+    }
+    fun prepareExtension(alert: PriceAlertDto, bars: Int) {
+        closeExtensionPreview()
+        val pending = mutable.value.pending[alert.id]
+        if (pending?.phase == "failed" && pending.operation.purpose == "extension") discardFailed(alert.id)
+        mutable.value = mutable.value.copy(extensionPreview = PriceAlertExtensionPreview(alert, bars))
+        if (mutable.value.pending.containsKey(alert.id)) {
+            mutable.value = mutable.value.copy(extensionPreview = PriceAlertExtensionPreview(alert, bars, loading = false, error = "此警报仍有操作待确认"))
+            return
+        }
+        val generation = previewGeneration
+        previewJob = viewModelScope.launch {
+            try {
+                val current = network.withPermit { api.get(alert.id) }.orThrow()
+                require(current.id == alert.id && current.symbol == alert.symbol && current.interval == alert.interval) { "警报绑定已变化，请刷新后重试" }
+                accept(current)
+                val latest = network.withPermit { api.latest(current.symbol, current.interval) }.orThrow()
+                val plan = extensionPlan(current, bars, latest)
+                if (generation == previewGeneration) mutable.value = mutable.value.copy(extensionPreview = PriceAlertExtensionPreview(current, bars, plan, false))
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                if (generation == previewGeneration) mutable.value = mutable.value.copy(extensionPreview = PriceAlertExtensionPreview(alert, bars, loading = false, error = e.message ?: "无法计算延期时间"))
+            }
+        }
+    }
+    fun confirmExtension() {
+        val preview = mutable.value.extensionPreview ?: return
+        if (preview.loading || preview.plan == null || preview.alert.id in mutable.value.pending) return
+        val generation = previewGeneration
+        mutable.value = mutable.value.copy(extensionPreview = preview.copy(loading = true, error = null))
+        previewJob = viewModelScope.launch {
+            try {
+                val latest = network.withPermit { api.latest(preview.alert.symbol, preview.alert.interval) }.orThrow()
+                val plan = extensionPlan(preview.alert, preview.bars, latest)
+                if (generation != previewGeneration) return@launch
+                mutable.value = mutable.value.copy(extensionPreview = preview.copy(plan = plan, loading = false))
+                enqueue(PriceAlertOperation("patch", newAlertMutationId(), preview.alert.id, preview.alert.revision,
+                    buildJsonObject { put("geometry", PriceAlertRepository.json.encodeToJsonElement(plan.geometry)) }, preview.alert.geometry, purpose = "extension", extensionBars = preview.bars))
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                if (generation == previewGeneration) mutable.value = mutable.value.copy(extensionPreview = preview.copy(loading = false, error = e.message ?: "延期失败，请重试"))
+            }
+        }
+    }
+    fun undoExtension() {
+        val undo = mutable.value.extensionUndo ?: return
+        val alert = mutable.value.alerts.firstOrNull { it.id == undo.id }
+        if (!undo.validFor(alert, nowMillis(), elapsedMillis()) || undo.id in mutable.value.pending) {
+            mutable.value = mutable.value.copy(extensionUndo = null, notice = "警报已变化或撤销时间已结束")
+            return
+        }
+        enqueue(PriceAlertOperation("patch", newAlertMutationId(), undo.id, undo.revision,
+            buildJsonObject { put("geometry", PriceAlertRepository.json.encodeToJsonElement(undo.geometry)) },
+            alert!!.geometry, isUndo = true, purpose = "extension_undo"))
+    }
+    private fun <T> PriceAlertResult<T>.orThrow(): T = when (this) {
+        is PriceAlertResult.Success -> value
+        is PriceAlertResult.Failure -> error(message)
+    }
+
+    private fun checkedEnqueue(op: PriceAlertOperation) {
+        val conflict = conflictingPriceAlert(op, mutable.value.alerts, nowMillis())
+        if (conflict != null) mutable.value = mutable.value.copy(conflict = PriceAlertConflict(op, conflict)) else enqueue(op)
+    }
+    fun dismissConflict() {
+        mutable.value.conflict?.operation?.key?.let { discardFailed(it) }
+        mutable.value = mutable.value.copy(conflict = null)
+    }
+    fun replaceConflict() {
+        val conflict = mutable.value.conflict ?: return
+        dismissConflict()
+        val body = JsonObject(conflict.operation.body + mapOf("replaceActiveId" to JsonPrimitive(conflict.existing.id),
+            "expectedReplaceRevision" to JsonPrimitive(conflict.existing.revision)))
+        enqueue(conflict.operation.copy(mutationId = newAlertMutationId(), body = body))
+    }
 
     fun refresh(symbol: String) {
         if (loadJob?.isActive == true && loadSymbol == symbol) return
@@ -76,17 +174,19 @@ class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journ
 
     fun create(body: JsonObject) {
         if (0L in mutable.value.pending) return
-        enqueue(PriceAlertOperation("create", newAlertMutationId(), body = body))
+        checkedEnqueue(PriceAlertOperation("create", newAlertMutationId(), body = body))
     }
     fun edit(alert: PriceAlertDto, fields: JsonObject) {
         if (alert.id in mutable.value.pending) return
-        enqueue(PriceAlertOperation("patch", newAlertMutationId(), alert.id, alert.revision, fields, alert.geometry))
+        accept(alert)
+        checkedEnqueue(PriceAlertOperation("patch", newAlertMutationId(), alert.id, alert.revision, fields, alert.geometry))
     }
     fun move(id: Long, geometry: PriceAlertGeometry) {
         if (!geometry.valid()) return
         val alert = mutable.value.alerts.firstOrNull { it.id == id } ?: return
         val pending = mutable.value.pending[id]
         if (pending != null) {
+            if (pending.operation.purpose.isNotEmpty()) return
             if (pending.operation.method != "patch" || "geometry" !in pending.operation.body) return
             mutable.value = mutable.value.copy(pending = mutable.value.pending + (id to pending.copy(operation = pending.operation.copy(queuedGeometry = geometry))))
             persist()
@@ -113,6 +213,12 @@ class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journ
         val pending = mutable.value.pending[id] ?: return
         if (jobs[id]?.isActive == true) return
         if (pending.phase != "failed") { run(id, recovering = true); return }
+        if (pending.operation.purpose.isNotEmpty()) {
+            val alert = mutable.value.alerts.firstOrNull { it.id == id } ?: return
+            if (pending.operation.purpose == "extension") prepareExtension(alert, pending.operation.extensionBars ?: 20)
+            else mutable.value = mutable.value.copy(error = "撤销未完成，记录可能已变化，请刷新查看")
+            return
+        }
         mutable.value = mutable.value.copy(pending = mutable.value.pending + (id to pending.copy(phase = "retrying", error = null)))
         val retryJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -181,6 +287,15 @@ class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journ
                             phase = if (result.uncertain) "uncertain" else "failed", error = result.message)))
                         saveJournal()
                         if (result.code == 409 && id != 0L) (api.get(id) as? PriceAlertResult.Success)?.value?.let(::accept)
+                        if (result.code == 409 && op.purpose.isEmpty() && op.method != "delete") {
+                            val symbol = op.body["symbol"]?.jsonPrimitive?.content ?: mutable.value.alerts.firstOrNull { it.id == id }?.symbol
+                            if (symbol != null) (api.list(symbol) as? PriceAlertResult.Success)?.value?.let { alerts ->
+                                alerts.forEach(::accept)
+                                conflictingPriceAlert(op, alerts, nowMillis())?.let { conflict ->
+                                    mutable.value = mutable.value.copy(conflict = PriceAlertConflict(op, conflict))
+                                }
+                            }
+                        }
                         break
                     }
                     result as PriceAlertResult.Success
@@ -188,15 +303,25 @@ class PriceAlertsViewModel(private val api: PriceAlertGateway, private val journ
                     if (op.method == "delete") {
                         deleted += id
                         mutable.value = mutable.value.copy(alerts = mutable.value.alerts.filterNot { it.id == id }, pending = mutable.value.pending - id, notice = "警报已删除，历史记录仍保留")
+                        confirmed.emit(PriceAlertConfirmation(op))
                         saveJournal(); break
                     }
                     val confirmed = PriceAlertRepository.json.decodeFromJsonElement<PriceAlertDto>(result.value)
                     accept(confirmed)
-                    val undo = if (op.isUndo) mutable.value.undo - confirmed.id else if (op.previousGeometry != null && confirmed.geometry != op.previousGeometry)
+                    val undo = if (op.isUndo || op.purpose.isNotEmpty()) mutable.value.undo - confirmed.id else if (op.previousGeometry != null && confirmed.geometry != op.previousGeometry)
                         mutable.value.undo + (confirmed.id to op.previousGeometry) else mutable.value.undo
                     val queued = latest.operation.queuedGeometry
                     mutable.value = mutable.value.copy(pending = mutable.value.pending - id, undo = undo,
                         notice = if (id == 0L) "警报已保存" else if (op.previousGeometry != confirmed.geometry && confirmed.status == "active") "已保存并重新布防" else "已保存 · ${confirmed.stateLabel()}")
+                    this@PriceAlertsViewModel.confirmed.emit(PriceAlertConfirmation(op, confirmed))
+                    if (op.purpose.startsWith("extension")) {
+                        val until = elapsedMillis() + 10_000
+                        val extensionUndo = if (op.purpose == "extension" && op.previousGeometry != null && confirmed.isEnabledAt(nowMillis()))
+                            PriceAlertExtensionUndo(confirmed.id, confirmed.revision, op.previousGeometry, until) else null
+                        closeExtensionPreview()
+                        mutable.value = mutable.value.copy(extensionUndo = extensionUndo,
+                            extensionReceipt = PriceAlertExtensionReceipt(op.mutationId, confirmed, op.isUndo, until))
+                    }
                     if (queued != null && queued != confirmed.geometry) {
                         val next = PriceAlertOperation("patch", newAlertMutationId(), confirmed.id, confirmed.revision,
                             buildJsonObject {}, confirmed.geometry)

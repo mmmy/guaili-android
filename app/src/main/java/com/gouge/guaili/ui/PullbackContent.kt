@@ -46,6 +46,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.gouge.guaili.pullback.*
 import com.gouge.guaili.settings.PullbackRules
+import com.gouge.guaili.data.PriceAlertDto
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.withTimeoutOrNull
 import com.gouge.guaili.signals.serverDisplayInterval
 import java.time.Instant
 import java.time.ZoneId
@@ -57,7 +60,7 @@ private data class PullbackSelection(val symbol: String, val candidate: Pullback
     val rules: PullbackRules, val sampledAt: Long?, val average: String)
 private val PullbackTime = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT).withZone(ZoneId.systemDefault())
 private fun signed(value: Int?) = when { value == null -> "—"; value > 0 -> "+$value"; else -> value.toString() }
-private fun pullbackPeriodLabel(interval: String): String {
+internal fun pullbackPeriodLabel(interval: String): String {
     val minutes = interval.toLongOrNull()
     return if (minutes != null && minutes > 0 && minutes % 60 == 0L) "${minutes / 60}H" else serverDisplayInterval(interval)
 }
@@ -73,15 +76,65 @@ internal fun PullbackContent(
     reminders: Flow<Unit>,
     onOpenKline: (KlineTarget) -> Unit,
     modifier: Modifier = Modifier,
+    priceAlerts: MarketPriceAlertsState = MarketPriceAlertsState(),
+    priceWriter: PriceAlertsViewModel? = null,
+    writeState: PriceAlertsState = PriceAlertsState(),
+    serviceKey: String = "",
+    onOpenPriceAlert: (PriceAlertDto) -> Unit = {},
+    onParameters: ((PullbackRules, Int) -> Unit)? = null,
+    onPrimaryAlert: (String, Long) -> Unit = { _, _ -> },
 ) {
     val prefs = state.preferences.pullback
     val projection = state.pullbacks
     var selection by remember { mutableStateOf<PullbackSelection?>(null) }
     var parameters by rememberSaveable { mutableStateOf(false) }
+    var alertGroup by remember(serviceKey) { mutableStateOf<Pair<String, String>?>(null) }
+    var resumeExtension by remember(serviceKey) { mutableStateOf<PriceAlertDto?>(null) }
+    val groupedAlerts = remember(priceAlerts.alerts, priceAlerts.now) { groupPullbackAlerts(priceAlerts.alerts, priceAlerts.now) }
+    val snackbar = remember { SnackbarHostState() }
+    fun extend(alert: PriceAlertDto) { selection = null; alertGroup = null; priceWriter?.prepareExtension(alert, prefs.extensionBars) }
     val rows = remember(projection.rows, prefs.onlyCandidates) {
         if (prefs.onlyCandidates) projection.rows.filter { it.hasCandidate } else projection.rows
     }
     val lifecycle = LocalLifecycleOwner.current
+    DisposableEffect(lifecycle, priceWriter) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) priceWriter?.closeExtensionPreview() }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer); priceWriter?.closeExtensionPreview() }
+    }
+    LaunchedEffect(rows, alertGroup, groupedAlerts) {
+        alertGroup?.let { (symbol, group) ->
+            val row = rows.firstOrNull { it.symbol == symbol }
+            val hiddenDirection = prefs.onlyCandidates && when (group) {
+                "Long" -> row?.candidate(PullbackDirection.Long)?.highlighted != true
+                "Short" -> row?.candidate(PullbackDirection.Short)?.highlighted != true
+                else -> false
+            }
+            if (row == null || hiddenDirection || groupedAlerts[symbol]?.get(group).isNullOrEmpty()) alertGroup = null
+        }
+    }
+    val receipt = writeState.extensionReceipt
+    val receiptAlert = receipt?.let { item -> writeState.alerts.firstOrNull { it.id == item.alert.id } }
+    val receiptPending = receipt?.let { writeState.pending[it.alert.id] }
+    LaunchedEffect(receipt?.mutationId, receiptAlert?.revision, receiptAlert?.status, receiptPending?.phase) {
+        if (receipt != null) {
+            val remaining = receipt.until - android.os.SystemClock.elapsedRealtime()
+            if (remaining > 0) withTimeoutOrNull(remaining) {
+                val canUndo = receiptPending == null && writeState.extensionUndo?.validFor(receiptAlert,
+                    System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) == true
+                val uncertainUndo = receiptPending?.operation?.purpose == "extension_undo" && receiptPending.phase == "uncertain"
+                val message = when {
+                    receiptPending?.operation?.purpose == "extension_undo" -> receiptPending.error ?: "正在撤销延期"
+                    receipt.undone -> "已撤销延期，恢复原时间范围"
+                    else -> "${receipt.alert.symbol} 已延期至 ${alertDate(receipt.alert.geometry.second.timeMs)}"
+                }
+                if (snackbar.showSnackbar(message, actionLabel = if (uncertainUndo) "核对" else if (canUndo) "撤销" else null,
+                    withDismissAction = true, duration = SnackbarDuration.Indefinite) == SnackbarResult.ActionPerformed) {
+                    if (uncertainUndo) priceWriter?.retry(receipt.alert.id) else priceWriter?.undoExtension()
+                }
+            }
+        }
+    }
     val tone = remember { arrayOfNulls<ToneGenerator>(1) }
     LaunchedEffect(lifecycle, reminders) {
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -100,8 +153,8 @@ internal fun PullbackContent(
             PullbackToolbar(
                 rules = prefs.rules, onlyCandidates = prefs.onlyCandidates, soundEnabled = prefs.soundEnabled,
                 refreshing = state.isRefreshing,
-                onParameters = { selection = null; parameters = true },
-                onOnlyCandidates = { selection = null; onOnlyCandidates(it) },
+                onParameters = { selection = null; alertGroup = null; priceWriter?.closeExtensionPreview(); parameters = true },
+                onOnlyCandidates = { selection = null; alertGroup = null; onOnlyCandidates(it) },
                 onSound = onSound, onRefresh = onRefresh,
             )
             val issueCount = projection.rows.count { it.issue != null }
@@ -114,6 +167,8 @@ internal fun PullbackContent(
             state.refreshError?.let { Text("刷新失败：$it", Modifier.padding(bottom = 6.dp),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             state.preferenceError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            priceAlerts.error?.let { Text("警报待更新，显示上次结果", Modifier.testTag("pullback-alert-error"),
+                color = PullbackAlertWarning, style = MaterialTheme.typography.bodySmall) }
             if (state.isRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (rows.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f).testTag("pullback-empty"), contentAlignment = Alignment.Center) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -125,8 +180,13 @@ internal fun PullbackContent(
                 contentPadding = PaddingValues(bottom = 16.dp)) {
                 items(rows, key = { it.symbol }) { row ->
                     Column(Modifier.fillMaxWidth().testTag("pullback-symbol-${row.symbol}")) {
-                        Text(row.symbol, Modifier.padding(top = 16.dp, bottom = 6.dp),
-                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(row.symbol, Modifier.weight(1f).padding(vertical = 8.dp),
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            val unclassified = groupedAlerts[row.symbol]?.get("Unclassified").orEmpty()
+                            if (unclassified.isNotEmpty()) TextButton({ selection = null; alertGroup = row.symbol to "Unclassified" },
+                                Modifier.heightIn(min = 48.dp).testTag("pullback-unclassified-${row.symbol}")) { Text("未分类 ${unclassified.size}") }
+                        }
                         PullbackDirection.entries.forEach { direction ->
                             val candidate = row.candidate(direction)
                             if (!prefs.onlyCandidates || candidate?.highlighted == true) PullbackTarget(
@@ -135,6 +195,14 @@ internal fun PullbackContent(
                                 onEntryKline = { interval ->
                                     selection = null
                                     onOpenKline(KlineTarget(row.symbol, interval))
+                                },
+                                alertContent = {
+                                    val group = direction.name
+                                    PullbackAlertSummary(groupedAlerts[row.symbol]?.get(group).orEmpty(),
+                                        prefs.primaryAlerts[priceAlertPrimaryKey(serviceKey, row.symbol, group)], priceAlerts.now,
+                                        priceAlerts.error != null, writeState.pending, onOpen = { selection = null; alertGroup = null; onOpenPriceAlert(it) },
+                                        onMore = { selection = null; alertGroup = row.symbol to group }, onExtend = ::extend,
+                                        modifier = Modifier.fillMaxWidth(), loading = priceAlerts.loading)
                                 },
                             ) {
                                 if (selection?.let { it.symbol == row.symbol && it.candidate.direction == direction } == true) selection = null
@@ -153,6 +221,10 @@ internal fun PullbackContent(
                 Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp).testTag("pullback-extension-feedback")) { data ->
+            Snackbar(data, containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurface,
+                actionColor = MaterialTheme.colorScheme.primary, dismissActionContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
     selection?.let { selected ->
         PullbackEvidenceSheet(selected, projection.ready, onDismiss = { selection = null }, onKline = {
@@ -160,8 +232,26 @@ internal fun PullbackContent(
             onOpenKline(KlineTarget(selected.symbol, selected.candidate.target.interval))
         })
     }
-    if (parameters) PullbackParametersSheet(prefs.rules, { parameters = false }) { rules ->
-        onRules(rules); parameters = false; selection = null
+    alertGroup?.let { (symbol, group) ->
+        PullbackAlertGroupSheet(symbol, group, groupedAlerts[symbol]?.get(group).orEmpty(),
+            prefs.primaryAlerts[priceAlertPrimaryKey(serviceKey, symbol, group)], priceAlerts.now, priceAlerts.error != null,
+            writeState.pending, onDismiss = { alertGroup = null }, onOpen = { alertGroup = null; onOpenPriceAlert(it) },
+            onPrimary = { id -> onPrimaryAlert(priceAlertPrimaryKey(serviceKey, symbol, group), id) }, onExtend = ::extend)
+    }
+    writeState.extensionPreview?.let { preview ->
+        PullbackExtensionSheet(preview, writeState.pending[preview.alert.id],
+            onDismiss = { priceWriter?.closeExtensionPreview() }, onSettings = {
+                resumeExtension = preview.alert; priceWriter?.closeExtensionPreview(); parameters = true
+            }, onConfirm = { priceWriter?.confirmExtension() },
+            onReload = { priceWriter?.prepareExtension(preview.alert, prefs.extensionBars) }, onRecover = { priceWriter?.retry(preview.alert.id) })
+    }
+    if (parameters) PullbackParametersSheet(prefs.rules, prefs.extensionBars, {
+        parameters = false
+        resumeExtension?.let { priceWriter?.prepareExtension(it, prefs.extensionBars) }; resumeExtension = null
+    }) { rules, bars ->
+        if (onParameters != null) onParameters(rules, bars) else onRules(rules)
+        parameters = false; selection = null
+        resumeExtension?.let { priceWriter?.prepareExtension(it, bars) }; resumeExtension = null
     }
 }
 
@@ -224,19 +314,20 @@ private fun PullbackToolbarToggle(
 
 @Composable
 private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candidate: PullbackCandidate?, isSelected: Boolean,
-    onEntryKline: (String) -> Unit, onClick: () -> Unit) {
+    onEntryKline: (String) -> Unit, alertContent: @Composable () -> Unit, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val highlighted = candidate?.highlighted == true
     val directional = if (direction == PullbackDirection.Long) colors.secondary else colors.error
     val periodColor = if (highlighted) directional else lerp(colors.onSurfaceVariant, directional, 0.55f)
     val shape = RoundedCornerShape(12.dp)
     val selectedBorder = if (isSelected) Modifier.border(1.dp, colors.primary, shape) else Modifier
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = 2.dp)
         .background(if (highlighted) colors.surfaceVariant else Color.Transparent, shape).then(selectedBorder)
         .clickable(enabled = candidate != null, role = Role.Button, onClick = onClick)
         .semantics { selected = isSelected }.testTag("pullback-target-${row.symbol}-${direction.name}")
-        .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column {
+        .heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp)) {
+        val stacked = maxWidth / LocalDensity.current.fontScale < 280.dp
+        val label: @Composable () -> Unit = { Column {
             Text(direction.label, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "—",
@@ -258,13 +349,18 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
                     }
                 }
             }
+        } }
+        if (stacked) Column {
+            label()
+            if (candidate == null) Text(row.issue ?: "同向级数不足", style = MaterialTheme.typography.bodySmall, color = colors.error)
+            alertContent()
+        } else Row(verticalAlignment = Alignment.CenterVertically) {
+            label()
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                if (candidate == null) Text(row.issue ?: "同向级数不足", style = MaterialTheme.typography.bodySmall, color = colors.error)
+                alertContent()
+            }
         }
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(if (candidate == null) row.issue ?: "同向级数不足" else "乖离 ${signed(candidate.target.value)}",
-                style = MaterialTheme.typography.bodySmall, color = if (candidate == null && row.issue != null) colors.error else colors.onSurfaceVariant)
-            candidate?.let { Text("${it.strength.label} · ${it.phase.label}", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant) }
-        }
-        if (candidate != null) Icon(Icons.Outlined.ChevronRight, "查看依据", tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -303,13 +399,14 @@ private fun PullbackEvidenceSheet(selection: PullbackSelection, live: Boolean, o
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit, onSave: (PullbackRules) -> Unit) {
+private fun PullbackParametersSheet(rules: PullbackRules, extensionBars: Int, onDismiss: () -> Unit, onSave: (PullbackRules, Int) -> Unit) {
     var levels by rememberSaveable { mutableStateOf(rules.levels.toString()) }
     var threshold by rememberSaveable { mutableStateOf(rules.threshold.toString()) }
     var strong by rememberSaveable { mutableStateOf(rules.strongLevels.toString()) }
     var minimum by rememberSaveable { mutableStateOf(rules.minInterval) }
     var reverse by rememberSaveable { mutableStateOf(rules.reverseLimit.toString()) }
     var entryDivisor by rememberSaveable { mutableStateOf(rules.entryDivisor.toString()) }
+    var extension by rememberSaveable { mutableStateOf(extensionBars.toString()) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -325,6 +422,8 @@ private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit,
             Text("弱势：背景全部低于 T；强势：背景至少 K 级达到 T；其余为普通。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             PullbackNumberField("入场倍数（回调周期 ÷ 倍数）", entryDivisor, { entryDivisor = it }, "pullback-entry-divisor")
             Text("从固定周期中取最接近的更小级别，例如 2D ÷ 20 → 2H。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PullbackNumberField("延期 K 线数", extension, { extension = it; error = null }, "pullback-extension-bars")
+            Text("默认 20，支持 1–1000 根；按警报周期计算，适用于全部品种。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton({ advanced = !advanced }, Modifier.testTag("pullback-advanced")) { Text(if (advanced) "收起高级参数" else "高级参数") }
             if (advanced) {
                 OutlinedTextField(minimum, { minimum = it }, label = { Text("最小目标级别（分钟 / S / D / W）") }, singleLine = true,
@@ -338,8 +437,9 @@ private fun PullbackParametersSheet(rules: PullbackRules, onDismiss: () -> Unit,
                     val parsed = PullbackRules(levels.toIntOrNull() ?: -1, threshold.toIntOrNull() ?: -1,
                         strong.toIntOrNull() ?: -1, minimum.trim().uppercase(), reverse.toIntOrNull() ?: -1,
                         entryDivisor.toIntOrNull() ?: -1)
-                    error = parsed.error()
-                    if (error == null) onSave(parsed)
+                    val bars = extension.toIntOrNull() ?: -1
+                    error = parsed.error() ?: if (bars !in 1..1000) "延期 K 线数须为 1–1000" else null
+                    if (error == null) onSave(parsed, bars)
                 }, Modifier.testTag("pullback-save")) { Text("保存") }
             }
         }

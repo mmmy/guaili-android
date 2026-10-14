@@ -70,6 +70,7 @@ data class PriceAlertDto(
     val dataStatus: String = "waiting_for_price",
     val createdAt: Long,
     val updatedAt: Long,
+    val intent: String = "unclassified",
 ) {
     fun stateLabel(now: Long = System.currentTimeMillis()): String = when {
         status == "disabled" && expiresAt != null && expiresAt <= now -> "暂停 · 已到期"
@@ -127,7 +128,11 @@ data class PriceAlertPreset(
     val color: String = "#22AB94",
     val lineWidth: Float = 2f,
     val extend: String = "right",
+    val intent: String = "unclassified",
 )
+
+val PriceAlertIntents = linkedMapOf("open_long" to "做多", "open_short" to "做空", "close_long" to "平多", "close_short" to "平空")
+fun alertIntentLabel(intent: String): String = PriceAlertIntents[intent] ?: "未分类"
 
 fun newAlertMutationId(): String = "android-${UUID.randomUUID()}"
 
