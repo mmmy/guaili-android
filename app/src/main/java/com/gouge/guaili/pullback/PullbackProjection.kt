@@ -31,7 +31,9 @@ internal data class PullbackCandidate(
     val target: ServerIntervalEvidence get() = evidence.last()
 }
 internal data class PullbackRow(val symbol: String, val long: PullbackCandidate? = null,
-    val short: PullbackCandidate? = null, val issue: String? = null) {
+    val short: PullbackCandidate? = null, val issue: String? = null,
+    /** Incomplete history remains unknown for calculations and reminder deduplication. */
+    val hasIncompleteEvidence: Boolean = false) {
     fun candidate(direction: PullbackDirection) = if (direction == PullbackDirection.Long) long else short
     val hasCandidate: Boolean get() = long?.highlighted == true || short?.highlighted == true
 }
@@ -120,7 +122,8 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
                 g * 10 >= Int.MIN_VALUE && g * 10 <= Int.MAX_VALUE && e.value == (g * 10).toInt() &&
                 at > 0 && at <= evidenceTime + 2000 && evidenceTime - at <= quality.maxMarketAgeMs
         }
-        val ordered = axis.values.reversed().map { it?.takeIf(::eligible) }
+        val allOrdered = axis.values.reversed()
+        val ordered = allOrdered.map { it?.takeIf(::eligible) }
         fun detect(direction: PullbackDirection): PullbackCandidate? {
             fun same(e: ServerIntervalEvidence?) = e?.guaili?.let { it * direction.sign > 0 } == true
             for (start in ordered.indices) {
@@ -147,9 +150,13 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
         }
         // An unrecognizable period cannot be removed and bridge otherwise non-adjacent levels.
         val missing = ordered.count { it == null } + malformed
+        val warming = allOrdered.count { it != null && it.availability == "warming_up" &&
+            (it.reasonCode == "insufficient_history" || it.reasonCode == "indicator_warming_up") }
+        val abnormal = missing - warming
         PullbackRow(symbol, if (malformed == 0) detect(PullbackDirection.Long) else null,
             if (malformed == 0) detect(PullbackDirection.Short) else null,
-            if (missing > 0) "部分级别不可用（$missing）" else null)
+            if (abnormal > 0) "部分级别不可用（$abnormal）" else null,
+            hasIncompleteEvidence = missing > 0)
     }
     return PullbackProjection(rows, "实时行情", true, sampled, deadline)
 }
@@ -167,7 +174,7 @@ internal class PullbackAlerts {
             val row = rows[key.symbol] ?: return@removeAll false
             val current = row.candidate(key.direction)
             val same = current?.target?.interval?.let(::pullbackPeriodMillis) == key.duration
-            !(current?.highlighted == true && same || row.issue != null && !(same && current?.highlighted == false))
+            !(current?.highlighted == true && same || (row.issue != null || row.hasIncompleteEvidence) && !(same && current?.highlighted == false))
         }
         var appeared = false
         projection.rows.forEach { row ->

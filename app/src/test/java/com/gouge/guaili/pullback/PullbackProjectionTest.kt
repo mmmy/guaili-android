@@ -39,6 +39,34 @@ class PullbackProjectionTest {
     private fun change(snapshot: ServerSignalsSnapshot, transform: (ServerSymbolSignals) -> ServerSymbolSignals) =
         snapshot.copy(response = snapshot.response.copy(results = snapshot.response.results.map(transform)))
 
+    @Test fun newlyListedHistoryWarmupIsQuietButStillBreaksRunsAndKeepsReminderIdentity() {
+        val original = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0))
+        for (reason in listOf("insufficient_history", "indicator_warming_up")) {
+            val warming = change(original) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.mapIndexed { i, e ->
+                if (i == 2) e.copy(availability = "warming_up", reasonCode = reason, guaili = null, value = null,
+                    historyCount = 5) else e }) }
+            val quiet = project(warming)
+            assertNull(quiet.rows.single().issue)
+            assertTrue(quiet.rows.single().hasIncompleteEvidence)
+            assertNull(quiet.rows.single().long)
+            assertFalse(quiet.rows.single().hasCandidate)
+            val alerts = PullbackAlerts()
+            assertFalse(alerts.observe(project(original)))
+            assertFalse(alerts.observe(quiet))
+            assertFalse("Warmup must not rearm the same candidate", alerts.observe(project(original)))
+            val mixed = change(warming) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.mapIndexed { i, e ->
+                if (i == 3) e.copy(availability = "invalid", reasonCode = "invalid_data", guaili = null, value = null) else e }) }
+            assertEquals("部分级别不可用（1）", project(mixed).rows.single().issue)
+        }
+        val short = change(original) { row -> row.copy(dataStatus = "warming_up", perIntervalQuality =
+            row.perIntervalQuality.map { e -> e.copy(availability = "warming_up", reasonCode = "insufficient_history",
+                guaili = null, value = null, guailiEvidence = e.copy(availability = "warming_up",
+                    reasonCode = "insufficient_history", guaili = null, value = null, historyCount = 5)) }) }
+        assertNull(project(short).rows.single().issue)
+        assertTrue(project(short).rows.single().hasIncompleteEvidence)
+        assertNull(project(short).rows.single().long)
+    }
+
     @Test fun indicatorReadyBelowSignalHistoryThresholdParticipatesInPullbacks() {
         for (sign in listOf(1, -1)) {
             val original = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0).map { it * sign })

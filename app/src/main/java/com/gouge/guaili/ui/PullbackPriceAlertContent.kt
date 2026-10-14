@@ -30,13 +30,11 @@ internal val PullbackAlertWarning = Color(0xFFEFBB76)
 @Composable
 internal fun PullbackAlertSummary(alerts: List<PriceAlertDto>, primary: Long?, now: Long, stale: Boolean,
     pending: Map<Long, PendingPriceAlert>, onOpen: (PriceAlertDto) -> Unit, onMore: () -> Unit,
-    onExtend: (PriceAlertDto) -> Unit, modifier: Modifier = Modifier, loading: Boolean = false) {
+    onExtend: (PriceAlertDto) -> Unit, modifier: Modifier = Modifier) {
     val alert = primaryPullbackAlert(alerts, primary)
-    if (alert == null) {
-        Text(if (stale) "警报待更新" else if (loading) "警报加载中" else "暂无启用警报", modifier, style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
-        return
-    }
+    // Empty alert columns stay blank. Request failures are reported once by
+    // the page; actual retained alerts still carry their individual stale state.
+    if (alert == null) return
     val mutation = pending[alert.id]
     val status = mutation?.let { if (it.operation.purpose.startsWith("extension"))
         when (it.phase) { "uncertain" -> "延期待核对"; "failed" -> "延期未完成"; else -> "保存中" } else it.label() } ?: alert.pullbackStatus(now, stale)

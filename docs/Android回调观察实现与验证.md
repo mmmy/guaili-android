@@ -1,5 +1,7 @@
 # Android 回调观察
 
+2026-10-14 新品种预热静默：历史不足和指标排名尚未预热属于正常状态，不再产生“部分级别不可用”或计入品种待确认；未预热周期仍占位阻断回调，内部不完整证据标记保留声音去重身份。混合数据状态只统计真正异常的周期。app 300 项单元测试、Lint 和 APK 构建通过；实际模拟器确认 SOXL、UNITREE 的正常历史不足提示消失，快照中的有效周期仍正常展示。真实截图位于 `app/build/pullback-warmup-quiet.png`，升级前备份为 `app/build/device-backup-warmup.tar`，通过覆盖安装保留设置。
+
 2026-10-14 移动列对齐修正：主级别、推荐小级别和警报内容改为整页共用列宽，按固定周期全集和最大候选字形测量后缓存。短长标签、候选/等待字号及无目标 `—` 行不改变后续列起点；窄屏大字体保留警报下移，数字列仍统一。`columnsAlignAcrossDifferentPeriodsAndMissingDirections` 在普通手机、360dp/150% 字体/系统夜间、宽屏/130% 字体下均通过，校验列坐标、48dp 小级别触摸区及点击打开实际推荐周期；截图位于 `app/build/pullback-aligned-columns-{phone,narrow,wide}.png`，真实本地行情截图为 `app/build/pullback-aligned-real.png`。Lint 0 错误、APK 构建通过。以 `adb install -r` 和手动 instrument 保留安装；测试前备份文件为 `app/build/device-backup-alignment.tar`，前后行情设置与视图偏好文件哈希一致，系统尺寸、密度和字体已恢复。
 
 2026-10-14 历史门槛修正：回调只要求 guaili 指标有效，不受 V2 信号默认 60 根已收盘历史限制。新后端在不足该门槛的逐周期证据内提供同一采样的 `guailiEvidence`，回调及展开依据使用其中有效数值，原 V2 和信号规则继续使用外层证据。指标未预热、过滤、缺口、过期及恢复仍阻断回调；没有新字段的旧后端保持原判定。回归覆盖两方向、短历史候选、无效与过期证据、序列化缓存兼容；刷新和界面布局保持原有行为。

@@ -230,7 +230,7 @@ internal fun PullbackContent(
                                         prefs.primaryAlerts[priceAlertPrimaryKey(serviceKey, row.symbol, group)], priceAlerts.now,
                                         priceAlerts.error != null, writeState.pending, onOpen = { selection = null; alertGroup = null; onOpenPriceAlert(it) },
                                         onMore = { selection = null; alertGroup = row.symbol to group }, onExtend = ::extend,
-                                        modifier = Modifier.fillMaxWidth(), loading = priceAlerts.loading)
+                                        modifier = Modifier.fillMaxWidth())
                                 },
                             ) {
                                 if (selection?.let { it.symbol == row.symbol && it.candidate.direction == direction } == true) selection = null
