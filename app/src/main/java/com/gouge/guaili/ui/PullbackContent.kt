@@ -38,15 +38,19 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.gouge.guaili.pullback.*
 import com.gouge.guaili.settings.PullbackRules
 import com.gouge.guaili.data.PriceAlertDto
+import com.gouge.guaili.data.MarketPeriods
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.withTimeoutOrNull
 import com.gouge.guaili.signals.serverDisplayInterval
@@ -63,6 +67,29 @@ private fun signed(value: Int?) = when { value == null -> "—"; value > 0 -> "+
 internal fun pullbackPeriodLabel(interval: String): String {
     val minutes = interval.toLongOrNull()
     return if (minutes != null && minutes > 0 && minutes % 60 == 0L) "${minutes / 60}H" else serverDisplayInterval(interval)
+}
+
+private data class PullbackColumns(val level: Dp, val entry: Dp)
+
+@Composable
+private fun rememberPullbackColumns(rows: List<PullbackRow>): PullbackColumns {
+    val labels = remember(rows) {
+        (MarketPeriods.all.map { pullbackPeriodLabel(it.interval) } + rows.flatMap { row ->
+            listOfNotNull(row.long?.target?.interval, row.short?.target?.interval).map(::pullbackPeriodLabel)
+        } + "—").distinct()
+    }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val levelStyle = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold)
+    val entryStyle = MaterialTheme.typography.titleMedium
+    return remember(labels, density, levelStyle, entryStyle, measurer) {
+        fun width(style: TextStyle): Dp = with(density) {
+            labels.maxOf { measurer.measure(it, style, maxLines = 1, softWrap = false).size.width }.toDp()
+        }.coerceAtLeast(48.dp) + 2.dp
+        // The complete fixed period set keeps columns stable across refreshes,
+        // candidate filtering and different waiting/highlighted text styles.
+        PullbackColumns(width(levelStyle), width(entryStyle))
+    }
 }
 
 @Composable
@@ -96,6 +123,7 @@ internal fun PullbackContent(
     val rows = remember(projection.rows, prefs.onlyCandidates) {
         if (prefs.onlyCandidates) projection.rows.filter { it.hasCandidate } else projection.rows
     }
+    val columns = rememberPullbackColumns(projection.rows)
     val lifecycle = LocalLifecycleOwner.current
     DisposableEffect(lifecycle, priceWriter) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) priceWriter?.closeExtensionPreview() }
@@ -190,7 +218,7 @@ internal fun PullbackContent(
                         PullbackDirection.entries.forEach { direction ->
                             val candidate = row.candidate(direction)
                             if (!prefs.onlyCandidates || candidate?.highlighted == true) PullbackTarget(
-                                row, direction, candidate,
+                                row, direction, candidate, columns,
                                 selection?.let { it.symbol == row.symbol && it.candidate.direction == direction } == true,
                                 onEntryKline = { interval ->
                                     selection = null
@@ -313,7 +341,7 @@ private fun PullbackToolbarToggle(
 }
 
 @Composable
-private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candidate: PullbackCandidate?, isSelected: Boolean,
+private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candidate: PullbackCandidate?, columns: PullbackColumns, isSelected: Boolean,
     onEntryKline: (String) -> Unit, alertContent: @Composable () -> Unit, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val highlighted = candidate?.highlighted == true
@@ -328,36 +356,39 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
         .heightIn(min = 64.dp).padding(horizontal = 12.dp, vertical = 8.dp)) {
         val stacked = maxWidth / LocalDensity.current.fontScale < 280.dp
         val label: @Composable () -> Unit = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.width(columns.level + 8.dp + columns.entry), verticalAlignment = Alignment.CenterVertically) {
                 Text(candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "—",
                     style = if (highlighted) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.headlineMedium,
                     fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
                     color = if (candidate == null) colors.onSurfaceVariant else periodColor,
-                    modifier = Modifier.semantics {
+                    maxLines = 1, softWrap = false,
+                    modifier = Modifier.width(columns.level).semantics {
                         contentDescription = "${direction.label}，回调级别 ${candidate?.target?.interval?.let(::pullbackPeriodLabel) ?: "无"}"
                     }.testTag("pullback-period-${row.symbol}-${direction.name}"))
                 if (candidate != null) {
                     val interval = candidate.entryInterval
                     val label = remember(interval) { interval?.let(::pullbackPeriodLabel) ?: "—" }
-                    Box(Modifier.padding(start = 8.dp).sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    Box(Modifier.padding(start = 8.dp).width(columns.entry).heightIn(min = 48.dp)
                         .clickable(enabled = interval != null, role = Role.Button, onClickLabel = "打开入场小级别 K 线") {
                             interval?.let(onEntryKline)
                         }.semantics {
                             contentDescription = if (interval == null) "无更小级别" else "${row.symbol} 入场参考 $label，打开 K 线"
-                        }.testTag("pullback-entry-${row.symbol}-${direction.name}"), contentAlignment = Alignment.Center) {
+                        }.testTag("pullback-entry-${row.symbol}-${direction.name}"), contentAlignment = Alignment.CenterStart) {
                         Text(label, style = MaterialTheme.typography.titleMedium, color = colors.onSurfaceVariant,
                             maxLines = 1, softWrap = false)
                     }
-                }
+                } else Spacer(Modifier.padding(start = 8.dp).width(columns.entry).height(48.dp))
             }
         }
         if (stacked) Column {
             label()
-            if (candidate == null) row.issue?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
-            alertContent()
+            Column(Modifier.fillMaxWidth().testTag("pullback-details-${row.symbol}-${direction.name}")) {
+                if (candidate == null) row.issue?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
+                alertContent()
+            }
         } else Row(verticalAlignment = Alignment.CenterVertically) {
             label()
-            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Column(Modifier.weight(1f).padding(start = 12.dp).testTag("pullback-details-${row.symbol}-${direction.name}")) {
                 if (candidate == null) row.issue?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
                 alertContent()
             }

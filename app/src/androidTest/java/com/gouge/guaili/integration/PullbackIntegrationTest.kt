@@ -161,6 +161,43 @@ class PullbackIntegrationTest {
             assertTrue(requests.any { it.requestUrl?.encodedPath == "/api/signals" })
         }
     }
+
+    @Test fun columnsAlignAcrossDifferentPeriodsAndMissingDirections() {
+        mode = "columns"
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            await("pullback-target-BTCUSDT-Long")
+            val rowTags = listOf("BTCUSDT-Long", "BTCUSDT-Short", "ETHUSDT-Long", "ETHUSDT-Short")
+            compose.onNodeWithTag("pullback-period-BTCUSDT-Long", useUnmergedTree = true).assertTextEquals("4H")
+            compose.onNodeWithTag("pullback-period-BTCUSDT-Short", useUnmergedTree = true).assertTextEquals("15m")
+            val bounds = rowTags.associateWith { row ->
+                compose.onNodeWithTag("pullback-list").performScrollToNode(hasTestTag("pullback-target-$row"))
+                compose.waitForIdle()
+                val period = compose.onNodeWithTag("pullback-period-$row", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                val entry = compose.onAllNodesWithTag("pullback-entry-$row", useUnmergedTree = true).fetchSemanticsNodes()
+                    .singleOrNull()?.boundsInRoot
+                val details = compose.onNodeWithTag("pullback-details-$row", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                Triple(period, entry, details)
+            }
+            val first = bounds.getValue("BTCUSDT-Long")
+            bounds.values.forEach { (period, entry, details) ->
+                assertEquals("Main periods share one column", first.first.left, period.left, 1f)
+                assertEquals("Main column width is stable", first.first.width, period.width, 1f)
+                entry?.let {
+                    assertEquals("Entry periods share one column", first.second!!.left, it.left, 1f)
+                    assertEquals("Entry touch width is stable", first.second!!.width, it.width, 1f)
+                    assertTrue("Entry remains at least 48dp wide", it.width + 1 >= 48 * context.resources.displayMetrics.density)
+                    assertTrue("Period and entry do not overlap", period.right <= it.left)
+                }
+                assertEquals("Details do not shift for missing targets", first.third.left, details.left, 1f)
+            }
+            compose.onNodeWithTag("pullback-period-ETHUSDT-Long", useUnmergedTree = true).assertTextEquals("—")
+            compose.onNodeWithTag("pullback-list").performScrollToNode(hasTestTag("pullback-symbol-BTCUSDT"))
+            capture("pullback-aligned-columns")
+            compose.onNodeWithTag("pullback-entry-BTCUSDT-Long").performClick()
+            compose.waitUntil(15000) { requests.any { it.requestUrl?.encodedPath == "/api/klines" } }
+            assertEquals("10", requests.first { it.requestUrl?.encodedPath == "/api/klines" }.requestUrl!!.queryParameter("intervals"))
+        }
+    }
     @Test fun entryPeriodOpensItsOwnKlineAndDivisorSavesCancelsAndRestores() {
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
             await("pullback-entry-BTCUSDT-Long")
@@ -279,7 +316,8 @@ class PullbackIntegrationTest {
                 val longValues = listOf(0.8, 0.6, 0.5, 0.3, if (mode == "empty" || symbol in listOf("SOLUSDT", "AVAXUSDT")) 0.4 else 0.0)
                 val shortValues = listOf(-1.8, -1.4, -0.6, -0.3, if (mode == "empty" || symbol in listOf("BTCUSDT", "AVAXUSDT")) -1.8 else 0.0)
                 val evidence = (listOf("D", "720", "480", "360", "240").zip(longValues) + listOf("60", "45", "30", "20", "15").zip(shortValues)).map { (period, value) ->
-                    ServerIntervalEvidence(period, "ready", value = (value * 10).toInt(), guaili = value, marketEventTime = at, isClosed = false)
+                    val g = if (mode == "columns" && symbol == "ETHUSDT" && period in listOf("D", "720", "480", "360", "240")) 0.0 else value
+                    ServerIntervalEvidence(period, "ready", value = (g * 10).toInt(), guaili = g, marketEventTime = at, isClosed = false)
                 }
                 if (mode == "short_history") ServerSymbolSignals(symbol, "warming_up", at,
                     perIntervalQuality = evidence.map { e -> e.copy(availability = "warming_up",

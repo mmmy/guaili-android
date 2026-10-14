@@ -1,5 +1,7 @@
 # Android 回调观察
 
+2026-10-14 移动列对齐修正：主级别、推荐小级别和警报内容改为整页共用列宽，按固定周期全集和最大候选字形测量后缓存。短长标签、候选/等待字号及无目标 `—` 行不改变后续列起点；窄屏大字体保留警报下移，数字列仍统一。`columnsAlignAcrossDifferentPeriodsAndMissingDirections` 在普通手机、360dp/150% 字体/系统夜间、宽屏/130% 字体下均通过，校验列坐标、48dp 小级别触摸区及点击打开实际推荐周期；截图位于 `app/build/pullback-aligned-columns-{phone,narrow,wide}.png`，真实本地行情截图为 `app/build/pullback-aligned-real.png`。Lint 0 错误、APK 构建通过。以 `adb install -r` 和手动 instrument 保留安装；测试前备份文件为 `app/build/device-backup-alignment.tar`，前后行情设置与视图偏好文件哈希一致，系统尺寸、密度和字体已恢复。
+
 2026-10-14 历史门槛修正：回调只要求 guaili 指标有效，不受 V2 信号默认 60 根已收盘历史限制。新后端在不足该门槛的逐周期证据内提供同一采样的 `guailiEvidence`，回调及展开依据使用其中有效数值，原 V2 和信号规则继续使用外层证据。指标未预热、过滤、缺口、过期及恢复仍阻断回调；没有新字段的旧后端保持原判定。回归覆盖两方向、短历史候选、无效与过期证据、序列化缓存兼容；刷新和界面布局保持原有行为。
 
 本次验证：app 299 项单元测试通过，Lint 0 错误（46 项现有警告），Debug APK 构建通过；模拟器集成 `shortHistoryGuailiShowsTargetsAndEvidenceWhileV2StaysEmpty` 通过，实际 Activity 从 HTTP 解析短历史证据、显示目标与 +8 背景数值，切到 V2 仍无信号。真实本地后端确认 XAU 周线 44 根、10 日线 30 根的指标证据 ready，外层仍历史不足。Gradle connected 测试的清理会卸载应用并清除数据；本次已重新安装并恢复已知本地地址、10 品种范围与回调视图，其余旧自定义设置无法恢复。后续在用户模拟器验证应先备份，直接 `adb install -r` 和 `am instrument` 运行以保留安装和数据。
