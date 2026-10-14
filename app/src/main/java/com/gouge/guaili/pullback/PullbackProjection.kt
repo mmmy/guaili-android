@@ -107,7 +107,8 @@ internal fun projectPullbacks(snapshot: ServerSignalsSnapshot?, rules: PullbackR
         row.missingIntervals.forEach { pullbackPeriodMillis(it)?.let { d -> axis[d] = null } }
         val seen = HashSet<Long>()
         var malformed = 0
-        row.perIntervalQuality.forEach { e ->
+        row.perIntervalQuality.forEach { signalEvidence ->
+            val e = signalEvidence.forPullback()
             val duration = pullbackPeriodMillis(e.interval)
             if (duration == null) malformed++ else axis[duration] = if (seen.add(duration)) e else null
             if (e.availability == "ready") e.marketEventTime?.let { expires(it, quality.maxMarketAgeMs) }

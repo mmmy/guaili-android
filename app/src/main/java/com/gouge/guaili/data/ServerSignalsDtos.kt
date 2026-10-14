@@ -85,4 +85,13 @@ data class ServerIntervalEvidence(
     val closeTime: Long? = null,
     val marketEventTime: Long? = null,
     val isClosed: Boolean? = null,
-)
+    val reasonCode: String? = null,
+    /** Same-snapshot indicator evidence when only the signal history rule fails. */
+    val guailiEvidence: ServerIntervalEvidence? = null,
+) {
+    fun forPullback(): ServerIntervalEvidence = guailiEvidence?.takeIf {
+        availability == "warming_up" && reasonCode == "insufficient_history" &&
+            it.interval == interval && it.marketEventTime == marketEventTime &&
+            it.guailiEvidence == null
+    } ?: this
+}

@@ -39,6 +39,42 @@ class PullbackProjectionTest {
     private fun change(snapshot: ServerSignalsSnapshot, transform: (ServerSymbolSignals) -> ServerSymbolSignals) =
         snapshot.copy(response = snapshot.response.copy(results = snapshot.response.results.map(transform)))
 
+    @Test fun indicatorReadyBelowSignalHistoryThresholdParticipatesInPullbacks() {
+        for (sign in listOf(1, -1)) {
+            val original = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0).map { it * sign })
+            val short = change(original) { row -> row.copy(dataStatus = "warming_up",
+                missingIntervals = row.perIntervalQuality.map { it.interval },
+                perIntervalQuality = row.perIntervalQuality.map { e -> e.copy(
+                    availability = "warming_up", reasonCode = "insufficient_history", value = null, guaili = null,
+                    historyCount = 30, guailiEvidence = e.copy(historyCount = 30)) }) }
+            val row = project(short).rows.single()
+            val candidate = row.candidate(if (sign == 1) PullbackDirection.Long else PullbackDirection.Short)!!
+            assertTrue(candidate.highlighted)
+            assertEquals(30, candidate.target.historyCount)
+            assertNull(row.issue)
+            assertTrue(short.response.results.single().signals.isEmpty())
+            assertTrue(short.response.results.single().perIntervalQuality.all { it.guaili == null })
+        }
+    }
+
+    @Test fun guailiOverrideCannotBypassBadIndicatorOrMarketEvidence() {
+        val original = fixture(listOf(1.8, 1.4, 0.6, 0.3, 0.0))
+        val short = change(original) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.map { e ->
+            e.copy(availability = "warming_up", reasonCode = "insufficient_history", value = null, guaili = null,
+                guailiEvidence = e.copy(historyCount = 30)) }) }
+        for (status in listOf("warming_up", "filtered", "stale", "invalid", "gap", "recovering")) {
+            val bad = change(short) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.mapIndexed { i, e ->
+                if (i == 2) e.copy(guailiEvidence = e.guailiEvidence!!.copy(availability = status)) else e }) }
+            assertNull(project(bad).rows.single().long)
+        }
+        for (status in listOf("stale", "invalid", "recovering", "gap")) {
+            assertNull(project(change(short) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.map {
+                it.copy(availability = status) }) }).rows.single().long)
+        }
+        assertNull(project(change(short) { row -> row.copy(perIntervalQuality = row.perIntervalQuality.map {
+            it.copy(guailiEvidence = it.guailiEvidence!!.copy(marketEventTime = now - 30_001)) }) }).rows.single().long)
+    }
+
     @Test fun weakTouchAndTruncatedZeroRemainDistinctInBothDirections() {
         for (sign in listOf(1, -1)) for ((last, phase, hit) in listOf(
             Triple(0.2, PullbackPhase.Waiting, false), Triple(0.0, PullbackPhase.Touch, true), Triple(0.04, PullbackPhase.Near, false))) {

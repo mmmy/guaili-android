@@ -9,6 +9,20 @@ import kotlin.test.assertFailsWith
 class ServerSignalsDtosTest {
     private val json = Json { ignoreUnknownKeys = true }
 
+    @Test fun guailiEvidenceRoundTripsWithoutChangingLegacySignalAvailability() {
+        val evidence = json.decodeFromString<ServerIntervalEvidence>("""
+            {"interval":"W","availability":"warming_up","reasonCode":"insufficient_history",
+             "historyCount":44,"marketEventTime":1000000,"value":null,"guaili":null,
+             "guailiEvidence":{"interval":"W","availability":"ready","value":-4,"guaili":-0.4,
+               "historyCount":44,"marketEventTime":1000000,"isClosed":false}}
+        """.trimIndent())
+        assertNull(evidence.guaili)
+        assertEquals("warming_up", evidence.availability)
+        assertEquals(-0.4, evidence.forPullback().guaili!!, 0.0)
+        assertEquals(evidence, json.decodeFromString<ServerIntervalEvidence>(
+            json.encodeToString(ServerIntervalEvidence.serializer(), evidence)))
+    }
+
     @Test fun parsesDynamicServerContractAndKeepsMillisecondEvidence() {
         val response = json.decodeFromString<ServerSignalsResponse>("""
             {

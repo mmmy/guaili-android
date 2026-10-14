@@ -144,6 +144,23 @@ class PullbackIntegrationTest {
             assertTrue(requests.filter { it.requestUrl?.encodedPath == "/api/signals" }.all { it.requestUrl?.queryParameter("symbols") == null })
         }
     }
+
+    @Test fun shortHistoryGuailiShowsTargetsAndEvidenceWhileV2StaysEmpty() {
+        mode = "short_history"
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            await("pullback-target-BTCUSDT-Long")
+            compose.onNodeWithTag("pullback-period-BTCUSDT-Long", useUnmergedTree = true).assertTextEquals("4H")
+            compose.onAllNodesWithText("部分级别不可用", substring = true).assertCountEquals(0)
+            compose.onNodeWithTag("pullback-target-BTCUSDT-Long").performClick()
+            await("pullback-evidence")
+            compose.onNodeWithText("+8", useUnmergedTree = true).assertExists()
+            capture("pullback-short-history-evidence")
+            compose.onNodeWithTag("pullback-evidence-close").performClick()
+            compose.onNodeWithTag("market-view-v2").performClick()
+            await("market-v2-empty")
+            assertTrue(requests.any { it.requestUrl?.encodedPath == "/api/signals" })
+        }
+    }
     @Test fun entryPeriodOpensItsOwnKlineAndDivisorSavesCancelsAndRestores() {
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
             await("pullback-entry-BTCUSDT-Long")
@@ -264,7 +281,12 @@ class PullbackIntegrationTest {
                 val evidence = (listOf("D", "720", "480", "360", "240").zip(longValues) + listOf("60", "45", "30", "20", "15").zip(shortValues)).map { (period, value) ->
                     ServerIntervalEvidence(period, "ready", value = (value * 10).toInt(), guaili = value, marketEventTime = at, isClosed = false)
                 }
-                ServerSymbolSignals(symbol, "ready", at, perIntervalQuality = evidence)
+                if (mode == "short_history") ServerSymbolSignals(symbol, "warming_up", at,
+                    perIntervalQuality = evidence.map { e -> e.copy(availability = "warming_up",
+                        reasonCode = "insufficient_history", value = null, guaili = null, historyCount = 30,
+                        guailiEvidence = e.copy(historyCount = 30)) },
+                    missingIntervals = evidence.map { it.interval })
+                else ServerSymbolSignals(symbol, "ready", at, perIntervalQuality = evidence)
             })
     }
 }
