@@ -5,6 +5,9 @@ import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFact
 import java.time.OffsetDateTime
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,6 +21,7 @@ sealed interface KlineResult<out T> {
 
 class KlineRepository(
     private val api: KlineApiService,
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     suspend fun fetch(
         symbol: String,
@@ -33,9 +37,9 @@ class KlineRepository(
         )
         val series = response.series.firstOrNull { it.interval == interval }
             ?: response.series.firstOrNull()
-        val candles = series.orEmptyData()
-            .map { it.candle.toDomain() }
-            .sortedBy(Kline::openTimeMillis)
+        val candles = withContext(computationDispatcher) {
+            series.orEmptyData().map { it.candle.toDomain() }.sortedBy(Kline::openTimeMillis)
+        }
         KlineResult.Success(candles)
     } catch (error: CancellationException) {
         throw error
@@ -44,19 +48,18 @@ class KlineRepository(
     }
 
     companion object {
-        fun create(baseUrl: String): KlineRepository {
-            val json = Json { ignoreUnknownKeys = true }
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
-            }
-            val client = OkHttpClient.Builder()
+        private val json = Json { ignoreUnknownKeys = true }
+        private val sharedClient by lazy {
+            OkHttpClient.Builder()
                 .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(8, TimeUnit.SECONDS)
-                .addInterceptor(logging)
+                .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
                 .build()
+        }
+        fun create(baseUrl: String): KlineRepository {
             val retrofit = Retrofit.Builder()
                 .baseUrl(ensureKlineTrailingSlash(baseUrl))
-                .client(client)
+                .client(sharedClient)
                 .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                 .build()
             return KlineRepository(retrofit.create(KlineApiService::class.java))

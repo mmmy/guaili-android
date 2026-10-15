@@ -3,11 +3,14 @@ package com.gouge.guaili.data
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
 import kotlin.test.assertFailsWith
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ServerSignalsRefreshUseCaseTest {
     @Test fun appAndWidgetReuseOnlyRecentCompleteSnapshotsFromTheSameSource() = runTest {
         val sink = MemorySink()
@@ -106,7 +109,7 @@ class ServerSignalsRefreshUseCaseTest {
         assertFailsWith<CancellationException> { cancelled.refresh("http://server") }
     }
 
-    @Test fun independentEntrypointsSerializeRefreshAndSourceChangesRecreateFetcher() = runTest {
+    @Test fun independentEntrypointsShareRefreshAndSourceChangesRecreateFetcher() = runTest {
         val started = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         var calls = 0
@@ -129,12 +132,58 @@ class ServerSignalsRefreshUseCaseTest {
         val a = async { first.refresh("http://server-a") }
         started.await()
         val b = async { second.refresh("http://server-a") }
+        runCurrent()
         release.complete(Unit)
         a.await(); b.await()
         first.refresh("http://server-a/")
         first.refresh("http://server-b")
         assertEquals(1, maximumActive)
-        assertEquals(listOf("http://server-a", "http://server-a", "http://server-b"), created)
+        assertEquals(3, calls)
+        assertEquals(listOf("http://server-a", "http://server-b"), created)
+    }
+
+    @Test fun sharedPersistenceFailureIsInterpretedPerCallerWhileSubsetsRemainIndependent() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val queries = mutableListOf<List<String>>()
+        val sink = ServerSignalsSnapshotSink { error("disk full") }
+        val useCase = ServerSignalsRefreshUseCase(ServerSignalsFetcherFactory { ServerSignalsFetcher { symbols ->
+            queries += symbols
+            if (queries.size == 1) { started.complete(Unit); release.await() }
+            GuailiResult.Success(ServerSignalsResponse(true, "ready", 20_000L))
+        } }, sink)
+        val bestEffort = async { useCase.refresh("http://server", requirePersistence = false) }
+        started.await()
+        val required = async { useCase.refresh("http://server", requirePersistence = true) }
+        val subset = async { useCase.refresh("http://server", requirePersistence = false, symbols = listOf("BTCUSDT")) }
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(bestEffort.await() is GuailiResult.Success)
+        assertTrue(required.await() is GuailiResult.Failure)
+        assertTrue(subset.await() is GuailiResult.Success)
+        assertEquals(listOf(emptyList<String>(), listOf("BTCUSDT")), queries)
+    }
+
+    @Test fun anActualNetworkRefreshIsSharedAcrossCachePermissionsAndPersistenceStrengths() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val sink = MemorySink()
+        var calls = 0
+        val factory = ServerSignalsFetcherFactory { ServerSignalsFetcher {
+            calls++; started.complete(Unit); release.await()
+            GuailiResult.Success(ServerSignalsResponse(true, "ready", 20_000L))
+        } }
+        val screen = ServerSignalsRefreshUseCase(factory, sink)
+        val worker = ServerSignalsRefreshUseCase(factory, sink)
+        val first = async { screen.refresh("http://server", requirePersistence = false) }
+        started.await()
+        val strict = async { worker.refresh("http://server", requirePersistence = true, reuseWithinMillis = 1_000) }
+        runCurrent()
+        release.complete(Unit)
+        val snapshot = (first.await() as GuailiResult.Success).value
+        assertEquals(snapshot, (strict.await() as GuailiResult.Success).value)
+        assertEquals(snapshot, sink.snapshot)
+        assertEquals(1, calls)
     }
 
     @Test fun eachRefreshUsesTheCurrentUnionAndReplacesItAsOneSample() = runTest {

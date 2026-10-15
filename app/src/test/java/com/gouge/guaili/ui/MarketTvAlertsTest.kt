@@ -93,4 +93,17 @@ class MarketTvAlertsTest {
         assertEquals("TV 尚未同步", marketTvSyncLabel(snapshot.copy(hasLoadedAlerts = false)))
         assertEquals("TV 未登录", marketTvSyncLabel(snapshot.copy(isAuthenticated = false)))
     }
+
+    @Test fun nextExpirySkipsAlreadyExpiredAndUnknownEntriesAndIncludesStoppedCounts() {
+        val entries = marketTvEntries(state(listOf(alert(1), alert(2, active = false),
+            alert(3).copy(createTime = ""), alert(4).copy(createTime = now.minusSeconds(3_600).toString()))),
+            defaultMarketTvTicker("BTCUSDT"))
+        val grouped = mapOf("BTCUSDT" to entries)
+        val next = nextMarketTvExpiry(grouped, now)!!
+        assertEquals(now.plusSeconds(3_000), next)
+        assertEquals(1, summarizeMarketTvEntries(grouped, now).getValue("BTCUSDT").summary.expiredCount)
+        assertEquals(3, summarizeMarketTvEntries(grouped, next).getValue("BTCUSDT").summary.expiredCount)
+        assertNull(nextMarketTvExpiry(grouped, next))
+        assertNull(nextMarketTvExpiry(emptyMap(), now))
+    }
 }

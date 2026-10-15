@@ -14,6 +14,9 @@ import com.gouge.guaili.data.AlertResult
 import com.gouge.guaili.domain.KlineChartRow
 import com.gouge.guaili.domain.calculateKlineChartRows
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,6 +39,7 @@ data class KlineUiState(
 class KlineViewModel(
     private val repository: KlineRepository,
     private val alertRepository: AlertRepository? = null,
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val _state = MutableStateFlow(KlineUiState())
     val state: StateFlow<KlineUiState> = _state.asStateFlow()
@@ -71,8 +75,9 @@ class KlineViewModel(
 
             when (val result = repository.fetch(symbol, interval, closedOnly = closedOnly)) {
                 is KlineResult.Success -> {
+                    val rows = withContext(computationDispatcher) { calculateKlineChartRows(result.value) }
                     _state.value = _state.value.copy(
-                        rows = calculateKlineChartRows(result.value),
+                        rows = rows,
                         isLoading = false,
                         isRefreshing = false,
                         errorMessage = null,

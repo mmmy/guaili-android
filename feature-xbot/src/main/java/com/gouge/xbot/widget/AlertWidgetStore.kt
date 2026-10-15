@@ -23,13 +23,22 @@ class AlertWidgetStore(context: Context) {
     fun snapshot(): AlertSnapshot? {
         val scope = currentScope() ?: return null
         val value = preferences.getString("snapshot", null) ?: return null
-        return runCatching { json.decodeFromString<AlertSnapshotEnvelope>(value) }.getOrNull()
-            ?.takeIf { it.scope == scope }?.snapshot
+        val envelope = synchronized(snapshotCacheLock) {
+            if (cachedEncoded != value) {
+                cachedEnvelope = runCatching { json.decodeFromString<AlertSnapshotEnvelope>(value) }.getOrNull()
+                cachedEncoded = value
+            }
+            cachedEnvelope
+        }
+        return envelope?.takeIf { it.scope == scope }?.snapshot
     }
 
     fun saveSnapshot(scope: String, snapshot: AlertSnapshot) {
         SessionStore(context).withCurrentScope(scope) {
-            preferences.edit().putString("snapshot", json.encodeToString(AlertSnapshotEnvelope(scope, snapshot))).apply()
+            val envelope = AlertSnapshotEnvelope(scope, snapshot)
+            val encoded = json.encodeToString(envelope)
+            preferences.edit().putString("snapshot", encoded).apply()
+            synchronized(snapshotCacheLock) { cachedEncoded = encoded; cachedEnvelope = envelope }
         }
     }
 
@@ -44,4 +53,10 @@ class AlertWidgetStore(context: Context) {
     }
 
     fun remove(id: Int) { preferences.edit().remove("settings_$id").apply() }
+
+    companion object {
+        private val snapshotCacheLock = Any()
+        private var cachedEncoded: String? = null
+        private var cachedEnvelope: AlertSnapshotEnvelope? = null
+    }
 }

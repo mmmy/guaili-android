@@ -2,6 +2,24 @@
 
 行情与乖离分析、XBot 信号设置、TradingView 警报管理的 Android 客户端。
 
+## 性能验证
+
+正式 release 包启用 R8 与资源收缩。`benchmark` 包使用独立的 `com.gouge.guaili.perf` 应用 ID 和本地模拟行情，不读取或修改正式安装的账户、警报和小组件；测试入口只存在于 benchmark 构建。
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :feature-xbot:testDebugUnitTest :app:assembleRelease :app:lintDebug
+# 在已连接的 API 33+ 测试设备生成启动、矩阵与 K 线 Baseline/Startup Profiles。
+.\scripts\measure-performance.ps1 -Serial <设备序列号> -Mode Profiles
+# 重新构建优化包后测量冷启动及 K 线平移，输出 JSON 和 Perfetto trace。
+.\scripts\measure-performance.ps1 -Serial <设备序列号> -Mode Benchmark
+```
+
+只有模拟器功能验证时才添加 `-AllowEmulator`；其耗时不能作为真机性能结论。结果保存在 `build/performance/`，生成的规则保存到 `app/src/main/baselineProfiles/`，正常 release 构建不需要连接设备。每项基准会清理独立的 `.perf` 测试数据，修改核心用户路径后重新生成规则，勿用 debug 包评价发布性能。
+
+Benchmark 模式先在独立 instrumentation 进程检查优化 APK 中 Room 数据库与 Glance 刷新回调的反射构造，再以新进程测量。保留 `app/proguard-rules.pro` 中两类无参构造规则，更新相关依赖后继续运行该检查。
+
+运行效率约定：映射、指标及快照序列化在计算线程执行；并发相同观测共享请求且保留每位调用者的取消和持久化要求；快照按实际存储内容复用解析结果。前台已有数据直接更新对应小组件，局部修改不发布旧的完整列表。V2 展示内容与时间边界分离，K 线静态行情图层与交互预览分离；这些优化不降低行情刷新频率，也不改变失效、候选、声音及导航语义。
+
 价格轴缩放修复（2026-10-07）：价格轴下拖压缩、上拖展开，主图上下拖动平移价格，双击价格轴或点击「自动」恢复。行情刷新保留手动范围，选中警报的绘制和触摸命中使用相同坐标。见 [修复与验证](docs/手机价格轴缩放修复与验证.md)；[修复版 APK](dist/price-axis-fix/GuailiAndroid-price-axis-fix.apk) 为同开发证书签名的 Release 构建。
 
 ## 回调行精简（0.5.1）

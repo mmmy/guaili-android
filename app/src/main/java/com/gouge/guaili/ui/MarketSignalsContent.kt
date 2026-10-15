@@ -122,16 +122,18 @@ internal fun MarketSignalsContent(
     val display = state.presentation
     val response = state.snapshot?.response
     val palette = appSignalPalette()
-    val visible = display.signals.filter { (scopeSymbol == null || it.symbol == scopeSymbol) &&
-        (scopeInterval == null || it.signal.runs.any { run -> scopeInterval in run.intervals }) }
-    val rowKeys = buildList {
+    val visible = remember(display.signals, scopeSymbol, scopeInterval) {
+        display.signals.filter { (scopeSymbol == null || it.symbol == scopeSymbol) &&
+            (scopeInterval == null || it.signal.runs.any { run -> scopeInterval in run.intervals }) }
+    }
+    val rowKeys = remember(state.preferenceError, showStatus, display.signals, display.warning, visible, response != null) { buildList {
         if (state.preferenceError != null) add("preference-error")
         if (showStatus && display.signals.isNotEmpty() && display.warning != null) add("quality-warning")
         if (showStatus) add("status")
         if (display.signals.isEmpty()) add("empty")
         if (display.signals.isNotEmpty() && visible.isEmpty()) add("scope-empty")
         if (response != null) addAll(visible.map { "${it.symbol}/${it.signal.id}" })
-    }
+    } }
     LaunchedEffect(restoreAnchor, rowKeys) {
         val anchor = restoreAnchor ?: return@LaunchedEffect
         if (rowKeys.isNotEmpty()) {
@@ -276,8 +278,8 @@ private fun ServerSignalCard(item: ServerSignalItem, response: ServerSignalsResp
     onLocateTable: ((ServerSignalItem) -> Unit)?, embedded: Boolean, selected: Boolean) {
     var expanded by rememberSaveable(item.symbol, item.signal.id) { mutableStateOf(false) }
     val signal = item.signal
-    val row = response.results.firstOrNull { it.symbol == item.symbol }
-    val presentation = serverSignalPresentation(item, response, now) ?: return
+    val row = remember(response, item.symbol) { response.results.firstOrNull { it.symbol == item.symbol } }
+    val presentation = remember(item, response, now) { serverSignalPresentation(item, response, now, row) } ?: return
     val palette = LocalSignalPalette.current
     Column(Modifier.fillMaxWidth().testTag("market-v2-card-${item.symbol}-${signal.id}")
         .background(Color(palette.card))

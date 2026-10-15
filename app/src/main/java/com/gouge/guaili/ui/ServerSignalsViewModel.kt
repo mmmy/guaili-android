@@ -59,6 +59,15 @@ internal class ServerSignalsViewModel(
     private var projectedBoot: Int? = null
     private var projectedRefreshIntervalMillis: Long? = null
     private var projection: PullbackProjection = PullbackProjection()
+    private val presentationCache = ServerSignalsPresentationCache()
+    private var observedProjection: PullbackProjection? = null
+    private var availableSnapshot: ServerSignalsSnapshot? = null
+    private var availableSettingsSymbols: List<String>? = null
+    private var availableSelectedSymbols: List<String>? = null
+    private var availableSymbols: List<String> = emptyList()
+    private var boundaryCheckDelayMillis = 1_000L
+
+    private fun resetAlerts() { alerts.reset(); observedProjection = null }
 
     init {
         viewModelScope.launch {
@@ -70,7 +79,7 @@ internal class ServerSignalsViewModel(
                     normalizeServerSignalsBaseUrl(observed.settings.baseUrl)
                 val refreshIntervalChanged = settings.autoRefreshSeconds != observed.settings.autoRefreshSeconds
                 if (sourceChanged || preferences.pullback.rules != observed.preferences.pullback.rules ||
-                    preferences.pullback.soundEnabled != observed.preferences.pullback.soundEnabled) alerts.reset()
+                    preferences.pullback.soundEnabled != observed.preferences.pullback.soundEnabled) resetAlerts()
                 settings = observed.settings
                 preferences = observed.preferences
                 snapshot = observed.snapshot?.takeIf { it.belongsTo(settings.baseUrl) }
@@ -109,7 +118,7 @@ internal class ServerSignalsViewModel(
     fun setPullbackActive(active: Boolean) {
         if (pullbackActive == active) return
         pullbackActive = active
-        alerts.reset()
+        resetAlerts()
         rebuild()
     }
     fun toggleSymbol(symbol: String) = updatePreferences { prefs ->
@@ -137,15 +146,16 @@ internal class ServerSignalsViewModel(
     fun setForeground(active: Boolean) {
         if (foreground == active) return
         foreground = active
-        alerts.reset()
+        resetAlerts()
         polling?.cancel()
         expiry?.cancel()
         request?.cancel()
         if (active) {
             rebuild()
             restartPolling()
-            // Expiry is checked even when every network request fails or hangs.
-            expiry = viewModelScope.launch { while (foreground) { delay(1_000); rebuild() } }
+            // The cheap clock-health guard remains active when requests fail or hang.
+            // Presentation content and phases are cached until their actual time boundaries.
+            expiry = viewModelScope.launch { while (foreground) { delay(boundaryCheckDelayMillis); rebuild() } }
         }
     }
 
@@ -198,10 +208,10 @@ internal class ServerSignalsViewModel(
     private fun rebuild() {
         val symbols = preferences.symbols ?: settings.symbols
         val device = snapshotSource.currentDeviceTime()
-        val display = if (device == null) ServerSignalsState("time_uncertain", "时间暂不可确认，请刷新", "刷新后重新校准时间")
-            else serverSignalsState(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds), settings.baseUrl, device,
-                refreshIntervalMillis())
-        val now = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device).nowMillis else null
+        val display = presentationCache.state(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds),
+            settings.baseUrl, device, refreshIntervalMillis())
+        val time = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device) else null
+        val now = time?.nowMillis
         val rules = preferences.pullback.rules
         // Reuse sorted evidence between responses; expiry only rebuilds at a quality boundary.
         if (projectedSnapshot !== snapshot || projectedRules != rules || projectedSymbols != settings.symbols ||
@@ -215,11 +225,22 @@ internal class ServerSignalsViewModel(
             projectedBoot = device?.bootCount
             projectedRefreshIntervalMillis = refreshIntervalMillis()
         }
-        val appeared = alerts.observe(projection)
+        val appeared = if (observedProjection !== projection) {
+            observedProjection = projection
+            alerts.observe(projection)
+        } else false
+        boundaryCheckDelayMillis = listOfNotNull(presentationCache.nextChangeAt, projection.nextChangeAt)
+            .minOrNull()?.let { at -> now?.let { (at - it).coerceIn(1L, 1_000L) } } ?: 1_000L
         if (appeared && foreground && pullbackActive && preferences.pullback.soundEnabled) mutablePullbackAlerts.tryEmit(Unit)
+        if (availableSnapshot !== snapshot || availableSettingsSymbols != settings.symbols || availableSelectedSymbols != symbols) {
+            availableSymbols = (settings.symbols + snapshot?.response?.results.orEmpty().map { it.symbol } + symbols).distinct()
+            availableSnapshot = snapshot
+            availableSettingsSymbols = settings.symbols
+            availableSelectedSymbols = symbols
+        }
         mutableState.value = mutableState.value.copy(
             preferences = preferences, symbols = symbols, snapshot = snapshot,
-            availableSymbols = (settings.symbols + snapshot?.response?.results.orEmpty().map { it.symbol } + symbols).distinct(),
+            availableSymbols = availableSymbols,
             presentation = display,
             pullbacks = projection,
             autoRefreshSeconds = settings.autoRefreshSeconds.coerceAtLeast(1),
@@ -227,9 +248,9 @@ internal class ServerSignalsViewModel(
                 normalizeServerSignalsBaseUrl(it.baseUrl) == normalizeServerSignalsBaseUrl(settings.baseUrl) &&
                     it.updatedAt >= (snapshot?.updatedAt ?: 0L)
             }?.message,
-            clockMessage = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device).let {
+            clockMessage = time?.let {
                 it.unavailableReason ?: it.correctionMessage ?: "已按服务器时间校准"
-            } else "刷新后校准时间",
+            } ?: "刷新后校准时间",
         )
     }
 

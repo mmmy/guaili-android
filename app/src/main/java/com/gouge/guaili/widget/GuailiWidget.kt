@@ -94,19 +94,32 @@ class GuailiWidget : GlanceAppWidget() {
         val configuration = WidgetConfigStore(context).observe(appWidgetId, SettingsStore(context).settings)
         val initialConfiguration = configuration.first()
         val snapshotStore = GuailiSnapshotStore(context)
-        val initialSnapshot = snapshotStore.read()
+        val initialMode = initialConfiguration.config.mode
+        val initialSnapshot = if (initialMode != WidgetMode.SignalsV2 && initialMode != WidgetMode.DecisionReminders) {
+            snapshotStore.read()
+        } else null
         val serverSnapshotStore = ServerSignalsSnapshotStore(context)
-        val initialServerSnapshot = serverSnapshotStore.read()
-        val initialServerFailure = serverSnapshotStore.readFailure()
+        val initialServerSnapshot = if (initialMode == WidgetMode.SignalsV2) serverSnapshotStore.read() else null
+        val initialServerFailure = if (initialMode == WidgetMode.SignalsV2) serverSnapshotStore.readFailure() else null
         val deliveryStatus = reminderDeliveryStatus(context)
 
         provideContent {
             // updateAll does not restart provideGlance while its session is active.
             // Observe saves so refresh feedback and signals use the same latest data.
-            val snapshot by snapshotStore.snapshots.collectAsState(initialSnapshot)
-            val serverSnapshot by serverSnapshotStore.snapshots.collectAsState(initialServerSnapshot)
-            val serverFailure by serverSnapshotStore.failures.collectAsState(initialServerFailure)
             val currentConfiguration by configuration.collectAsState(initialConfiguration)
+            val mode = currentConfiguration.config.mode
+            val snapshot = if (mode != WidgetMode.SignalsV2 && mode != WidgetMode.DecisionReminders) {
+                val value by snapshotStore.snapshots.collectAsState(initialSnapshot)
+                value
+            } else null
+            val serverSnapshot = if (mode == WidgetMode.SignalsV2) {
+                val value by serverSnapshotStore.snapshots.collectAsState(initialServerSnapshot)
+                value
+            } else null
+            val serverFailure = if (mode == WidgetMode.SignalsV2) {
+                val value by serverSnapshotStore.failures.collectAsState(initialServerFailure)
+                value
+            } else null
             val refreshStatus = currentState<Preferences>().widgetRefreshStatus()
             GuailiWidgetContent(
                 snapshot = snapshot,
@@ -153,6 +166,7 @@ class GuailiWidgetReceiver : GlanceAppWidgetReceiver() {
                 )
                 store.delete(appWidgetId)
             }
+            DecisionReminderScheduler.schedulePeriodicWidgetUpdates(context)
         }
     }
 }

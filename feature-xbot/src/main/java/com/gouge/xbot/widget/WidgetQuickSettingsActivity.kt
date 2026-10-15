@@ -98,7 +98,6 @@ class WidgetQuickSettingsActivity : ComponentActivity() {
                 WidgetQuickSettingsScreen(
                     appWidgetId = appWidgetId,
                     field = field,
-                    initialState = state,
                     initialSnapshot = snapshot,
                     preferences = preferences,
                     repository = repository,
@@ -131,7 +130,6 @@ enum class QuickSettingsField(val intentValue: String) {
 private fun WidgetQuickSettingsScreen(
     appWidgetId: Int,
     field: QuickSettingsField,
-    initialState: WidgetState,
     initialSnapshot: WidgetSnapshot,
     preferences: WidgetPreferences,
     repository: XbotRepository,
@@ -220,7 +218,7 @@ private fun WidgetQuickSettingsScreen(
                     )
                     scope.launch {
                         try {
-                            val updated = repository.forSession(openedGeneration).updateSignalSettings(
+                            val observation = repository.forSession(openedGeneration).updateSignalSettingsObservation(
                                 signalId = signal.id,
                                 periods = if (field == QuickSettingsField.Level) {
                                     sortSignalPeriods(selectedPeriods)
@@ -233,19 +231,8 @@ private fun WidgetQuickSettingsScreen(
                                     signal.expireAt
                                 },
                             )
-                            val updatedSnapshot = WidgetSnapshot.from(
-                                updated,
-                                showSymbol = initialSnapshot.showSymbol,
-                            )
-                            val updatedState = initialState.replace(updatedSnapshot)
                             if (openedScope != sessionStore.currentScope()) return@launch
-                            preferences.save(appWidgetId, updatedState, openedScope)
-                            SignalWidgetRenderer.render(
-                                context,
-                                appWidgetId,
-                                updatedState,
-                                "已保存",
-                            )
+                            SignalWidgetUpdater.update(context, observation, openedGeneration, status = "已保存")
                             onClose()
                         } catch (error: CancellationException) {
                             throw error

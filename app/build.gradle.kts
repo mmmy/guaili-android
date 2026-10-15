@@ -21,6 +21,23 @@ android {
         compose = true
     }
 
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        create("benchmark") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".perf"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+            // Profile collection requires original method names; measurements use optimized code.
+            isMinifyEnabled = !providers.gradleProperty("generateBaselineProfile").isPresent
+            isShrinkResources = isMinifyEnabled
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -62,6 +79,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.2.0")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
     implementation("com.squareup.okhttp3:okhttp:5.1.0")

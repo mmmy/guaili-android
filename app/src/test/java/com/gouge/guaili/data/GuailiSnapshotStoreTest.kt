@@ -1,6 +1,8 @@
 package com.gouge.guaili.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import app.cash.turbine.test
 import com.gouge.guaili.domain.GuailiSignalDetector
 import com.gouge.guaili.domain.toTable
@@ -8,6 +10,10 @@ import com.gouge.guaili.settings.GuailiSettings
 import com.gouge.guaili.widget.widgetDataStatus
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -15,6 +21,66 @@ import org.junit.rules.TemporaryFolder
 
 class GuailiSnapshotStoreTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
+
+    @Test fun compactSnapshotsPersistEachGridOnceAndRestoreTheSelectedView() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            temporaryFolder.newFolder().resolve("compact.preferences_pb")
+        }
+        val store = GuailiSnapshotStore(dataStore)
+        for (closedOnly in listOf(false, true)) {
+            val snapshot = sampleSnapshot(closedOnly)
+            store.save(snapshot)
+            val encoded = dataStore.data.first()[stringPreferencesKey("latest_snapshot")]!!
+            val table = Json.parseToJsonElement(encoded).jsonObject.getValue("table").jsonObject
+            assertFalse(table.containsKey("cells"))
+            assertTrue(table.containsKey("dynamicCells"))
+            assertTrue(table.containsKey("closedCells"))
+            assertEquals(if (closedOnly) "closed" else "dynamic", table.getValue("displayCells").jsonPrimitive.content)
+            val restored = Json.decodeFromString<PersistedGuailiSnapshot>(encoded).restore()
+            assertEquals(snapshot, restored)
+            assertSame(if (closedOnly) restored.table.closedCells else restored.table.dynamicCells, restored.table.cells)
+        }
+    }
+
+    @Test fun legacySnapshotsRemainReadableAndSeparateStoresShareOneDecodedInstance() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            temporaryFolder.newFolder().resolve("legacy.preferences_pb")
+        }
+        val first = GuailiSnapshotStore(dataStore)
+        val second = GuailiSnapshotStore(dataStore)
+        val legacy = sampleSnapshot()
+        dataStore.edit { it[stringPreferencesKey("latest_snapshot")] = Json.encodeToString(GuailiSnapshot.serializer(), legacy) }
+        val parsed = first.read()!!
+        assertEquals(legacy, parsed)
+        assertSame(parsed, second.read())
+        assertSame(parsed.table.cells, parsed.table.dynamicCells)
+
+        // The earliest format did not have either additional grid.
+        val oldest = legacy.copy(table = legacy.table.copy(closedCells = emptyMap(), dynamicCells = null))
+        dataStore.edit { it[stringPreferencesKey("latest_snapshot")] = Json.encodeToString(GuailiSnapshot.serializer(), oldest) }
+        assertEquals(oldest, second.read())
+    }
+
+    @Test fun aCustomDisplayGridSurvivesCompactPersistence() = runTest {
+        val original = sampleSnapshot()
+        val customCells = original.table.cells.mapValues { (_, row) -> row.mapValues { (_, cell) -> cell.copy(value = 99) } }
+        val snapshot = original.copy(table = original.table.copy(cells = customCells))
+        val persisted = PersistedGuailiSnapshot.from(snapshot)
+        val restored = Json.decodeFromString<PersistedGuailiSnapshot>(
+            Json.encodeToString(PersistedGuailiSnapshot.serializer(), persisted)).restore()
+        assertEquals(snapshot, restored)
+        assertEquals(99, restored.table.cells.getValue("BTCUSDT").getValue("1").value)
+        assertNotEquals(restored.table.cells, restored.table.dynamicCells)
+    }
+
+    private fun sampleSnapshot(closedOnly: Boolean = false): GuailiSnapshot {
+        val point = GuailiPoint(value = 12, guaili = 1.2, atr14 = 1.0, rankFilter = true, isClosed = false,
+            openTime = "2026-10-15T00:00:00Z", closeTime = "2026-10-15T00:00:59.999Z")
+        val response = GuailiResponse(listOf("BTCUSDT"), listOf("1"), 3, 500, false,
+            results = listOf(GuailiSymbolResult("BTCUSDT", listOf(GuailiSeries("1", latest = point,
+                data = listOf(point.copy(value = 10, isClosed = true), point))))))
+        return GuailiSnapshot(response.toTable(response.symbols, response.intervals, closedOnly), 100L)
+    }
 
     @Test fun activeObserverReceivesRefreshedCandlesFromAnotherStoreInstance() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {

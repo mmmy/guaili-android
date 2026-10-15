@@ -56,15 +56,20 @@ internal fun resolveLiveMarketLink(key: MarketLinkKey?, state: MarketSignalsUiSt
 
 internal fun marketSignalSummaries(state: MarketSignalsUiState, symbols: List<String>): Map<String, MarketSignalSummary> {
     val grouped = state.presentation.signals.groupBy { it.symbol }
+    val response = state.snapshot?.response
+    val responseRows = buildMap {
+        response?.results?.forEach { if (it.symbol !in this) put(it.symbol, it) }
+    }
+    val monitoredSymbols = state.symbols.toHashSet()
     return symbols.associateWith { symbol ->
-        val row = state.snapshot?.response?.results?.firstOrNull { it.symbol == symbol }
+        val row = responseRows[symbol]
         val status = when {
-            symbol !in state.symbols -> "未监控"
+            symbol !in monitoredSymbols -> "未监控"
             state.preferences.kinds.isEmpty() -> "类型已关闭"
             state.presentation.status !in setOf("ready", "degraded") -> state.presentation.message
             row == null -> "服务器未计算"
-            row.sampledAt > 0 &&
-                state.snapshot.response.serverTime - row.sampledAt > serverSignalsResultLifetime(state.snapshot.response) -> "采样过期"
+            row.sampledAt > 0 && response != null &&
+                response.serverTime - row.sampledAt > serverSignalsResultLifetime(response) -> "采样过期"
             row.dataStatus == "stale" -> "数据过期"
             row.dataStatus == "recovering" -> "恢复中"
             row.dataStatus == "warming_up" -> "预热中"

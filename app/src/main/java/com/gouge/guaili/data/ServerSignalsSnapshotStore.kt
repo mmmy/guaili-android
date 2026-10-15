@@ -12,7 +12,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -43,7 +46,10 @@ fun interface ServerSignalsSnapshotSink {
     fun currentDeviceTime(): GuailiDeviceTime? = null
     suspend fun recordFailure(failure: ServerSignalsFailure?) {}
     suspend fun readFailure(): ServerSignalsFailure? = null
+    fun refreshIdentity(): Any = this
 }
+
+internal val NoopServerSignalsSnapshotSink = ServerSignalsSnapshotSink { }
 
 interface ServerSignalsSource : ServerSignalsSnapshotSink {
     val snapshots: Flow<ServerSignalsSnapshot?>
@@ -60,23 +66,32 @@ class ServerSignalsSnapshotStore internal constructor(
     )
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val decoded = snapshotCaches.forStore(dataStore)
+    private val decodedFailure = failureCaches.forStore(dataStore)
     private val preferences: Flow<Preferences> = dataStore.data.catch { error ->
         if (error is IOException) emit(emptyPreferences()) else throw error
     }
 
-    override val snapshots: Flow<ServerSignalsSnapshot?> = preferences.map { values ->
-        values[SnapshotKey]?.let { encoded ->
-            runCatching { json.decodeFromString<ServerSignalsSnapshot>(encoded) }.getOrNull()
+    override val snapshots: Flow<ServerSignalsSnapshot?> = preferences
+        .map { values -> values[SnapshotKey] }
+        .distinctUntilChanged()
+        .map { encoded ->
+            decoded.decode(encoded) { json.decodeFromString<ServerSignalsSnapshot>(it) }
         }
-    }.distinctUntilChanged()
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
 
-    override val failures: Flow<ServerSignalsFailure?> = preferences.map { values ->
-        values[FailureKey]?.let { encoded ->
-            runCatching { json.decodeFromString<ServerSignalsFailure>(encoded) }.getOrNull()
+    override val failures: Flow<ServerSignalsFailure?> = preferences
+        .map { values -> values[FailureKey] }
+        .distinctUntilChanged()
+        .map { encoded ->
+            decodedFailure.decode(encoded) { json.decodeFromString<ServerSignalsFailure>(it) }
         }
-    }.distinctUntilChanged()
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
 
     override fun currentDeviceTime(): GuailiDeviceTime? = deviceTime()
+    override fun refreshIdentity(): Any = dataStore
     override suspend fun read(): ServerSignalsSnapshot? = snapshots.first()
     override suspend fun readFailure(): ServerSignalsFailure? = failures.first()
 
@@ -84,7 +99,10 @@ class ServerSignalsSnapshotStore internal constructor(
         read()?.takeIf { it.belongsTo(baseUrl) }
 
     override suspend fun save(snapshot: ServerSignalsSnapshot) {
-        val encoded = json.encodeToString(ServerSignalsSnapshot.serializer(), snapshot)
+        val encoded = withContext(Dispatchers.Default) {
+            json.encodeToString(ServerSignalsSnapshot.serializer(), snapshot)
+                .also { decoded.remember(it, snapshot) }
+        }
         dataStore.edit { preferences ->
             preferences[SnapshotKey] = encoded
             preferences.remove(FailureKey)
@@ -92,7 +110,12 @@ class ServerSignalsSnapshotStore internal constructor(
     }
 
     override suspend fun recordFailure(failure: ServerSignalsFailure?) {
-        val encoded = failure?.let { json.encodeToString(ServerSignalsFailure.serializer(), it) }
+        val encoded = withContext(Dispatchers.Default) {
+            failure?.let {
+                json.encodeToString(ServerSignalsFailure.serializer(), it)
+                    .also { encoded -> decodedFailure.remember(encoded, failure) }
+            }
+        }
         dataStore.edit { preferences ->
             if (encoded == null) preferences.remove(FailureKey)
             else preferences[FailureKey] = encoded
@@ -106,6 +129,8 @@ class ServerSignalsSnapshotStore internal constructor(
     companion object {
         private val SnapshotKey = stringPreferencesKey("latest_server_snapshot")
         private val FailureKey = stringPreferencesKey("last_refresh_failure")
+        private val snapshotCaches = SnapshotCacheRegistry<ServerSignalsSnapshot>()
+        private val failureCaches = SnapshotCacheRegistry<ServerSignalsFailure>()
     }
 }
 

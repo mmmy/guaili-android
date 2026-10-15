@@ -55,11 +55,20 @@ internal fun rollingNearestRankPercentile(
         .toInt()
         .coerceIn(1, safeLength)
 
-    return values.indices.map { index ->
-        if (index + 1 < safeLength) {
-            null
-        } else {
-            values.subList(index + 1 - safeLength, index + 1).sorted()[rank - 1]
-        }
+    val output = MutableList<Double?>(values.size) { null }
+    if (values.size < safeLength) return output
+    // Keep one primitive sorted window instead of allocating and sorting each candle's window.
+    val window = DoubleArray(safeLength) { values[it] }
+    java.util.Arrays.sort(window)
+    output[safeLength - 1] = window[rank - 1]
+    for (index in safeLength until values.size) {
+        val outgoing = java.util.Arrays.binarySearch(window, values[index - safeLength])
+        window.copyInto(window, outgoing, outgoing + 1, safeLength)
+        val search = java.util.Arrays.binarySearch(window, 0, safeLength - 1, values[index])
+        val insertion = if (search >= 0) search else -search - 1
+        window.copyInto(window, insertion + 1, insertion, safeLength - 1)
+        window[insertion] = values[index]
+        output[index] = window[rank - 1]
     }
+    return output
 }

@@ -54,6 +54,20 @@ class AmplitudeSignalIndicatorTest {
         assertEquals(19.0, ranks[20]!!, 0.000001)
     }
 
+    @Test
+    fun slidingPercentileMatchesFullSortWithDuplicatesAndSpecialValues() {
+        val random = kotlin.random.Random(17)
+        val values = List(250) { random.nextInt(-5, 6).toDouble() } +
+            listOf(-0.0, 0.0, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY, Double.NaN)
+        for (length in listOf(1, 2, 20, 256)) for (percentile in listOf(0.0, 10.0, 90.0, 100.0)) {
+            val rank = kotlin.math.ceil(percentile / 100.0 * length).toInt().coerceIn(1, length)
+            val expected = values.indices.map { index ->
+                if (index + 1 < length) null else values.subList(index + 1 - length, index + 1).sorted()[rank - 1]
+            }
+            assertEquals(expected, rollingNearestRankPercentile(values, length, percentile))
+        }
+    }
+
     private fun baselineCandles(count: Int = 20): List<Kline> =
         (0 until count).map { index ->
             candle(open = 100.0, high = 101.0, low = 99.0, close = 100.0, index = index)

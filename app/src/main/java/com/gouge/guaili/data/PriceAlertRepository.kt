@@ -73,11 +73,13 @@ class PriceAlertRepository(private val api: PriceAlertApi) : PriceAlertGateway {
 
     companion object {
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-        fun create(baseUrl: String): PriceAlertRepository {
-            val client = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+        private val sharedClient by lazy {
+            OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(8, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
+        }
+        fun create(baseUrl: String): PriceAlertRepository {
             return PriceAlertRepository(Retrofit.Builder().baseUrl(baseUrl.trimEnd('/') + "/")
-                .client(client).addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                .client(sharedClient).addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                 .build().create(PriceAlertApi::class.java))
         }
     }

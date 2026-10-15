@@ -27,6 +27,8 @@ import com.gouge.xbot.ui.TvAlertResetConfirmation
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 internal val TvAlertColor = Color(0xFFB6D7FF)
 internal val TvAlertMutedColor = Color(0xFFCBD5E1)
@@ -75,7 +77,7 @@ internal fun MarketTvSyncBar(state: MainUiState, onManage: () -> Unit) {
 internal fun MarketTvAlertSheet(
     symbol: String, ticker: String, state: MainUiState, now: Instant,
     onDismiss: () -> Unit, onRefresh: () -> Unit, onManage: (MarketTvAlertEntry?) -> Unit,
-    onReset: (MarketTvAlertEntry) -> Unit, onSaveTicker: (String?) -> String?,
+    onReset: (MarketTvAlertEntry) -> Unit, onSaveTicker: suspend (String?) -> String?,
     interval: String? = null,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -95,7 +97,7 @@ internal fun MarketTvAlertSheet(
 internal fun MarketTvAlertsSection(
     symbol: String, interval: String?, ticker: String, state: MainUiState, now: Instant,
     onRefresh: () -> Unit, onManage: (MarketTvAlertEntry?) -> Unit,
-    onReset: (MarketTvAlertEntry) -> Unit, onSaveTicker: (String?) -> String?,
+    onReset: (MarketTvAlertEntry) -> Unit, onSaveTicker: suspend (String?) -> String?,
 ) {
     val allEntries = remember(state.isAuthenticated, state.alertConfigs, state.visibleAlertIds, state.tvAlertsByCookieId, ticker) {
         marketTvEntries(state, ticker)
@@ -109,6 +111,20 @@ internal fun MarketTvAlertsSection(
     var editingTicker by remember(symbol) { mutableStateOf(false) }
     var tickerInput by remember(ticker) { mutableStateOf(ticker) }
     var mappingError by remember { mutableStateOf<String?>(null) }
+    var savingTicker by remember(symbol) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun saveTicker(value: String?) {
+        if (savingTicker) return
+        savingTicker = true
+        scope.launch {
+            try {
+                mappingError = onSaveTicker(value)
+                if (mappingError == null) editingTicker = false
+            } catch (error: CancellationException) { throw error
+            } catch (_: Exception) { mappingError = "品种映射保存失败，请重试"
+            } finally { savingTicker = false }
+        }
+    }
     var expanded by remember(symbol, interval, ticker) { mutableStateOf(false) }
     LaunchedEffect(allEntries) {
         if (pendingReset != null && pendingReset !in allEntries) pendingReset = null
@@ -131,16 +147,16 @@ internal fun MarketTvAlertsSection(
             Text(ticker, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 2,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = { editingTicker = !editingTicker; tickerInput = ticker; mappingError = null },
-                enabled = !state.isChangingAlerts, modifier = Modifier.testTag("market-tv-edit-ticker")) { Text("品种映射") }
+                enabled = !state.isChangingAlerts && !savingTicker, modifier = Modifier.testTag("market-tv-edit-ticker")) { Text("品种映射") }
         }
         if (editingTicker) {
             OutlinedTextField(tickerInput, { tickerInput = it; mappingError = null }, label = { Text("完整 TV 品种代码") },
-                singleLine = true, isError = mappingError != null, modifier = Modifier.fillMaxWidth().testTag("market-tv-ticker-input"),
+                singleLine = true, enabled = !savingTicker, isError = mappingError != null, modifier = Modifier.fillMaxWidth().testTag("market-tv-ticker-input"),
                 supportingText = { Text(mappingError ?: "按完整代码匹配交易所与现货／合约；默认使用 BINANCE 永续合约。") })
             Row {
-                TextButton(onClick = { mappingError = onSaveTicker(tickerInput); if (mappingError == null) editingTicker = false }) { Text("保存映射") }
-                TextButton(onClick = { mappingError = onSaveTicker(null); if (mappingError == null) editingTicker = false }) { Text("恢复默认") }
-                TextButton(onClick = { editingTicker = false }) { Text("取消") }
+                TextButton(onClick = { saveTicker(tickerInput) }, enabled = !savingTicker) { Text(if (savingTicker) "保存中…" else "保存映射") }
+                TextButton(onClick = { saveTicker(null) }, enabled = !savingTicker) { Text("恢复默认") }
+                TextButton(onClick = { editingTicker = false }, enabled = !savingTicker) { Text("取消") }
             }
         }
         if (entries.isNotEmpty()) {

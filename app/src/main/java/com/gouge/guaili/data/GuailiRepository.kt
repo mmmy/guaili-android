@@ -48,15 +48,6 @@ class GuailiRepository(
 
     companion object {
         fun create(baseUrl: String): GuailiRepository {
-            val json = Json { ignoreUnknownKeys = true }
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
-            }
-            val client = OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS)
-                .addInterceptor(logging)
-                .build()
             val retrofit = Retrofit.Builder()
                 .baseUrl(ensureTrailingSlash(baseUrl))
                 .client(client)
@@ -64,6 +55,15 @@ class GuailiRepository(
                 .build()
 
             return GuailiRepository(retrofit.create(GuailiApiService::class.java))
+        }
+
+        private val json = Json { ignoreUnknownKeys = true }
+        private val client by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+                .build()
         }
     }
 }

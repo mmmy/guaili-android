@@ -8,8 +8,10 @@ import kotlinx.coroutines.CancellationException
 class AlertWidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         if (AlertWidgetRenderer.widgetIds(applicationContext).isEmpty()) return Result.success()
-        AlertWidgetRenderer.renderAll(applicationContext)
-        if (AlertWidgetStore(applicationContext).currentScope() == null) return Result.success()
+        if (AlertWidgetStore(applicationContext).currentScope() == null) {
+            AlertWidgetRenderer.renderAll(applicationContext)
+            return Result.success()
+        }
         return try {
             // Ordinary list reads only. Cache rebuild is an explicit action on the home page.
             AlertDataCoordinator(applicationContext).refresh()

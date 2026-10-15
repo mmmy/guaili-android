@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.gouge.xbot.data.ServerConfigStore
 import com.gouge.xbot.data.SessionStore
 import com.gouge.xbot.data.SignalViewDto
+import com.gouge.xbot.data.SignalObservation
 import com.gouge.xbot.data.AlertVisibilityStore
 import com.gouge.xbot.data.TvAlertConfigDto
 import com.gouge.xbot.data.TvAlertDto
@@ -15,6 +16,8 @@ import com.gouge.xbot.data.XbotRepository
 import com.gouge.xbot.domain.tickerLabel
 import com.gouge.xbot.domain.normalizeTradingViewTicker
 import com.gouge.xbot.widget.AlertDataCoordinator
+import com.gouge.xbot.widget.SignalWidgetUpdater
+import com.gouge.xbot.widget.SignalWidgetRenderer
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +28,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import retrofit2.HttpException
 
 data class MainUiState(
@@ -68,6 +73,7 @@ class MainViewModel(
     private val alertVisibilityStore: AlertVisibilityStore,
     private val alertSync: AlertDataCoordinator,
     private val onSignalsChanged: () -> Unit,
+    private val onSignalsLoaded: suspend (SignalObservation, Long) -> Unit = { _, _ -> onSignalsChanged() },
 ) : ViewModel() {
     private val requests = mutableSetOf<Job>()
     private var uiScope = sessionStore.currentScope()
@@ -117,12 +123,13 @@ class MainViewModel(
                 repository.login(serverUrl, username, password) { requestGeneration = sessionStore.generation() }
                 requestGeneration = sessionStore.generation()
                 sessionStore.withCurrentGeneration(requestGeneration) { uiScope = sessionStore.currentScope() }
-                val signals = repository.forSession(requestGeneration).getSignalViews()
+                val observation = repository.forSession(requestGeneration).getSignalObservation()
+                val signals = observation.signals
                 updateState(requestGeneration) {
                     MainUiState(serverUrl = serverConfigStore.getBaseUrl(), isAuthenticated = true,
                         signals = signals, signalsUpdatedAtMillis = System.currentTimeMillis())
                 }
-                onSignalsChanged()
+                onSignalsLoaded(observation, requestGeneration)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -149,7 +156,8 @@ class MainViewModel(
             val requestScope = alertSync.currentScope()
             updateState(requestGeneration) { it.copy(isLoading = true, errorMessage = null) }
             try {
-                val signals = repository.forSession(requestGeneration).getSignalViews()
+                val observation = repository.forSession(requestGeneration).getSignalObservation()
+                val signals = observation.signals
                 updateState(requestGeneration) {
                     it.copy(
                         isAuthenticated = true,
@@ -158,7 +166,7 @@ class MainViewModel(
                         signalsUpdatedAtMillis = System.currentTimeMillis(),
                     )
                 }
-                onSignalsChanged()
+                onSignalsLoaded(observation, requestGeneration)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -462,7 +470,8 @@ class MainViewModel(
                 )
             }
             try {
-                val updated = repository.forSession(requestGeneration).updateSignalSettings(signal.id, periods, expireAt)
+                val observation = repository.forSession(requestGeneration).updateSignalSettingsObservation(signal.id, periods, expireAt)
+                val updated = observation.signals.single()
                 updateState(requestGeneration) { state ->
                     state.copy(
                         signals = state.signals.map { if (it.id == updated.id) updated else it },
@@ -471,7 +480,7 @@ class MainViewModel(
                         settingsErrorMessage = null,
                     )
                 }
-                onSignalsChanged()
+                onSignalsLoaded(observation, requestGeneration)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -547,7 +556,13 @@ class MainViewModel(
                 @Suppress("UNCHECKED_CAST")
                 return MainViewModel(XbotRepository(server, session), server, session,
                     AlertVisibilityStore(appContext), AlertDataCoordinator(appContext),
-                    onSignalsChanged = { com.gouge.xbot.widget.SignalWidgetScheduler.enqueueImmediate(appContext) }) as T
+                    onSignalsChanged = { SignalWidgetRenderer.renderAll(appContext) },
+                    onSignalsLoaded = { observation, generation ->
+                        withContext(Dispatchers.Default) {
+                            runCatching { SignalWidgetUpdater.update(appContext, observation, generation) }
+                                .onFailure { android.util.Log.w("SignalWidget", "Widget rendering failed", it) }
+                        }
+                    }) as T
             }
         }
     }

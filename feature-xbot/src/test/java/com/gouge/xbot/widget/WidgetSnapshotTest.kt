@@ -28,6 +28,9 @@ class WidgetSnapshotTest {
 
         assertTrue(snapshot.showSymbol)
         assertNull(snapshot.comment)
+        assertNull(snapshot.observationEpoch)
+        assertEquals(0L, snapshot.observationRevision)
+        assertFalse(snapshot.observationMissing)
     }
 
     @Test

@@ -31,7 +31,13 @@ class XbotRepository(
     }
 
     suspend fun getSignalViews(): List<SignalViewDto> {
-        return guardedRequest { it.getSignalViews().sortedBy { signal -> signal.sort } }
+        return getSignalObservation().signals
+    }
+
+    internal suspend fun getSignalObservation(): SignalObservation {
+        val revision = SignalObservations.begin()
+        val signals = guardedRequest { it.getSignalViews().sortedBy { signal -> signal.sort } }
+        return SignalObservations.full(signals, revision)
     }
 
     suspend fun getSignalView(signalId: String): SignalViewDto {
@@ -111,13 +117,23 @@ class XbotRepository(
         periods: List<String>,
         expireAt: String?,
     ): SignalViewDto {
-        return guardedRequest { api -> api.updateSignalSettings(
+        return updateSignalSettingsObservation(signalId, periods, expireAt).signals.single()
+    }
+
+    internal suspend fun updateSignalSettingsObservation(
+        signalId: String,
+        periods: List<String>,
+        expireAt: String?,
+    ): SignalObservation {
+        val updated = guardedRequest { api -> api.updateSignalSettings(
             id = signalId,
             request = UpdateSignalSettingsRequest(
                 periods = sortSignalPeriods(periods),
                 expireAt = expireAt,
             ),
         ) }
+        // Any list requested before this successful write may still contain the old settings.
+        return SignalObservations.changed(updated)
     }
 
     suspend fun logout() {
@@ -141,7 +157,7 @@ class XbotRepository(
         check(!token.isNullOrBlank()) { "请先登录" }
         val baseUrl = serverConfigStore.getBaseUrl()
         val current = { generation == sessionStore.generation() && baseUrl == serverConfigStore.getBaseUrl() }
-        val api = ApiClientFactory.create(baseUrl, isSessionCurrent = current) { token }
+        val api = ApiClientFactory.forSession(baseUrl, generation, token, current)
         try {
             val result = block(api)
             if (!current()) throw CancellationException("账户已切换")

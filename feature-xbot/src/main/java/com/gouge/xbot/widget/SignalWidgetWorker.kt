@@ -7,7 +7,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.gouge.xbot.data.ServerConfigStore
 import com.gouge.xbot.data.SessionStore
-import com.gouge.xbot.data.SignalViewDto
 import com.gouge.xbot.data.XbotRepository
 import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
@@ -37,7 +36,6 @@ class SignalWidgetWorker(
         val preferences = WidgetPreferences(applicationContext)
         val sessionStore = SessionStore(applicationContext)
         val requestGeneration = sessionStore.generation()
-        val requestScope = sessionStore.currentScope()
         if (sessionStore.getAccessToken().isNullOrBlank()) {
             targetWidgetIds.forEach { id ->
                 SignalWidgetRenderer.render(
@@ -51,12 +49,13 @@ class SignalWidgetWorker(
         }
 
         val repository = XbotRepository(ServerConfigStore(applicationContext), sessionStore).forSession(requestGeneration)
+        if (requestedWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID && preferences.get(requestedWidgetId) == null) {
+            SignalWidgetRenderer.render(applicationContext, requestedWidgetId, null, "请重新配置小组件")
+            return Result.success()
+        }
         return try {
-            if (requestedWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
-                refreshAllWidgets(repository, preferences, targetWidgetIds, requestScope)
-            } else {
-                refreshOneWidget(repository, preferences, requestedWidgetId, requestScope)
-            }
+            val observation = repository.getSignalObservation()
+            SignalWidgetUpdater.update(applicationContext, observation, requestGeneration, targetWidgetIds)
             Result.success()
         } catch (error: CancellationException) {
             throw error
@@ -79,80 +78,6 @@ class SignalWidgetWorker(
             }
             if (unauthorized || missingSignal) Result.success() else Result.retry()
         }
-    }
-
-    private suspend fun refreshAllWidgets(
-        repository: XbotRepository,
-        preferences: WidgetPreferences,
-        widgetIds: IntArray,
-        expectedScope: String?,
-    ) {
-        val signalsById = repository.getSignalViews().associateBy { it.id }
-        widgetIds.forEach { id ->
-            val current = preferences.get(id)
-            when {
-                current == null -> SignalWidgetRenderer.render(
-                    applicationContext,
-                    id,
-                    null,
-                    "请重新配置小组件",
-                )
-                else -> saveAndRender(preferences, id, current, signalsById, expectedScope)
-            }
-        }
-    }
-
-    private suspend fun refreshOneWidget(
-        repository: XbotRepository,
-        preferences: WidgetPreferences,
-        appWidgetId: Int,
-        expectedScope: String?,
-    ) {
-        val current = preferences.get(appWidgetId)
-        if (current == null) {
-            SignalWidgetRenderer.render(
-                applicationContext,
-                appWidgetId,
-                null,
-                "请重新配置小组件",
-            )
-            return
-        }
-        val signalsById = repository.getSignalViews().associateBy { it.id }
-        saveAndRender(preferences, appWidgetId, current, signalsById, expectedScope)
-    }
-
-    private fun saveAndRender(
-        preferences: WidgetPreferences,
-        appWidgetId: Int,
-        current: WidgetState,
-        signalsById: Map<String, SignalViewDto>,
-        expectedScope: String?,
-    ) {
-        if (expectedScope == null || expectedScope != SessionStore(applicationContext).currentScope()) return
-        var updatedCount = 0
-        val updatedSnapshots = current.signals.map { snapshot ->
-            signalsById[snapshot.signalId]?.let { signal ->
-                updatedCount += 1
-                WidgetSnapshot.from(
-                    signal,
-                    showSymbol = snapshot.showSymbol,
-                )
-            } ?: snapshot
-        }
-        val updatedState = WidgetState(updatedSnapshots)
-        if (updatedCount > 0) preferences.save(appWidgetId, updatedState, expectedScope)
-        val missingCount = current.signals.size - updatedCount
-        SignalWidgetRenderer.render(
-            applicationContext,
-            appWidgetId,
-            updatedState,
-            status = when {
-                missingCount == current.signals.size -> "信号已不存在"
-                missingCount > 0 -> "部分信号已不存在"
-                else -> null
-            },
-        )
     }
 
     companion object {

@@ -49,8 +49,14 @@ import com.gouge.xbot.domain.tickerId
 import com.gouge.xbot.data.TvAlertDto
 import com.gouge.xbot.ui.TvAlertDeletionKey
 import com.gouge.guaili.data.MarketTvTickerStore
+import com.gouge.guaili.settings.GuailiSettings
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 private enum class SettingsDetail { Overview, Market, Account }
+private data class MarketNavigationState(val settings: GuailiSettings, val symbols: List<String>, val intervals: List<String>)
+private data class XbotNavigationState(val serverUrl: String, val isAuthenticated: Boolean,
+    val tvAlertsByCookieId: Map<String, List<TvAlertDto>>)
 
 @Composable
 internal fun TradingAppScreen(
@@ -75,15 +81,28 @@ internal fun TradingAppScreen(
     var chartManagerVisible by rememberSaveable { mutableStateOf(false) }
     var chartGeneration by rememberSaveable { mutableLongStateOf(0L) }
     val stateHolder = rememberSaveableStateHolder()
-    val marketState by marketViewModel.state.collectAsStateWithLifecycle()
-    val xbotState by xbotViewModel.uiState.collectAsStateWithLifecycle()
-    val signalsState by signalsViewModel.state.collectAsStateWithLifecycle()
+    val initialMarketState = remember(marketViewModel) {
+        marketViewModel.state.value.let { MarketNavigationState(it.settings, it.symbols, it.intervals) }
+    }
+    val initialXbotState = remember(xbotViewModel) {
+        xbotViewModel.uiState.value.let { XbotNavigationState(it.serverUrl, it.isAuthenticated, it.tvAlertsByCookieId) }
+    }
+    val initialSignalSymbols = remember(signalsViewModel) { signalsViewModel.state.value.availableSymbols }
+    val marketState by remember(marketViewModel) {
+        marketViewModel.state.map { MarketNavigationState(it.settings, it.symbols, it.intervals) }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialMarketState)
+    val xbotState by remember(xbotViewModel) {
+        xbotViewModel.uiState.map { XbotNavigationState(it.serverUrl, it.isAuthenticated, it.tvAlertsByCookieId) }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialXbotState)
+    val signalSymbols by remember(signalsViewModel) {
+        signalsViewModel.state.map { it.availableSymbols }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialSignalSymbols)
     val context = LocalContext.current
     val tickerStore = remember(marketState.settings.baseUrl) { MarketTvTickerStore(context, marketState.settings.baseUrl) }
     // Read persisted aliases on return; mappings can be changed in market details.
     val tickerMappings = remember(tickerStore, destination, chartGeneration) { tickerStore.read() }
-    val marketSymbols = remember(marketState.symbols, signalsState.availableSymbols) {
-        (marketState.symbols + signalsState.availableSymbols).distinct()
+    val marketSymbols = remember(marketState.symbols, signalSymbols) {
+        (marketState.symbols + signalSymbols).distinct()
     }
     val chartTargets = remember(marketSymbols, marketState.intervals, tickerMappings, xbotState.tvAlertsByCookieId) {
         xbotState.tvAlertsByCookieId.values.asSequence().flatten().distinct().associateWith { alert ->

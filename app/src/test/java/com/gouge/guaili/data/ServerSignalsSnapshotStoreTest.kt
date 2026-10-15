@@ -1,8 +1,11 @@
 package com.gouge.guaili.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import app.cash.turbine.test
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -10,6 +13,25 @@ import org.junit.rules.TemporaryFolder
 
 class ServerSignalsSnapshotStoreTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
+
+    @Test fun separateStoresReuseTheDecodedSnapshotAcrossFailureOnlyUpdates() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {
+            temporaryFolder.newFolder().resolve("decoded.preferences_pb")
+        }
+        val snapshot = ServerSignalsSnapshot(ServerSignalsResponse(true, "ready", 20_000L), 20_000L, "http://server")
+        dataStore.edit {
+            it[stringPreferencesKey("latest_server_snapshot")] = Json.encodeToString(ServerSignalsSnapshot.serializer(), snapshot)
+        }
+        val screen = ServerSignalsSnapshotStore(dataStore)
+        val widget = ServerSignalsSnapshotStore(dataStore)
+        val decoded = screen.read()!!
+        assertEquals(snapshot, decoded)
+        assertSame(decoded, widget.read())
+        widget.recordFailure(ServerSignalsFailure("offline", 21_000L, snapshot.baseUrl))
+        assertSame(decoded, screen.read())
+        assertSame(decoded, widget.read())
+        assertSame(screen.refreshIdentity(), widget.refreshIdentity())
+    }
 
     @Test fun separateInstancesObserveSuccessFailureAndDisabledUpdates() = runTest {
         val dataStore = PreferenceDataStoreFactory.create(scope = backgroundScope) {

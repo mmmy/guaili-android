@@ -9,7 +9,6 @@ import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
 import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.data.GuailiSnapshot
 import com.gouge.guaili.data.assessGuailiTime
-import com.gouge.guaili.data.signalProfile
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiIntervalDurationMillis
 import com.gouge.guaili.settings.GuailiSettings
@@ -22,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 
 data class GuailiTableState(
     val settings: GuailiSettings = GuailiSettings.defaults(),
@@ -46,6 +47,7 @@ class GuailiViewModel(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val autoRefreshEnabled: Boolean = true,
     private val onSnapshotUpdated: suspend () -> Unit = { },
+    computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val _state = MutableStateFlow(GuailiTableState())
     val state: StateFlow<GuailiTableState> = _state.asStateFlow()
@@ -55,18 +57,13 @@ class GuailiViewModel(
     private var refreshJob: Job? = null
     private var pendingRefreshSettings: GuailiSettings? = null
     private var pendingRefreshClearsCells: Boolean = false
-    private val refresher = GuailiRefreshUseCase(fetcherFactory, object : GuailiSnapshotSink {
+    private val refresher = GuailiRefreshUseCase(fetcherFactory, snapshotSink, nowMillis, computationDispatcher)
+    private val temporaryRefresher = GuailiRefreshUseCase(fetcherFactory, object : GuailiSnapshotSink {
         override fun currentDeviceTime() = snapshotSink.currentDeviceTime()
         override suspend fun read() = snapshotSink.read()
-        override suspend fun save(snapshot: GuailiSnapshot) {
-            // A temporary linked range belongs to this screen, not the shared widget cache.
-            val settings = _state.value.settings
-            if (snapshot.table.symbols == settings.symbols && snapshot.table.intervals == settings.intervals &&
-                snapshot.signalProfile == settings.signalProfile()) {
-                snapshotSink.save(snapshot)
-            }
-        }
-    }, nowMillis)
+        // This independent identity never shares a save with a real widget store.
+        override suspend fun save(snapshot: GuailiSnapshot) = Unit
+    }, nowMillis, computationDispatcher)
     private var isForeground: Boolean = true
     private var hasObservedSettings = false
     private var latestSnapshot: GuailiSnapshot? = null
@@ -192,7 +189,11 @@ class GuailiViewModel(
             isStale = false,
         )
 
-        when (val result = refresher.refresh(settings)) {
+        val persisted = _state.value.settings
+        val temporaryRange = settings.symbols.any { it !in persisted.symbols } ||
+            settings.intervals.any { it !in persisted.intervals }
+        val selectedRefresher = if (temporaryRange) temporaryRefresher else refresher
+        when (val result = selectedRefresher.refresh(settings)) {
             is GuailiResult.Success -> {
                 if (!sameDataRequest(requestSettings(_state.value.settings), settings)) return
 

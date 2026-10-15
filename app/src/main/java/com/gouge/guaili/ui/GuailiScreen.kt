@@ -81,6 +81,7 @@ import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.settings.LayoutMode
 import com.gouge.guaili.settings.MarketView
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import com.gouge.guaili.data.normalizeServerSignalsBaseUrl
@@ -88,8 +89,8 @@ import com.gouge.guaili.signals.ServerSignalItem
 import com.gouge.guaili.data.MarketTvTickerStore
 import com.gouge.xbot.ui.MainViewModel
 import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.delay
-import java.time.Instant
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.CancellationException
 
 @Composable
 internal fun GuailiScreen(
@@ -106,13 +107,9 @@ internal fun GuailiScreen(
     val tvState by xbotViewModel.uiState.collectAsStateWithLifecycle()
     val tvTickerStore = remember(state.settings.baseUrl) { MarketTvTickerStore(context, state.settings.baseUrl) }
     var tvTickers by remember(tvTickerStore) { mutableStateOf(tvTickerStore.read()) }
-    var tvNow by remember { mutableStateOf(Instant.now()) }
     val tvEntriesBySymbol = remember(tvState.isAuthenticated, tvState.alertConfigs, tvState.visibleAlertIds,
         tvState.tvAlertsByCookieId, state.symbols, tvTickers) {
         state.symbols.associateWith { symbol -> marketTvEntries(tvState, tvTickers[symbol] ?: defaultMarketTvTicker(symbol)) }
-    }
-    val tvSummaries = remember(tvEntriesBySymbol, tvNow) {
-        summarizeMarketTvEntries(tvEntriesBySymbol, tvNow)
     }
     val alertsViewModel: MarketPriceAlertsViewModel = viewModel(
         key = "market-price-alerts:${state.settings.baseUrl.trimEnd('/')}",
@@ -148,7 +145,10 @@ internal fun GuailiScreen(
     LaunchedEffect(focusGroups.map { it.symbol }) {
         expandedFocusSymbols = expandedFocusSymbols.filter { symbol -> focusGroups.any { it.symbol == symbol } }
     }
-    val liveLink = resolveLiveMarketLink(session.selection, signalsState)
+    val liveLink = remember(session.selection, signalsState.presentation.signals, signalsState.presentation.status,
+        signalsState.presentation.message, signalsState.snapshot, signalsState.symbols, signalsState.preferences.kinds) {
+        resolveLiveMarketLink(session.selection, signalsState)
+    }
     var klineFromSignals by rememberSaveable { mutableStateOf(false) }
     val windowSize = LocalWindowInfo.current.containerSize
     val compactHeader = windowSize.width > windowSize.height
@@ -173,9 +173,14 @@ internal fun GuailiScreen(
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showHelp by rememberSaveable { mutableStateOf(false) }
     var intervalGroup by rememberSaveable { mutableStateOf(IntervalGroup.All) }
-    val filteredIntervals = filterIntervals(state.intervals, intervalGroup)
-    val visibleIntervals = linkedVisibleIntervals(filteredIntervals, state.intervals, liveLink?.members?.keys.orEmpty(), session.reveal)
-    val summaries = marketSignalSummaries(signalsState, state.symbols)
+    val filteredIntervals = remember(state.intervals, intervalGroup) { filterIntervals(state.intervals, intervalGroup) }
+    val visibleIntervals = remember(filteredIntervals, state.intervals, liveLink?.members?.keys, session.reveal) {
+        linkedVisibleIntervals(filteredIntervals, state.intervals, liveLink?.members?.keys.orEmpty(), session.reveal)
+    }
+    val summaries = remember(signalsState.presentation.signals, signalsState.presentation.status, signalsState.presentation.message,
+        signalsState.snapshot, signalsState.symbols, signalsState.preferences.kinds, state.symbols) {
+        marketSignalSummaries(signalsState, state.symbols)
+    }
     val density = LocalDensity.current
     var tableWidthPixels by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     var locationHandled by rememberSaveable { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -271,12 +276,17 @@ internal fun GuailiScreen(
         tvListSymbol = null
         onOpenTvAlerts(entry)
     }
-    fun saveTvTicker(symbol: String, ticker: String?): String? = try {
-        tvTickers = tvTickerStore.save(symbol, ticker)
-        null
-    } catch (error: Exception) {
-        error.message ?: "品种映射保存失败，请重试"
-    }
+    suspend fun saveTvTicker(symbol: String, ticker: String?): String? = scope.async {
+        // A submitted save belongs to the screen and can finish if its detail sheet is dismissed.
+        try {
+            tvTickers = tvTickerStore.save(symbol, ticker)
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            error.message ?: "品种映射保存失败，请重试"
+        }
+    }.await()
 
     LaunchedEffect(state.settings.baseUrl, state.settingsLoaded) {
         if (!state.settingsLoaded) return@LaunchedEffect
@@ -330,14 +340,14 @@ internal fun GuailiScreen(
     }
 
     val contentActive = klineTarget == null && !showSettings && !showHelp
+    val tvNow = rememberMarketTvClock(tvEntriesBySymbol,
+        contentActive && !showSignals && !showPullback && tvState.isAuthenticated)
+    val tvSummaries = remember(tvEntriesBySymbol, tvNow) { summarizeMarketTvEntries(tvEntriesBySymbol, tvNow) }
     LaunchedEffect(lifecycleOwner, xbotViewModel, tvState.isAuthenticated, tvState.serverUrl, contentActive, showSignals, showPullback) {
         if (!contentActive || showSignals || showPullback || !tvState.isAuthenticated) return@LaunchedEffect
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             xbotViewModel.loadAlerts(force = true)
-            while (true) {
-                tvNow = Instant.now()
-                delay(1_000)
-            }
+            awaitCancellation()
         }
     }
     DisposableEffect(lifecycleOwner, alertsViewModel, priceWriter, contentActive, showSignals, showPullback, state.settingsLoaded) {

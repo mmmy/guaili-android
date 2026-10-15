@@ -19,6 +19,9 @@ data class WidgetSnapshot(
     val levelMax: String,
     val updatedAtMillis: Long,
     val showSymbol: Boolean = true,
+    val observationEpoch: String? = null,
+    val observationRevision: Long = 0,
+    val observationMissing: Boolean = false,
 ) {
     fun toSignalViewDto(): SignalViewDto = SignalViewDto(
         id = signalId,

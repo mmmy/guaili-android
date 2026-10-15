@@ -23,6 +23,7 @@ class SessionStore(context: Context) {
     fun getAccessToken(): String? = synchronized(sessionLock) {
         val encrypted = preferences.getString(TokenKey, null) ?: return@synchronized null
         val iv = preferences.getString(TokenIvKey, null) ?: return@synchronized null
+        cachedToken?.takeIf { it.encrypted == encrypted && it.iv == iv }?.let { return@synchronized it.token }
         runCatching {
             val cipher = Cipher.getInstance(Transformation)
             cipher.init(
@@ -33,8 +34,9 @@ class SessionStore(context: Context) {
             String(
                 cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)),
                 Charsets.UTF_8,
-            )
+            ).also { cachedToken = CachedToken(encrypted, iv, it) }
         }.getOrElse {
+            cachedSecretKey = null
             clear()
             null
         }
@@ -44,17 +46,25 @@ class SessionStore(context: Context) {
         val cipher = Cipher.getInstance(Transformation)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+        val encoded = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
         preferences.edit()
-            .putString(TokenKey, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .putString(TokenIvKey, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString(TokenKey, encoded)
+            .putString(TokenIvKey, iv)
             .apply()
+        cachedToken = CachedToken(encoded, iv, token)
+        cachedScope = null
         revision.incrementAndGet()
+        ApiClientFactory.clearSessions()
         notifyChanged()
     }
 
     fun clear() = synchronized(sessionLock) {
+        cachedToken = null
+        cachedScope = null
         preferences.edit().clear().apply()
         revision.incrementAndGet()
+        ApiClientFactory.clearSessions()
         context.getSharedPreferences("xbot_signal_widget_preferences", Context.MODE_PRIVATE).edit().clear().apply()
         context.getSharedPreferences("xbot_alert_widget_data", Context.MODE_PRIVATE).edit().remove("snapshot").apply()
         context.getSharedPreferences("xbot_alert_visibility", Context.MODE_PRIVATE).edit().clear().apply()
@@ -64,9 +74,11 @@ class SessionStore(context: Context) {
     /** Persistent cache identity; no token is stored in widget preferences. */
     fun currentScope(): String? = synchronized(sessionLock) {
         getAccessToken()?.takeIf(String::isNotBlank)?.let { token ->
+            val baseUrl = ServerConfigStore(context).getBaseUrl()
+            cachedScope?.takeIf { it.baseUrl == baseUrl && it.token == token }?.let { return@synchronized it.scope }
             val digest = MessageDigest.getInstance("SHA-256")
-                .digest((ServerConfigStore(context).getBaseUrl() + "\n" + token).toByteArray())
-            digest.joinToString("") { "%02x".format(it) }
+                .digest((baseUrl + "\n" + token).toByteArray())
+            digest.joinToString("") { "%02x".format(it) }.also { cachedScope = CachedScope(baseUrl, token, it) }
         }
     }
 
@@ -98,8 +110,9 @@ class SessionStore(context: Context) {
     }
 
     private fun getOrCreateSecretKey(): SecretKey {
+        cachedSecretKey?.let { return it }
         val keyStore = KeyStore.getInstance(AndroidKeyStore).apply { load(null) }
-        (keyStore.getKey(KeyAlias, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(KeyAlias, null) as? SecretKey)?.let { cachedSecretKey = it; return it }
 
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, AndroidKeyStore).run {
             init(
@@ -112,11 +125,18 @@ class SessionStore(context: Context) {
                     .setKeySize(256)
                     .build(),
             )
-            generateKey()
+            generateKey().also { cachedSecretKey = it }
         }
     }
 
     companion object {
+        private data class CachedToken(val encrypted: String, val iv: String, val token: String)
+        private data class CachedScope(val baseUrl: String, val token: String, val scope: String)
+        // Accessed only under sessionLock. Compare persisted ciphertext on every read,
+        // including reads through a different SessionStore instance.
+        private var cachedToken: CachedToken? = null
+        private var cachedScope: CachedScope? = null
+        private var cachedSecretKey: SecretKey? = null
         private val sessionLock = Any()
         private val revision = AtomicLong()
         const val ActionSessionChanged = "com.gouge.xbot.action.ALERT_SESSION_CHANGED"

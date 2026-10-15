@@ -15,7 +15,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import androidx.glance.appwidget.updateAll
+import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -35,6 +35,8 @@ import kotlinx.coroutines.sync.withLock
 
 object DecisionReminderScheduler {
     private val notificationMutex = Mutex()
+    private val periodicMutex = Mutex()
+    private val schedulerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private const val PeriodicWidgetUpdateWorkName = "decision-reminder-widget-update"
     private const val ActionFire = "com.gouge.guaili.DECISION_REMINDER_FIRE"
     private const val ActionComplete = "com.gouge.guaili.DECISION_REMINDER_COMPLETE"
@@ -49,6 +51,7 @@ object DecisionReminderScheduler {
             val previous = store.read(appWidgetId, SettingsStore(context).settings.first())
             val saved = store.save(appWidgetId, config, baseline)
             replace(context, appWidgetId, previous.reminders, if (saved.mode == WidgetMode.DecisionReminders) saved.reminders else emptyList())
+            schedulePeriodicWidgetUpdates(context)
             saved
         }
 
@@ -77,7 +80,7 @@ object DecisionReminderScheduler {
     }
 
     fun rescheduleAll(context: Context) {
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        schedulerScope.launch {
             rescheduleAllNow(context)
         }
     }
@@ -87,9 +90,11 @@ object DecisionReminderScheduler {
         val ids = AppWidgetManager.getInstance(context).getAppWidgetIds(
             ComponentName(context, GuailiWidgetReceiver::class.java),
         )
+        val reminderIds = mutableSetOf<Int>()
         ids.forEach { appWidgetId ->
             val config = WidgetConfigStore(context).read(appWidgetId, settings)
-            if (config.mode == WidgetMode.DecisionReminders) {
+            if (isDecisionReminderWidget(config)) {
+                reminderIds += appWidgetId
                 config.reminders.forEach {
                     if (it.targetAtEpochMillis <= System.currentTimeMillis()) {
                         fireNotification(context, appWidgetId, it.id)
@@ -97,17 +102,41 @@ object DecisionReminderScheduler {
                 }
             }
         }
-        GuailiWidget().updateAll(context)
+        reconcilePeriodicUpdates(context)
+        val glanceManager = GlanceAppWidgetManager(context)
+        val widget = GuailiWidget()
+        glanceManager.getGlanceIds(GuailiWidget::class.java)
+            .filter { glanceManager.getAppWidgetId(it) in reminderIds }
+            .forEach { widget.update(context, it) }
     }
 
     fun schedulePeriodicWidgetUpdates(context: Context) {
+        val appContext = context.applicationContext
+        schedulerScope.launch { reconcilePeriodicUpdates(appContext) }
+    }
+
+    internal suspend fun updateReminderWidgets(context: Context) {
+        val settings = SettingsStore(context).settings.first()
+        val widget = GuailiWidget()
+        widgetRefreshTargets(context, settings)
+            .filter { isDecisionReminderWidget(it.config) }
+            .forEach { widget.update(context, it.id) }
+    }
+
+    private suspend fun reconcilePeriodicUpdates(context: Context) = periodicMutex.withLock {
+        val settings = SettingsStore(context).settings.first()
+        val configurations = widgetRefreshTargets(context, settings).map { it.config }
+        if (!needsDecisionReminderUpdates(configurations)) {
+            cancelPeriodicWidgetUpdates(context)
+            return@withLock
+        }
         val work = PeriodicWorkRequestBuilder<DecisionReminderWidgetUpdateWorker>(
             15,
             TimeUnit.MINUTES,
         ).build()
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PeriodicWidgetUpdateWorkName,
-            ExistingPeriodicWorkPolicy.UPDATE,
+            ExistingPeriodicWorkPolicy.KEEP,
             work,
         )
     }
@@ -315,6 +344,11 @@ object DecisionReminderScheduler {
         if (interval.all(Char::isDigit)) "${interval}m" else interval
 }
 
+internal fun needsDecisionReminderUpdates(configurations: Iterable<WidgetConfig>): Boolean =
+    configurations.any(::isDecisionReminderWidget)
+
+private fun isDecisionReminderWidget(config: WidgetConfig): Boolean = config.mode == WidgetMode.DecisionReminders
+
 class DecisionReminderWidgetUpdateWorker(
     appContext: Context,
     params: WorkerParameters,
@@ -332,7 +366,7 @@ class DecisionReminderReceiver : BroadcastReceiver() {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
                 DecisionReminderScheduler.handleIntent(appContext, intent)
-                GuailiWidget().updateAll(appContext)
+                DecisionReminderScheduler.updateReminderWidgets(appContext)
             } finally {
                 pendingResult.finish()
             }

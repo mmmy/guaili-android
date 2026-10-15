@@ -35,13 +35,20 @@ internal suspend fun setWidgetRefreshStatus(
     phase: WidgetRefreshPhase,
     changedAt: Long = System.currentTimeMillis(),
     message: String? = null,
+    deduplicate: Boolean = false,
 ) {
     updateAppWidgetState(context, glanceId) { preferences ->
+        if (deduplicate && !widgetRefreshStatusChanged(preferences.widgetRefreshStatus(), phase, message)) {
+            return@updateAppWidgetState
+        }
         preferences[RefreshPhaseKey] = phase.name
         preferences[RefreshChangedAtKey] = changedAt
         if (message == null) preferences.remove(RefreshMessageKey) else preferences[RefreshMessageKey] = message
     }
 }
+
+internal fun widgetRefreshStatusChanged(previous: WidgetRefreshStatus, phase: WidgetRefreshPhase, message: String?): Boolean =
+    previous.phase != phase || previous.message != message
 
 internal suspend fun setAllWidgetRefreshStatuses(
     context: Context,

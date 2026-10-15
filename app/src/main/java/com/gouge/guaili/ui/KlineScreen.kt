@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +90,7 @@ import com.gouge.guaili.data.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.material3.SnackbarHost
@@ -607,7 +609,14 @@ internal fun KlineChart(
     }
     val currentAutoBounds by rememberUpdatedState(autoBounds)
 
+    val plotRows = frozenRows ?: rows
+    val plotViewport = remember(plotRows.size, visibleBars, rightOffsetBars, focusFutureBars) {
+        calculateKlineViewport(plotRows.size, visibleBars, rightOffsetBars, focusFutureBars)
+    }
+    val plotBounds = frozenTransform?.let { PriceBounds(it.minimum, it.maximum) } ?: manualBounds ?: autoBounds
+    val chartTextPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
     Box(modifier = modifier) {
+    KlinePricePlot(plotRows, plotViewport, plotBounds, showChannel, showAmplitudeSignal, leftPaddingPx, rightPaddingPx)
     Canvas(
         modifier = Modifier.fillMaxSize()
             .onSizeChanged {
@@ -615,6 +624,7 @@ internal fun KlineChart(
                 canvasHeight = it.height.coerceAtLeast(1)
             }
             .testTag("price-alert-chart")
+            .semantics { contentDescription = "K线图表" }
             .pointerInput(canvasWidth, canvasHeight, drawingKind, cancelGesture, interval) {
                 var lastAxisTapAt = 0L
                 fun viewport() = calculateKlineViewport(currentRows.size, visibleBars, rightOffsetBars, focusFutureBars)
@@ -768,152 +778,18 @@ internal fun KlineChart(
                 }
             }
     ) {
-        val chartRows = frozenRows ?: rows
-        if (chartRows.isEmpty()) return@Canvas
-
-        val viewport = calculateKlineViewport(chartRows.size, visibleBars, rightOffsetBars, focusFutureBars)
-        val visible = chartRows.subList(viewport.drawStart, viewport.endExclusive)
+        if (plotRows.isEmpty()) return@Canvas
+        val viewport = plotViewport
         val plotLeft = leftPaddingPx
         val plotRight = size.width - rightPaddingPx
-        val plotWidth = (plotRight - plotLeft).coerceAtLeast(1f)
         val priceTop = 10.dp.toPx()
         val priceBottom = size.height * .70f
-        val volumeTop = size.height * .76f
         val volumeBottom = size.height - 27.dp.toPx()
-        val bounds = manualBounds ?: autoBounds
-        val priceMin = frozenTransform?.minimum ?: bounds.priceMin
-        val priceMax = frozenTransform?.maximum ?: bounds.priceMax
+        val priceMin = plotBounds.priceMin
+        val priceMax = plotBounds.priceMax
         val priceRange = priceMax - priceMin
-        val slotWidth = plotWidth / viewport.visibleSpan
-        val bodyWidth = (slotWidth * .62f).coerceIn(1.5.dp.toPx(), 13.dp.toPx())
-        val gridColor = Color(0xFF2A333D)
-        val labelColor = Color(0xFF8D99A6)
-
-        fun xAt(localIndex: Int): Float = viewport.xForIndex(
-            index = viewport.drawStart + localIndex,
-            plotLeft = plotLeft,
-            slotWidth = slotWidth,
-        )
         fun yAt(price: Double): Float = priceBottom -
             (((price - priceMin) / priceRange).toFloat() * (priceBottom - priceTop))
-
-        repeat(5) { gridIndex ->
-            val fraction = gridIndex / 4f
-            val y = priceTop + (priceBottom - priceTop) * fraction
-            drawLine(gridColor, Offset(plotLeft, y), Offset(plotRight, y), strokeWidth = 1f)
-            val price = priceMax - priceRange * fraction
-            drawChartText(formatPrice(price), plotRight + 5.dp.toPx(), y + 4.dp.toPx(), labelColor)
-        }
-        drawLine(gridColor, Offset(plotLeft, volumeTop), Offset(plotRight, volumeTop), strokeWidth = 1f)
-
-        drawContext.canvas.save()
-        drawContext.canvas.clipRect(plotLeft, priceTop, plotRight, volumeBottom)
-
-        if (showChannel) {
-            val channelRows = visible.mapIndexedNotNull { index, row ->
-                val upper = row.channel.upper
-                val lower = row.channel.lower
-                if (upper != null && lower != null) Triple(index, upper, lower) else null
-            }
-            if (channelRows.size > 1) {
-                val fillPath = Path().apply {
-                    val first = channelRows.first()
-                    moveTo(xAt(first.first), yAt(first.second))
-                    channelRows.drop(1).forEach { (index, upper, _) -> lineTo(xAt(index), yAt(upper)) }
-                    channelRows.asReversed().forEach { (index, _, lower) -> lineTo(xAt(index), yAt(lower)) }
-                    close()
-                }
-                drawPath(fillPath, ChannelFillColor)
-                drawSeriesLine(channelRows.map { xAt(it.first) to yAt(it.second) }, UpperColor.copy(alpha = .65f))
-                drawSeriesLine(channelRows.map { xAt(it.first) to yAt(it.third) }, LowerColor.copy(alpha = .65f))
-            }
-        }
-
-        visible.forEachIndexed { index, row ->
-            val candle = row.candle
-            val x = xAt(index)
-            val color = if (candle.close >= candle.open) UpColor else DownColor
-            drawLine(color, Offset(x, yAt(candle.high)), Offset(x, yAt(candle.low)), strokeWidth = 1.dp.toPx())
-            val openY = yAt(candle.open)
-            val closeY = yAt(candle.close)
-            val top = min(openY, closeY)
-            val height = max(abs(openY - closeY), 1.5.dp.toPx())
-            drawRect(
-                color = color,
-                topLeft = Offset(x - bodyWidth / 2f, top),
-                size = Size(bodyWidth, height),
-                )
-            }
-        if (showChannel) {
-            visible.windowed(2).forEachIndexed { index, pair ->
-                val first = pair[0].channel.ema20
-                val second = pair[1].channel.ema20
-                if (first != null && second != null) {
-                    val color = when (pair[1].channel.trend) {
-                        ChannelTrend.Long -> UpColor
-                        ChannelTrend.Short -> DownColor
-                        ChannelTrend.Neutral -> EmaNeutralColor
-                    }
-                    drawLine(
-                        color,
-                        Offset(xAt(index), yAt(first)),
-                        Offset(xAt(index + 1), yAt(second)),
-                        strokeWidth = 2.dp.toPx(),
-                    )
-                }
-            }
-        }
-
-        if (showAmplitudeSignal) {
-            visible.forEachIndexed { index, row ->
-                val x = xAt(index)
-                if (row.amplitudeSignal.weakTop) {
-                    drawSignalMarker(
-                        x = x,
-                        y = yAt(row.candle.high) - 8.dp.toPx(),
-                        pointsDown = true,
-                        color = WeakTopColor,
-                    )
-                }
-                if (row.amplitudeSignal.weakBottom) {
-                    drawSignalMarker(
-                        x = x,
-                        y = yAt(row.candle.low) + 8.dp.toPx(),
-                        pointsDown = false,
-                        color = WeakBottomColor,
-                    )
-                }
-            }
-        }
-
-        val maxVolume = visible.maxOfOrNull { it.candle.volume }?.coerceAtLeast(0.0000001) ?: 1.0
-        visible.forEachIndexed { index, row ->
-            val height = ((row.candle.volume / maxVolume).toFloat() * (volumeBottom - volumeTop))
-            val color = if (row.candle.close >= row.candle.open) UpColor else DownColor
-            drawRect(
-                color = color.copy(alpha = .5f),
-                topLeft = Offset(xAt(index) - bodyWidth / 2f, volumeBottom - height),
-                size = Size(bodyWidth, height),
-            )
-        }
-        drawContext.canvas.restore()
-
-        drawChartText("VOL", plotLeft, volumeTop + 13.dp.toPx(), labelColor)
-
-        val labelSteps = 4
-        val firstCoreLocal = viewport.coreStart - viewport.drawStart
-        val lastCoreLocal = visible.lastIndex
-        repeat(labelSteps) { labelIndex ->
-            val localIndex = if (labelSteps == 1) firstCoreLocal else {
-                firstCoreLocal + (
-                    labelIndex * ((lastCoreLocal - firstCoreLocal).toFloat() / (labelSteps - 1))
-                ).toInt()
-            }
-            val x = xAt(localIndex)
-            drawLine(gridColor, Offset(x, priceTop), Offset(x, volumeBottom), strokeWidth = 1f)
-            val text = formatChartAxisTime(visible[localIndex].candle.openTimeMillis)
-            drawChartText(text, x - 18.dp.toPx(), size.height - 7.dp.toPx(), labelColor)
-        }
 
         val mapping = frozenTransform ?: AlertChartTransform(timeIndex, viewport,
             plotLeft, plotRight, priceTop, priceBottom, priceMin, priceMax, alertIntervalMillis(interval))
@@ -928,7 +804,7 @@ internal fun KlineChart(
                 drawCircle(chartBackground, 7.dp.toPx(), position)
                 drawCircle(Color(0xFF60A5FA), 5.dp.toPx(), position)
             }
-            if (label.isNotBlank()) segments.lastOrNull()?.let { line -> drawChartText(label, (line.x2 - 100.dp.toPx()).coerceAtLeast(plotLeft), line.y2 - 8.dp.toPx(), color) }
+            if (label.isNotBlank()) segments.lastOrNull()?.let { line -> drawChartText(label, (line.x2 - 100.dp.toPx()).coerceAtLeast(plotLeft), line.y2 - 8.dp.toPx(), color, chartTextPaint) }
         }
         alerts.forEach { alert ->
             val draft = if (preview?.first == alert.id) preview?.second else pending[alert.id]?.geometry
@@ -975,7 +851,7 @@ internal fun KlineChart(
                 strokeWidth = 1.dp.toPx(),
                 pathEffect = dash,
             )
-            drawChartText(formatPrice(cursorPrice), plotRight + 5.dp.toPx(), y + 4.dp.toPx(), Color(0xFF60A5FA))
+            drawChartText(formatPrice(cursorPrice), plotRight + 5.dp.toPx(), y + 4.dp.toPx(), Color(0xFF60A5FA), chartTextPaint)
         }
     }
     if (cursorMode && cursorPrice != null && canvasHeight > 0) {
@@ -1091,17 +967,175 @@ internal fun calculateKlineViewport(
     )
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeriesLine(
-    points: List<Pair<Float, Float>>,
-    color: Color,
+/** Candles and axes retain their draw layer while the cursor or an alert preview moves. */
+@Composable
+internal fun KlinePricePlot(
+    rows: List<KlineChartRow>, viewport: KlineViewport, bounds: PriceBounds,
+    showChannel: Boolean, showAmplitudeSignal: Boolean, leftPaddingPx: Float, rightPaddingPx: Float,
+    modifier: Modifier = Modifier,
 ) {
-    points.windowed(2).forEach { pair ->
-        drawLine(
-            color,
-            Offset(pair[0].first, pair[0].second),
-            Offset(pair[1].first, pair[1].second),
-            strokeWidth = 1.dp.toPx(),
-        )
+    val textPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG) }
+    val channelPath = remember { Path() }
+    val timeLabels = remember(rows, viewport.coreStart, viewport.drawStart, viewport.endExclusive) {
+        if (rows.isEmpty()) emptyArray() else {
+            val first = viewport.coreStart
+            val last = viewport.endExclusive - 1
+            Array(4) { index -> formatChartAxisTime(rows[first + (index * ((last - first).toFloat() / 3)).toInt()].candle.openTimeMillis) }
+        }
+    }
+    Canvas(Modifier.fillMaxSize().graphicsLayer().then(modifier)) {
+        val chartRows = rows
+        if (chartRows.isEmpty()) return@Canvas
+        val visible = chartRows.subList(viewport.drawStart, viewport.endExclusive)
+        val plotLeft = leftPaddingPx
+        val plotRight = size.width - rightPaddingPx
+        val plotWidth = (plotRight - plotLeft).coerceAtLeast(1f)
+        val priceTop = 10.dp.toPx()
+        val priceBottom = size.height * .70f
+        val volumeTop = size.height * .76f
+        val volumeBottom = size.height - 27.dp.toPx()
+        val priceMin = bounds.priceMin
+        val priceMax = bounds.priceMax
+        val priceRange = priceMax - priceMin
+        val slotWidth = plotWidth / viewport.visibleSpan
+        val bodyWidth = (slotWidth * .62f).coerceIn(1.5.dp.toPx(), 13.dp.toPx())
+        val gridColor = Color(0xFF2A333D)
+        val labelColor = Color(0xFF8D99A6)
+        fun xAt(localIndex: Int): Float = viewport.xForIndex(viewport.drawStart + localIndex, plotLeft, slotWidth)
+        fun yAt(price: Double): Float = priceBottom - (((price - priceMin) / priceRange).toFloat() * (priceBottom - priceTop))
+        repeat(5) { gridIndex ->
+            val fraction = gridIndex / 4f
+            val y = priceTop + (priceBottom - priceTop) * fraction
+            drawLine(gridColor, Offset(plotLeft, y), Offset(plotRight, y), strokeWidth = 1f)
+            val price = priceMax - priceRange * fraction
+            drawChartText(formatPrice(price), plotRight + 5.dp.toPx(), y + 4.dp.toPx(), labelColor, textPaint)
+        }
+        drawLine(gridColor, Offset(plotLeft, volumeTop), Offset(plotRight, volumeTop), strokeWidth = 1f)
+
+        drawContext.canvas.save()
+        drawContext.canvas.clipRect(plotLeft, priceTop, plotRight, volumeBottom)
+
+        if (showChannel) {
+            channelPath.reset()
+            var previous = -1
+            var channelCount = 0
+            for (index in visible.indices) {
+                val row = visible[index].channel
+                val upper = row.upper ?: continue
+                val lower = row.lower ?: continue
+                if (previous < 0) channelPath.moveTo(xAt(index), yAt(upper))
+                else channelPath.lineTo(xAt(index), yAt(upper))
+                previous = index
+                channelCount++
+            }
+            if (channelCount > 1) {
+                for (index in visible.indices.reversed()) {
+                    val row = visible[index].channel
+                    if (row.upper != null && row.lower != null) channelPath.lineTo(xAt(index), yAt(row.lower))
+                }
+                channelPath.close()
+                drawPath(channelPath, ChannelFillColor)
+                previous = -1
+                for (index in visible.indices) {
+                    val row = visible[index].channel
+                    val upper = row.upper ?: continue
+                    val lower = row.lower ?: continue
+                    if (previous >= 0) {
+                        val before = visible[previous].channel
+                        drawLine(UpperColor.copy(alpha = .65f), Offset(xAt(previous), yAt(before.upper!!)), Offset(xAt(index), yAt(upper)), strokeWidth = 1.dp.toPx())
+                        drawLine(LowerColor.copy(alpha = .65f), Offset(xAt(previous), yAt(before.lower!!)), Offset(xAt(index), yAt(lower)), strokeWidth = 1.dp.toPx())
+                    }
+                    previous = index
+                }
+            }
+        }
+
+        visible.forEachIndexed { index, row ->
+            val candle = row.candle
+            val x = xAt(index)
+            val color = if (candle.close >= candle.open) UpColor else DownColor
+            drawLine(color, Offset(x, yAt(candle.high)), Offset(x, yAt(candle.low)), strokeWidth = 1.dp.toPx())
+            val openY = yAt(candle.open)
+            val closeY = yAt(candle.close)
+            val top = min(openY, closeY)
+            val height = max(abs(openY - closeY), 1.5.dp.toPx())
+            drawRect(
+                color = color,
+                topLeft = Offset(x - bodyWidth / 2f, top),
+                size = Size(bodyWidth, height),
+                )
+            }
+        if (showChannel) {
+            for (index in 0 until visible.lastIndex) {
+                val first = visible[index].channel.ema20
+                val second = visible[index + 1].channel.ema20
+                if (first != null && second != null) {
+                    val color = when (visible[index + 1].channel.trend) {
+                        ChannelTrend.Long -> UpColor
+                        ChannelTrend.Short -> DownColor
+                        ChannelTrend.Neutral -> EmaNeutralColor
+                    }
+                    drawLine(
+                        color,
+                        Offset(xAt(index), yAt(first)),
+                        Offset(xAt(index + 1), yAt(second)),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                }
+            }
+        }
+
+        if (showAmplitudeSignal) {
+            visible.forEachIndexed { index, row ->
+                val x = xAt(index)
+                if (row.amplitudeSignal.weakTop) {
+                    drawSignalMarker(
+                        x = x,
+                        y = yAt(row.candle.high) - 8.dp.toPx(),
+                        pointsDown = true,
+                        color = WeakTopColor,
+                    )
+                }
+                if (row.amplitudeSignal.weakBottom) {
+                    drawSignalMarker(
+                        x = x,
+                        y = yAt(row.candle.low) + 8.dp.toPx(),
+                        pointsDown = false,
+                        color = WeakBottomColor,
+                    )
+                }
+            }
+        }
+
+        val maxVolume = visible.maxOfOrNull { it.candle.volume }?.coerceAtLeast(0.0000001) ?: 1.0
+        visible.forEachIndexed { index, row ->
+            val height = ((row.candle.volume / maxVolume).toFloat() * (volumeBottom - volumeTop))
+            val color = if (row.candle.close >= row.candle.open) UpColor else DownColor
+            drawRect(
+                color = color.copy(alpha = .5f),
+                topLeft = Offset(xAt(index) - bodyWidth / 2f, volumeBottom - height),
+                size = Size(bodyWidth, height),
+            )
+        }
+        drawContext.canvas.restore()
+
+        drawChartText("VOL", plotLeft, volumeTop + 13.dp.toPx(), labelColor, textPaint)
+
+        val labelSteps = 4
+        val firstCoreLocal = viewport.coreStart - viewport.drawStart
+        val lastCoreLocal = visible.lastIndex
+        repeat(labelSteps) { labelIndex ->
+            val localIndex = if (labelSteps == 1) firstCoreLocal else {
+                firstCoreLocal + (
+                    labelIndex * ((lastCoreLocal - firstCoreLocal).toFloat() / (labelSteps - 1))
+                ).toInt()
+            }
+            val x = xAt(localIndex)
+            drawLine(gridColor, Offset(x, priceTop), Offset(x, volumeBottom), strokeWidth = 1f)
+            val text = timeLabels[labelIndex]
+            drawChartText(text, x - 18.dp.toPx(), size.height - 7.dp.toPx(), labelColor, textPaint)
+        }
+
     }
 }
 
@@ -1110,16 +1144,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawChartText(
     x: Float,
     y: Float,
     color: Color,
+    paint: Paint,
 ) {
+    paint.color = color.toArgb()
+    paint.textSize = 10.sp.toPx()
     drawIntoCanvas { canvas ->
         canvas.nativeCanvas.drawText(
             text,
             x,
             y,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                this.color = color.toArgb()
-                textSize = 10.sp.toPx()
-            },
+            paint,
         )
     }
 }
@@ -1171,14 +1205,13 @@ private fun formatCompact(value: Double?): String {
 }
 
 private fun formatChartDateTime(epochMillis: Long): String =
-    Instant.ofEpochMilli(epochMillis).atZone(ZoneId.of("Asia/Shanghai")).format(
-        DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"),
-    )
+    Instant.ofEpochMilli(epochMillis).atZone(ChartTimeZone).format(ChartDateTimeFormat)
 
+private val ChartTimeZone = ZoneId.of("Asia/Shanghai")
+private val ChartAxisTimeFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+private val ChartDateTimeFormat = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
 private fun formatChartAxisTime(epochMillis: Long): String =
-    Instant.ofEpochMilli(epochMillis).atZone(ZoneId.of("Asia/Shanghai")).format(
-        DateTimeFormatter.ofPattern("MM-dd HH:mm"),
-    )
+    Instant.ofEpochMilli(epochMillis).atZone(ChartTimeZone).format(ChartAxisTimeFormat)
 
 private fun formatDeviceDateTime(epochMillis: Long): String =
     Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).format(

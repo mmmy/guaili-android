@@ -30,17 +30,18 @@ class AlertRepository(private val api: AlertApiService) {
     }
 
     companion object {
-        fun create(baseUrl: String): AlertRepository {
-            val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
-            val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
-            val client = OkHttpClient.Builder()
+        private val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
+        private val sharedClient by lazy {
+            OkHttpClient.Builder()
                 .connectTimeout(8, TimeUnit.SECONDS)
                 .readTimeout(8, TimeUnit.SECONDS)
-                .addInterceptor(logging)
+                .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
                 .build()
+        }
+        fun create(baseUrl: String): AlertRepository {
             val retrofit = Retrofit.Builder()
                 .baseUrl(if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/")
-                .client(client)
+                .client(sharedClient)
                 .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
                 .build()
             return AlertRepository(retrofit.create(AlertApiService::class.java))

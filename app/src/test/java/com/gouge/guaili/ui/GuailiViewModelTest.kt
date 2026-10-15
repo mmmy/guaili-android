@@ -47,7 +47,7 @@ class GuailiViewModelTest {
             requested += config
             if (config.symbols.contains("XAUUSDT")) gate.await()
             else GuailiResult.Success(responseFor(config, "BTCUSDT", "D", 12))
-        } }, autoRefreshEnabled = false)
+        } }, computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false)
         try {
             runCurrent()
             vm.setTemporaryRange("XAUUSDT", listOf("8", "5")); runCurrent()
@@ -70,7 +70,7 @@ class GuailiViewModelTest {
         val vm = GuailiViewModel(FakeSettingsSource(original), fetcherFactory = { GuailiFetcher { config ->
             calls++
             GuailiResult.Success(responseFor(config, config.symbols.last(), config.intervals.last(), 12))
-        } }, snapshotSink = com.gouge.guaili.data.GuailiSnapshotSink { saved += it }, autoRefreshEnabled = false)
+        } }, snapshotSink = com.gouge.guaili.data.GuailiSnapshotSink { saved += it }, computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false)
         try {
             advanceUntilIdle()
             assertEquals(1, saved.size)
@@ -98,7 +98,7 @@ class GuailiViewModelTest {
             settingsSource = settingsSource,
             fetcherFactory = { fetcher },
             nowMillis = { 1234L },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -132,7 +132,7 @@ class GuailiViewModelTest {
             settingsSource = settingsSource,
             fetcherFactory = { fetcher },
             nowMillis = { 1234L },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -166,7 +166,7 @@ class GuailiViewModelTest {
                 )
             },
             nowMillis = { now },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -196,7 +196,7 @@ class GuailiViewModelTest {
                 )
             },
             nowMillis = { now },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -222,7 +222,7 @@ class GuailiViewModelTest {
         val viewModel = GuailiViewModel(
             settingsSource = settingsSource,
             fetcherFactory = { throw IllegalArgumentException("bad base url") },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -250,7 +250,7 @@ class GuailiViewModelTest {
         val viewModel = GuailiViewModel(
             settingsSource = settingsSource,
             fetcherFactory = { fetcher },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -288,7 +288,7 @@ class GuailiViewModelTest {
         val viewModel = GuailiViewModel(
             settingsSource = source,
             fetcherFactory = { QueueingFetcher(GuailiResult.Success(responseFor(original, "BTCUSDT", "1", 12))) },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()
@@ -324,7 +324,7 @@ class GuailiViewModelTest {
         val viewModel = GuailiViewModel(
             settingsSource = settingsSource,
             fetcherFactory = { fetcher },
-            autoRefreshEnabled = false,
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false,
         )
         try {
             advanceUntilIdle()

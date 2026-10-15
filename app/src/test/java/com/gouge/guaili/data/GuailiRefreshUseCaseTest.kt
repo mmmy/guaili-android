@@ -7,11 +7,15 @@ import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class GuailiRefreshUseCaseTest {
     @Test
     fun refreshAndPersistedEvolutionUseServerTimeAfterDeviceClockJumps() = runTest {
@@ -182,7 +186,7 @@ class GuailiRefreshUseCaseTest {
     }
 
     @Test
-    fun refreshesFromDifferentEntrypointsDoNotRunConcurrently() = runTest {
+    fun identicalRefreshesFromDifferentEntrypointsShareOneObservation() = runTest {
         val settings = GuailiSettings.defaults().copy(
             symbols = listOf("BTCUSDT"),
             intervals = listOf("5"),
@@ -205,19 +209,109 @@ class GuailiRefreshUseCaseTest {
                 GuailiResult.Success(response(settings, value = requestCount))
             }
         }
-        val firstUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory)
-        val secondUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory)
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val firstUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory, computationDispatcher = dispatcher)
+        val secondUseCase = GuailiRefreshUseCase(fetcherFactory = fetcherFactory, computationDispatcher = dispatcher)
 
         val first = async { firstUseCase.refresh(settings) }
         firstStarted.await()
-        val second = async { secondUseCase.refresh(settings) }
+        val second = async { secondUseCase.refresh(settings.copy(autoRefreshSeconds = 30,
+            tableDensity = com.gouge.guaili.settings.TableDensity.Comfortable)) }
+        runCurrent()
 
         releaseFirst.complete(Unit)
-        first.await()
-        second.await()
+        val initial = first.await()
+        assertEquals(initial, second.await())
 
-        assertEquals(2, requestCount)
+        assertEquals(1, requestCount)
         assertEquals(1, maxActiveRequests)
+    }
+
+    @Test fun allDataInputsAndReturnedOrderingSeparateConcurrentRequests() = runTest {
+        val settings = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT", "XAUUSDT"),
+            intervals = listOf("5", "1"))
+        val variations = listOf(settings.copy(baseUrl = "http://another-server/"),
+            settings.copy(symbols = settings.symbols.reversed()), settings.copy(intervals = settings.intervals.reversed()),
+            settings.copy(closedOnly = true), settings.copy(limit = 4), settings.copy(calcLimit = 600),
+            settings.copy(maType = "SMA"), settings.copy(maLength = 21), settings.copy(atrLen = 2),
+            settings.copy(atrPercentLen = 21), settings.copy(maxAtrRank = 50.0),
+            settings.copy(slopeMul = 0.2), settings.copy(useSlope = false))
+        for (other in variations) {
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var calls = 0
+            val useCase = GuailiRefreshUseCase(GuailiFetcherFactory { GuailiFetcher {
+                calls++
+                if (calls == 1) { started.complete(Unit); release.await() }
+                GuailiResult.Success(response(it, calls))
+            } }, computationDispatcher = StandardTestDispatcher(testScheduler))
+            val first = async { useCase.refresh(settings) }
+            started.await()
+            val second = async { useCase.refresh(other) }
+            runCurrent()
+            release.complete(Unit)
+            first.await(); second.await()
+            assertEquals("must distinguish $other", 2, calls)
+        }
+    }
+
+    @Test fun sharedWriteFailureIsInterpretedPerCallerAndAnotherDestinationRemainsIndependent() = runTest {
+        val settings = GuailiSettings.defaults()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var calls = 0
+        var writes = 0
+        val factory = GuailiFetcherFactory { GuailiFetcher {
+            calls++
+            if (calls == 1) { started.complete(Unit); release.await() }
+            GuailiResult.Success(response(settings, calls))
+        } }
+        val diskFull = GuailiSnapshotSink { writes++; error("disk full") }
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val screen = GuailiRefreshUseCase(factory, diskFull, computationDispatcher = dispatcher)
+        val widget = GuailiRefreshUseCase(factory, diskFull, computationDispatcher = dispatcher)
+        val otherStore = GuailiRefreshUseCase(factory, GuailiSnapshotSink { writes++ }, computationDispatcher = dispatcher)
+        val first = async { screen.refresh(settings) }
+        started.await()
+        val required = async { widget.refresh(settings, requirePersistence = true) }
+        val separate = async { otherStore.refresh(settings) }
+        runCurrent()
+        release.complete(Unit)
+        assertTrue(first.await() is GuailiResult.Success)
+        assertTrue(required.await() is GuailiResult.Failure)
+        assertTrue(separate.await() is GuailiResult.Success)
+        assertEquals(2, calls)
+        assertEquals(2, writes)
+    }
+
+    @Test fun screenAndStrictWidgetShareOneSuccessfulNetworkCalculationAndSave() = runTest {
+        val settings = GuailiSettings.defaults()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val destination = Any()
+        var calls = 0
+        val saved = mutableListOf<GuailiSnapshot>()
+        // Separate wrappers represent separate Store instances with one backing DataStore.
+        fun sink() = object : GuailiSnapshotSink {
+            override fun refreshIdentity() = destination
+            override suspend fun save(snapshot: GuailiSnapshot) { saved += snapshot }
+        }
+        val factory = GuailiFetcherFactory { GuailiFetcher {
+            calls++; started.complete(Unit); release.await()
+            GuailiResult.Success(response(settings, 12))
+        } }
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val screen = GuailiRefreshUseCase(factory, sink(), computationDispatcher = dispatcher)
+        val worker = GuailiRefreshUseCase(factory, sink(), computationDispatcher = dispatcher)
+        val first = async { screen.refresh(settings) }
+        started.await()
+        val strict = async { worker.refresh(settings, requirePersistence = true) }
+        runCurrent()
+        release.complete(Unit)
+        val snapshot = (first.await() as GuailiResult.Success).value
+        assertEquals(snapshot, (strict.await() as GuailiResult.Success).value)
+        assertEquals(listOf(snapshot), saved)
+        assertEquals(1, calls)
     }
 
     private fun response(settings: GuailiSettings, value: Int) = GuailiResponse(

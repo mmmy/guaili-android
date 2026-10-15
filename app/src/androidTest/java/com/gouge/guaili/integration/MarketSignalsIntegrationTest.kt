@@ -155,8 +155,11 @@ class MarketSignalsIntegrationTest {
             }
             compose.onNode(hasText("1m–8m") and hasAnyAncestor(hasTestTag("market-v2-card-QQQUSDT-conflict")), useUnmergedTree = true).assertIsDisplayed()
             compose.onNodeWithText("60m–240m").assertIsDisplayed()
-            compose.onNodeWithText("短负 · 5级").assertIsDisplayed()
-            compose.onNodeWithText("长正 · 5级").assertIsDisplayed()
+            // Narrow/large-font cards may omit secondary metadata; full directions and counts stay accessible.
+            compose.onNodeWithTag("market-v2-kline-QQQUSDT-conflict", useUnmergedTree = true)
+                .assert(hasContentDescription("短负", substring = true))
+                .assert(hasContentDescription("长正", substring = true))
+                .assert(hasContentDescription("5级", substring = true))
             listOf("BTCUSDT-btc", "BTCUSDT-near", "XAUUSDT-negative").forEach {
                 assertTrue("Ordinary cards must fit a compact range-first layout",
                     compose.onNodeWithTag("market-v2-card-$it").fetchSemanticsNode().boundsInRoot.height <= 52f * compose.density.density * compose.density.fontScale)
@@ -164,9 +167,9 @@ class MarketSignalsIntegrationTest {
             assertTrue("Conflict cards must fit both full ranges and metadata",
                 compose.onNodeWithTag("market-v2-card-QQQUSDT-conflict").fetchSemanticsNode().boundsInRoot.height <= 56f * compose.density.density * compose.density.fontScale)
             compose.onNodeWithTag("market-v2-expand-QQQUSDT-conflict").performClick()
-            compose.onNodeWithText("长短周期分歧").assertIsDisplayed()
-            compose.onNodeWithText("参与周期与动态乖离").assertIsDisplayed()
-            compose.onNodeWithTag("market-v2-expand-QQQUSDT-conflict").performClick()
+            compose.onNodeWithText("长短周期分歧").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("参与周期与动态乖离").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("market-v2-expand-QQQUSDT-conflict").performScrollTo().performClick()
             capture("market-v2-widget-style")
         }
     }

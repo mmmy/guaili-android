@@ -113,3 +113,7 @@ internal fun summarizeMarketTvEntries(
             .mapValues { (_, group) -> summarizeTvEntries(group, now) },
     )
 }.toMap()
+
+/** Both active and stopped entries contribute to expired counts in the existing summary. */
+internal fun nextMarketTvExpiry(entries: Map<String, List<MarketTvAlertEntry>>, now: Instant): Instant? =
+    entries.values.asSequence().flatten().mapNotNull { it.expiresAt }.filter { it > now }.minOrNull()

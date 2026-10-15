@@ -42,9 +42,40 @@ class ServerSignalsViewModelTest {
         override suspend fun readFailure() = failures.value
         override suspend fun save(snapshot: ServerSignalsSnapshot) { snapshots.value = snapshot; failures.value = null }
         override suspend fun recordFailure(failure: ServerSignalsFailure?) { failures.value = failure }
-        override fun currentDeviceTime() = time.copy(elapsedMillis = time.elapsedMillis + elapsedOffset())
+        override fun currentDeviceTime() = elapsedOffset().let { offset ->
+            time.copy(wallMillis = time.wallMillis + offset, elapsedMillis = time.elapsedMillis + offset)
+        }
     }
     private fun ServerSignalsViewModel.close() { javaClass.getMethod("clear\$lifecycle_viewmodel").invoke(this) }
+
+    @Test fun unchangedForegroundSecondsDoNotPublishStatesButPhaseAndClockChangesStillDo() = runTest {
+        val settings = Settings()
+        settings.save(settings.settings.value.copy(autoRefreshSeconds = 60))
+        val cache = Cache { testScheduler.currentTime }
+        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+            ServerSignalsFetcherFactory { ServerSignalsFetcher {
+                val wire = response()
+                GuailiResult.Success(wire.copy(results = wire.results.map { row -> row.copy(signals = row.signals.map {
+                    it.copy(formedAt = now)
+                }) }))
+            } }, cache))
+        try {
+            runCurrent(); vm.setForeground(true); runCurrent()
+            val initial = vm.state.value
+            advanceTimeBy(10_000); runCurrent()
+            assertSame(initial, vm.state.value)
+            advanceTimeBy(1); runCurrent()
+            assertNotSame(initial, vm.state.value)
+            assertSame(initial.presentation.signals, vm.state.value.presentation.signals)
+            val ongoing = vm.state.value
+            advanceTimeBy(5_000); runCurrent()
+            assertSame(ongoing, vm.state.value)
+            cache.time = cache.time.copy(bootCount = 2)
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals("time_uncertain", vm.state.value.presentation.status)
+            assertTrue(vm.state.value.presentation.signals.isEmpty())
+        } finally { vm.close() }
+    }
 
     @Test fun pullbacksShareFullRefreshAndSoundBaselinesIgnoreDisplayFilter() = runTest {
         val settings = Settings()

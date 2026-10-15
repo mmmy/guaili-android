@@ -3,10 +3,10 @@ package com.gouge.guaili.widget
 import android.content.Context
 import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidgetManager
-import androidx.glance.appwidget.updateAll
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.gouge.guaili.data.*
 import com.gouge.guaili.settings.GuailiSettings
 import java.util.concurrent.TimeUnit
@@ -33,16 +33,40 @@ internal suspend fun updateServerSignalWidgets(context: Context, settings: Guail
     if (targets.isEmpty()) return
     targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
         if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
-        message = (result as? GuailiResult.Failure)?.message) }
+        message = (result as? GuailiResult.Failure)?.message, deduplicate = true) }
     if (result is GuailiResult.Success) scheduleServerSignalsExpiry(context, result.value)
-    com.gouge.guaili.widget.GuailiWidget().updateAll(context)
+    val widget = GuailiWidget()
+    targets.forEach { widget.update(context, it.id) }
 }
 
+internal data class ServerSignalsExpiryIdentity(val baseUrl: String, val evaluatedAt: Long, val lifetimeMillis: Long)
+internal fun serverSignalsExpiryIdentity(snapshot: ServerSignalsSnapshot): ServerSignalsExpiryIdentity? =
+    if (!snapshot.response.enabled) null else ServerSignalsExpiryIdentity(
+        normalizeServerSignalsBaseUrl(snapshot.baseUrl), snapshot.response.evaluatedAt ?: snapshot.response.serverTime,
+        serverSignalsCacheLifetime(snapshot.response),
+    )
+
+private val serverSignalsExpiryLock = Any()
+private var scheduledServerSignalsExpiry: ServerSignalsExpiryIdentity? = null
+
 internal fun scheduleServerSignalsExpiry(context: Context, snapshot: ServerSignalsSnapshot) {
-    if (!snapshot.response.enabled) return
+    val identity = serverSignalsExpiryIdentity(snapshot) ?: return
     val age = snapshot.response.evaluatedAt?.let { (snapshot.response.serverTime - it).coerceAtLeast(0L) } ?: 0L
     val delay = (serverSignalsCacheLifetime(snapshot.response) - age + 1_000L).coerceAtLeast(1_000L)
-    WorkManager.getInstance(context).enqueueUniqueWork("server-signals-v2-cache-expiry",
-        ExistingWorkPolicy.REPLACE,
-        OneTimeWorkRequestBuilder<WidgetFeedbackExpiryWorker>().setInitialDelay(delay, TimeUnit.MILLISECONDS).build())
+    synchronized(serverSignalsExpiryLock) {
+        // Polling can return the same evaluated result many times. Its expiry is unchanged.
+        if (scheduledServerSignalsExpiry == identity) return
+        WorkManager.getInstance(context).enqueueUniqueWork("server-signals-v2-cache-expiry",
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<WidgetFeedbackExpiryWorker>()
+                .setInputData(workDataOf(OnlyV2WidgetsKey to true))
+                .setInitialDelay(delay, TimeUnit.MILLISECONDS).build())
+        scheduledServerSignalsExpiry = identity
+    }
 }
+
+internal fun clearServerSignalsExpirySchedule() = synchronized(serverSignalsExpiryLock) {
+    scheduledServerSignalsExpiry = null
+}
+
+internal const val OnlyV2WidgetsKey = "only_v2_widgets"

@@ -1,8 +1,6 @@
 package com.gouge.guaili.data
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 fun interface ServerSignalsFetcher {
     suspend fun fetch(symbols: List<String>): GuailiResult<ServerSignalsResponse>
@@ -17,7 +15,7 @@ class ServerSignalsRefreshUseCase(
         val repository = ServerSignalsRepository.create(baseUrl)
         ServerSignalsFetcher(repository::fetch)
     },
-    private val snapshotSink: ServerSignalsSnapshotSink = ServerSignalsSnapshotSink {},
+    private val snapshotSink: ServerSignalsSnapshotSink = NoopServerSignalsSnapshotSink,
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
     private var fetcher: ServerSignalsFetcher? = null
@@ -28,25 +26,32 @@ class ServerSignalsRefreshUseCase(
         requirePersistence: Boolean = true,
         symbols: List<String> = emptyList(),
         reuseWithinMillis: Long = 0,
-    ): GuailiResult<ServerSignalsSnapshot> = RefreshCoordinator.mutex.withLock {
-        // A caller queued behind another entry point can reuse its complete, freshly saved
-        // response. Old subset caches and snapshots from other servers are never reused.
+    ): GuailiResult<ServerSignalsSnapshot> {
+        // Cache permission belongs to a caller. Once network work is required, all callers
+        // share that actual request, including a caller that disallows completed-cache reuse.
         if (reuseWithinMillis > 0 && symbols.isEmpty()) {
             val cached = snapshotSink.read()
             val device = snapshotSink.currentDeviceTime()
             if (cached != null && cached.fullUniverse && cached.belongsTo(baseUrl) && device != null) {
                 val age = assessServerSignalsTime(cached, device).cacheAgeMillis
-                if (age != null && age in 0..reuseWithinMillis) return@withLock GuailiResult.Success(cached)
+                if (age != null && age in 0..reuseWithinMillis) return GuailiResult.Success(cached)
             }
         }
-        refreshLocked(normalizeServerSignalsBaseUrl(baseUrl), requirePersistence, symbols)
+        val normalizedUrl = normalizeServerSignalsBaseUrl(baseUrl)
+        val requestedSymbols = symbols.toList()
+        val outcome = refreshes.run(RefreshKey(normalizedUrl, requestedSymbols,
+            RefreshSinkIdentity(snapshotSink.refreshIdentity()))) {
+            refreshLocked(normalizedUrl, requestedSymbols)
+        }
+        return if (requirePersistence && outcome.persistenceFailure != null) {
+            GuailiResult.Failure("信号已获取，但无法保存快照，请重试", outcome.persistenceFailure)
+        } else outcome.result
     }
 
     private suspend fun refreshLocked(
         baseUrl: String,
-        requirePersistence: Boolean,
         symbols: List<String>,
-    ): GuailiResult<ServerSignalsSnapshot> {
+    ): RefreshOutcome {
         val current = try {
             if (fetcher == null || fetcherBaseUrl != baseUrl) {
                 fetcher = fetcherFactory.create(baseUrl)
@@ -56,7 +61,7 @@ class ServerSignalsRefreshUseCase(
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            return failure(baseUrl, "服务器地址无效，请检查信号V2设置", error)
+            return RefreshOutcome(failure(baseUrl, "服务器地址无效，请检查信号V2设置", error))
         }
         val started = snapshotSink.currentDeviceTime()
         val result = try {
@@ -67,7 +72,7 @@ class ServerSignalsRefreshUseCase(
             GuailiResult.Failure("无法获取服务器信号，请检查网络后重试", error)
         }
         return when (result) {
-            is GuailiResult.Failure -> failure(baseUrl, result.message, result.cause)
+            is GuailiResult.Failure -> RefreshOutcome(failure(baseUrl, result.message, result.cause))
             is GuailiResult.Success -> {
                 val received = snapshotSink.currentDeviceTime()
                 val clock = if (started == null || received == null) null else GuailiServerClock(
@@ -85,25 +90,30 @@ class ServerSignalsRefreshUseCase(
                     serverClock = clock,
                     fullUniverse = symbols.isEmpty(),
                 )
-                try {
+                val persistenceFailure = try {
                     // Disabled/config-error responses are successful observations and must replace
                     // older active signals. Network failure never replaces the successful cache.
                     snapshotSink.save(snapshot)
+                    null
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    if (requirePersistence) {
-                        return failure(baseUrl, "信号已获取，但无法保存快照，请重试", error)
+                    error
+                }
+                if (persistenceFailure != null) {
+                    // Record while this observation still owns the ordering lock. A delayed
+                    // strict caller must not write an old error after a newer successful save.
+                    failure(baseUrl, "信号已获取，但无法保存快照，请重试", persistenceFailure)
+                } else {
+                    try {
+                        snapshotSink.recordFailure(null)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        // A separate failure-log write cannot invalidate a saved successful snapshot.
                     }
                 }
-                try {
-                    snapshotSink.recordFailure(null)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // A separate failure-log write cannot invalidate a saved successful snapshot.
-                }
-                GuailiResult.Success(snapshot)
+                RefreshOutcome(GuailiResult.Success(snapshot), persistenceFailure)
             }
         }
     }
@@ -119,8 +129,18 @@ class ServerSignalsRefreshUseCase(
         return GuailiResult.Failure(message, cause)
     }
 
-    private object RefreshCoordinator {
-        // App, manual widget actions and background work use different use-case instances.
-        val mutex = Mutex()
+    private data class RefreshKey(
+        val baseUrl: String,
+        val symbols: List<String>,
+        val sink: RefreshSinkIdentity,
+    )
+
+    private data class RefreshOutcome(
+        val result: GuailiResult<ServerSignalsSnapshot>,
+        val persistenceFailure: Exception? = null,
+    )
+
+    companion object {
+        private val refreshes = RefreshSingleFlight<RefreshKey, RefreshOutcome>()
     }
 }

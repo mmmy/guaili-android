@@ -157,19 +157,24 @@ internal fun serverSignalsState(
         return ServerSignalsState("unknown", "服务器状态暂不可判断", "刷新或检查服务器版本",
             fetchedAt = time.fetchedAtMillis, nowMillis = now)
     }
-    val selected = config.symbols.distinct().mapNotNull { symbol -> response.results.firstOrNull { it.symbol == symbol } }
-    val missing = config.symbols.filter { symbol -> selected.none { it.symbol == symbol } }
+    // Preserve the original first response for duplicate identities, without scanning all rows per symbol.
+    val rowsBySymbol = buildMap { response.results.forEach { if (it.symbol !in this) put(it.symbol, it) } }
+    val selected = config.symbols.distinct().mapNotNull(rowsBySymbol::get)
+    val missing = config.symbols.filter { it !in rowsBySymbol }
+    val symbolOrder = buildMap { config.symbols.forEachIndexed { index, symbol -> if (symbol !in this) put(symbol, index) } }
     val signals = if (evaluatedAt == null) emptyList() else selected.flatMap { row ->
         if (row.dataStatus !in setOf("ready", "degraded") || row.sampledAt <= 0L ||
             row.sampledAt > evidenceTime + 2_000L || evidenceTime - row.sampledAt > lifetime) emptyList()
-        else serverSignalCandidates(row.signals.filter { signal ->
-            serverSignalKind(signal.kind) in config.enabledSignalKinds && validServerSignal(signal) &&
-                signal.runs.flatMap { it.intervals }.all { interval ->
-                    row.perIntervalQuality.any { it.interval == interval && it.availability == "ready" }
-                }
-        }.distinctBy { it.id }).map { ServerSignalItem(row.symbol, it) }
+        else {
+            val readyIntervals = row.perIntervalQuality.asSequence().filter { it.availability == "ready" }
+                .mapTo(HashSet()) { it.interval }
+            serverSignalCandidates(row.signals.filter { signal ->
+                serverSignalKind(signal.kind) in config.enabledSignalKinds && validServerSignal(signal) &&
+                    signal.runs.all { run -> run.intervals.all { it in readyIntervals } }
+            }.distinctBy { it.id }).map { ServerSignalItem(row.symbol, it) }
+        }
     }.sortedWith(compareByDescending<ServerSignalItem> { serverSignalPriority(it.signal) }
-        .thenBy { config.symbols.indexOf(it.symbol) })
+        .thenBy { symbolOrder[it.symbol] })
     val qualityGroups = selected.map { serverSignalQualityGroups(it) }
     val issues = qualityGroups.flatMap { it.keys }.distinct().sortedBy { it.ordinal }
     val hasReady = selected.any { row -> row.perIntervalQuality.any { it.availability == "ready" } }
@@ -280,7 +285,7 @@ internal fun serverDisplayInterval(interval: String): String =
 
 /** Adapt server evidence for the shared UI; this never recalculates a signal. */
 internal fun serverSignalPresentation(item: ServerSignalItem, response: ServerSignalsResponse,
-    nowMillis: Long?): GuailiSignal? {
+    nowMillis: Long?, sourceRow: ServerSymbolSignals? = response.results.firstOrNull { it.symbol == item.symbol }): GuailiSignal? {
     val kind = serverSignalKind(item.signal.kind) ?: return null
     fun direction(value: String) = when (value) {
         "positive" -> GuailiSignalDirection.Positive
@@ -294,7 +299,7 @@ internal fun serverSignalPresentation(item: ServerSignalItem, response: ServerSi
             maxAbsGuaili = it.maxAbsGuaili ?: it.maxAbsValue / 10.0)
     }
     if (runs.isEmpty()) return null
-    val anchor = response.results.firstOrNull { it.symbol == item.symbol }?.perIntervalQuality
+    val anchor = sourceRow?.perIntervalQuality
         ?.firstOrNull { it.interval == signal.anchorInterval && it.availability == "ready" }
     val trend = when {
         anchor?.longTrend == null || anchor.shortTrend == null -> GuailiSignalTrend.Unknown
