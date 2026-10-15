@@ -268,7 +268,7 @@ class PullbackPriceAlertsIntegrationTest {
         compose.onNodeWithTag("pullback-refresh").performClick()
     }
     private fun awaitAlertState(id: Long, state: String) = compose.waitUntil(15000) {
-        compose.onAllNodes(hasTestTag("pullback-alert-$id") and hasText("· $state")).fetchSemanticsNodes().isNotEmpty()
+        compose.onAllNodes(hasTestTag("pullback-alert-$id") and (hasText(state) or hasText("· $state"))).fetchSemanticsNodes().isNotEmpty()
     }
     private fun capture(name: String) {
         compose.waitForIdle(); Thread.sleep(400); compose.waitForIdle()

@@ -1,10 +1,12 @@
 package com.gouge.guaili.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -33,6 +35,7 @@ internal val PullbackAlertWarning = Color(0xFFEFBB76)
 internal val PullbackValidityDays = Color(0xFF94B8DF)
 internal val PullbackValidityHours = Color(0xFFC2ACDF)
 internal val PullbackValidityMinutes = Color(0xFFDFBD7B)
+private val PullbackValidityShape = RoundedCornerShape(4.dp)
 
 /** Only this composed alert subtree observes time; no list/projection or network ticks. */
 @Composable
@@ -85,8 +88,18 @@ internal fun PullbackAlertSummary(alerts: List<PriceAlertDto>, primary: Long?, n
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
                 Text(alertIntentLabel(alert.intent), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(pullbackPeriodLabel(alert.interval), fontSize = 14.sp)
-                Text("· $status", fontSize = if (unit == null) 11.sp else 12.sp, color = statusColor,
-                    modifier = Modifier.testTag("pullback-alert-validity-${alert.id}"))
+                if (unit != null) {
+                    // Display only; the full summary retains its 48dp click target.
+                    Text(status, fontSize = 12.sp, lineHeight = 16.sp, color = statusColor,
+                        maxLines = 1, softWrap = false,
+                        modifier = Modifier.testTag("pullback-alert-validity-${alert.id}")
+                            .heightIn(min = 20.dp).border(1.dp, statusColor, PullbackValidityShape)
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                            .wrapContentHeight(Alignment.CenterVertically))
+                } else {
+                    Text("· $status", fontSize = 11.sp, color = statusColor,
+                        modifier = Modifier.testTag("pullback-alert-validity-${alert.id}"))
+                }
             }
             Text(if (alert.geometry.kind == "horizontal_segment") "@${alertNumber(alert.geometry.first.price)}" else "斜线",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
