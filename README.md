@@ -6,6 +6,10 @@
 
 正式 release 包启用 R8 与资源收缩。`benchmark` 包使用独立的 `com.gouge.guaili.perf` 应用 ID 和本地模拟行情，不读取或修改正式安装的账户、警报和小组件；测试入口只存在于 benchmark 构建。
 
+本轮可安装包：[GuailiAndroid-performance.apk](dist/performance-optimized/GuailiAndroid-performance.apk)，版本 0.5.1 / 8，沿用项目既有开发证书签名的 Release。已校验与历史交付包的证书一致，支持覆盖同证书版本并保留数据；v2/v3 签名与 APK 对齐验证通过，校验和见同目录 `build-manifest.json`。
+
+重新生成这个安装包，见下方[构建和签名命令](#构建可安装的-release)。
+
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest :feature-xbot:testDebugUnitTest :app:assembleRelease :app:lintDebug
 # 在已连接的 API 33+ 测试设备生成启动、矩阵与 K 线 Baseline/Startup Profiles。
@@ -97,6 +101,59 @@ Guaili 沿用 `com.gouge.guaili`，可覆盖安装并保留原有行情设置及
 ```
 
 APK：`app/build/outputs/apk/debug/app-debug.apk`。
+
+### 构建可安装的 Release
+
+本次采用「Gradle 构建 Release → apksigner 签名 → 验证签名和对齐」。当前 `release` 没有配置 Gradle 自动签名，单独运行 `assembleRelease` 会生成未签名 APK，需完成签名后安装。R8、资源收缩和已有的 `app/src/main/baselineProfiles/` 规则会在 Release 构建时生效，普通打包无需连接设备或重新采集 Profile。
+
+以下是本机实际使用的 PowerShell 命令；换机器时调整项目、JDK 和 SDK Build Tools 路径。签名必须继续使用原有的 `%USERPROFILE%\.android\debug.keystore`（别名 `androiddebugkey`，本机既有开发密钥的密码为 `android`）。换机器需复制原密钥文件，新生成的同名密钥无法覆盖旧版。
+
+```powershell
+Set-Location 'F:\test\guili-andriod'
+$ErrorActionPreference = 'Stop'
+$env:JAVA_HOME = 'D:\Program Files\Android\Android Studio\jbr'
+$buildTools = 'D:\Andriod\AndriodStudio\build-tools\36.1.0'
+$releaseKeystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
+$unsignedApk = 'app\build\outputs\apk\release\app-release-unsigned.apk'
+$signedApk = 'dist\performance-optimized\GuailiAndroid-performance.apk'
+
+if (-not (Test-Path -LiteralPath $releaseKeystore)) {
+    throw '缺少原有开发签名密钥，请先恢复 debug.keystore'
+}
+
+# 1. 构建启用 R8、资源收缩及 Profile 的 Release。
+.\gradlew.bat :app:assembleRelease --console=plain --max-workers=2
+if ($LASTEXITCODE -ne 0) { throw 'Release 构建失败' }
+
+# 2. 检查 Gradle 输出的 APK 对齐，再用原证书签名。
+New-Item -ItemType Directory -Force (Split-Path -Parent $signedApk) | Out-Null
+& "$buildTools\zipalign.exe" -c -P 16 4 $unsignedApk
+if ($LASTEXITCODE -ne 0) { throw '未签名 APK 对齐检查失败' }
+
+& "$buildTools\apksigner.bat" sign --ks $releaseKeystore `
+    --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android `
+    --v4-signing-enabled false --out $signedApk $unsignedApk
+if ($LASTEXITCODE -ne 0) { throw 'APK 签名失败' }
+
+# 3. 验证最终安装包。输出中 v2、v3 签名应均为 true。
+& "$buildTools\apksigner.bat" verify --verbose --print-certs $signedApk
+if ($LASTEXITCODE -ne 0) { throw 'APK 签名验证失败' }
+& "$buildTools\zipalign.exe" -c -P 16 4 $signedApk
+if ($LASTEXITCODE -ne 0) { throw '签名 APK 对齐检查失败' }
+Get-FileHash -Algorithm SHA256 -LiteralPath $signedApk
+```
+
+最终可安装文件：`dist/performance-optimized/GuailiAndroid-performance.apk`。本机历史交付证书 SHA-256 为 `6d045593162ec0aa0aff731c63e95db860e88cf68d8eed95a197d45c9890d653`，可与 `--print-certs` 输出的 `Signer #1 certificate SHA-256 digest` 核对。
+
+需要通过 USB 覆盖安装时，在同一 PowerShell 窗口执行以下命令，将 `设备序列号` 替换为 `adb devices` 显示的值；`-r` 保留应用数据。
+
+```powershell
+$adbTool = 'D:\Andriod\AndriodStudio\platform-tools\adb.exe'
+& $adbTool devices
+& $adbTool -s '设备序列号' install -r $signedApk
+```
+
+### 设备集成测试
 
 宿主整合的 instrumentation 测试位于 `app/src/androidTest/java/com/gouge/guaili/integration`；原有 XBot 警报页面和组件测试移入 `app/src/androidTest/java/com/gouge/xbot`，确保点击路径使用真实宿主。账户与警报数据使用设备内 MockWebServer，不向真实服务提交业务操作；测试临时修改的 XBot 本机配置在结束时恢复。运行前可执行 `python scripts/backup-widget-device.py --serial emulator-5554` 保存现有 Guaili 配置备份。
 
