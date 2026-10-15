@@ -12,6 +12,7 @@ internal fun priceAlertPrimaryKey(url: String, symbol: String, group: String) = 
 internal fun PriceAlertDto.isEnabledAt(now: Long) = status == "active" && (expiresAt == null || expiresAt > now)
 internal fun PriceAlertDto.canExtend(now: Long) = isEnabledAt(now) && geometry.valid() && geometry.extend == "none" && geometry.second.timeMs < now
 internal fun PriceAlertDto.pullbackStatus(now: Long, stale: Boolean = false): String = when {
+    status == "triggered" -> stateLabel(now)
     stale -> "待更新"
     status != "active" || !isEnabledAt(now) -> stateLabel(now)
     geometry.extend != "both" && geometry.first.timeMs > now -> "等起点"
@@ -25,7 +26,7 @@ internal fun PriceAlertDto.pullbackStatus(now: Long, stale: Boolean = false): St
     else -> "等行情"
 }
 internal fun groupPullbackAlerts(alerts: List<PriceAlertDto>, now: Long): Map<String, Map<String, List<PriceAlertDto>>> =
-    alerts.asSequence().filter { it.isEnabledAt(now) }.sortedBy { it.id }.groupBy { it.symbol }
+    alerts.asSequence().filter { it.status == "triggered" || it.isEnabledAt(now) }.sortedBy { it.id }.groupBy { it.symbol }
         .mapValues { (_, values) -> values.groupBy { priceAlertGroup(it.intent) } }
 
 internal fun primaryPullbackAlert(alerts: List<PriceAlertDto>, chosen: Long?): PriceAlertDto? =

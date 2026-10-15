@@ -47,6 +47,7 @@ class PullbackPriceAlertsIntegrationTest {
     private val device get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
     @Volatile private var lostReceipt = false
     @Volatile private var writeCount = 0
+    @Volatile private var overviewFailure = false
 
     @Before fun prepare() = runBlocking {
         savedSettings = settings.settings.first(); savedPrefs = prefs.preferences.first()
@@ -63,7 +64,8 @@ class PullbackPriceAlertsIntegrationTest {
                     val path = request.requestUrl!!.encodedPath
                     if (path.startsWith("/api/price-alerts/mutations/")) return@synchronized receipts[path.substringAfterLast('/')]?.let(::response) ?: MockResponse().setResponseCode(404)
                     if (path == "/api/price-alerts/market") return@synchronized response(json.encodeToJsonElement(PriceAlertMarket("BTCUSDT", "BTCUSDT.P", "0.1", "ready")))
-                    if (path == "/api/price-alerts") return@synchronized response(json.encodeToJsonElement(records.values.toList()))
+                    if (path == "/api/price-alerts") return@synchronized if (overviewFailure) MockResponse().setResponseCode(503)
+                        else response(json.encodeToJsonElement(records.values.toList()))
                     if (path.startsWith("/api/price-alerts/")) {
                         val id = path.substringAfterLast('/').toLongOrNull() ?: return@synchronized MockResponse().setResponseCode(404)
                         val alert = records[id] ?: return@synchronized MockResponse().setResponseCode(404)
@@ -117,6 +119,47 @@ class PullbackPriceAlertsIntegrationTest {
             compose.onNodeWithTag("pullback-alert-2").performClick(); await("price-alert-selection")
             compose.waitUntil(15000) { requests.any { it.requestUrl?.encodedPath == "/api/klines" && it.requestUrl?.queryParameter("intervals") == "240" } }
             device.pressBack(); device.pressBack(); await("pullback-page"); await("pullback-alert-2")
+            assertEquals(0, writeCount)
+        }
+    }
+    @Test fun triggeredAlertsRemainVisibleAcrossRefreshRecreationAndNavigationUntilRearmed() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            await("pullback-alert-1"); await("pullback-alert-3")
+            synchronized(records) {
+                for (id in listOf(1L, 3L)) records[id] = records.getValue(id).let {
+                    it.copy(status = "triggered", triggeredAt = now, expiresAt = now - 1, revision = it.revision + 1)
+                }
+            }
+            refreshAlerts()
+            awaitAlertState(1, "已触发"); awaitAlertState(3, "已触发")
+            compose.onNodeWithTag("pullback-extend-3").assertDoesNotExist()
+            capture("triggered")
+            overviewFailure = true
+            refreshAlerts(); await("pullback-alert-error")
+            awaitAlertState(1, "已触发"); awaitAlertState(3, "已触发")
+            overviewFailure = false
+            scenario.recreate(); awaitAlertState(1, "已触发")
+            compose.onNodeWithTag("pullback-alert-more-BTCUSDT-Long").performClick(); await("pullback-alert-group")
+            awaitAlertState(1, "已触发"); capture("triggered-group")
+            device.pressBack(); gone("pullback-alert-group")
+            compose.onNodeWithTag("pullback-alert-1").performClick(); await("price-alert-selection")
+            device.pressBack(); device.pressBack(); await("pullback-page")
+            awaitAlertState(1, "已触发")
+            synchronized(records) {
+                records[1] = records.getValue(1).let {
+                    it.copy(status = "active", triggeredAt = null, expiresAt = null, revision = it.revision + 1,
+                        armGeneration = it.armGeneration + 1, dataStatus = "waiting_for_range",
+                        geometry = it.geometry.copy(first = it.geometry.first.copy(timeMs = now + 86_400_000),
+                            second = it.geometry.second.copy(timeMs = now + 172_800_000), extend = "none"))
+                }
+            }
+            refreshAlerts(); awaitAlertState(1, "等起点")
+            synchronized(records) {
+                records[1] = records.getValue(1).let {
+                    it.copy(revision = it.revision + 1, dataStatus = "live", geometry = alert(1, "open_long", "120").geometry)
+                }
+            }
+            refreshAlerts(); awaitAlertState(1, "监测"); awaitAlertState(3, "已触发")
             assertEquals(0, writeCount)
         }
     }
@@ -196,6 +239,13 @@ class PullbackPriceAlertsIntegrationTest {
     }
     private fun await(tag: String) = compose.waitUntil(15000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
     private fun gone(tag: String) = compose.waitUntil(15000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty() }
+    private fun refreshAlerts() {
+        compose.waitUntil(15000) { compose.onAllNodes(hasTestTag("pullback-refresh") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("pullback-refresh").performClick()
+    }
+    private fun awaitAlertState(id: Long, state: String) = compose.waitUntil(15000) {
+        compose.onAllNodes(hasTestTag("pullback-alert-$id") and hasText("· $state")).fetchSemanticsNodes().isNotEmpty()
+    }
     private fun capture(name: String) {
         compose.waitForIdle(); Thread.sleep(400); compose.waitForIdle()
         val suffix = InstrumentationRegistry.getArguments().getString("visual_suffix", "phone")

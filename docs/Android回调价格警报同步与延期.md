@@ -58,6 +58,12 @@
 | 320dp / 150% 字体 | [窄屏列表](assets/pullback-price-alerts/main-narrow320.png) |
 | 宽屏 / 130% 字体 | [宽屏列表](assets/pullback-price-alerts/main-wide.png) |
 
+## 已触发状态保留（2026-10-15）
+
+回调主行及其他警报面板现在同时保留有效启用与已触发记录。已触发持续显示“已触发”，保留周期、价格、主警报选择及准确 K 线入口；查看、刷新、重进或经过原有效期不会清除。移动或重新设置后跟随服务端新状态更新，不在本地重新布防；已触发不提供延期。请求失败沿用页级提示，已触发文字仍保留，暂停和未触发过期记录继续隐藏。
+
+验证：301 项 app 单元测试通过；Debug 构建和 lintDebug 通过（0 错误、46 条既存警告）。4 项价格警报原生集成通过，另在 360dp/150%、320dp/150%、宽屏/130% 各验证一次触发保留与重新布防状态切换，系统日夜模式均覆盖。隔离 MockWebServer 覆盖触发、过期时间经过、失败保留、重建、其他警报、K 线返回、恢复等起点/监测；不写线上记录。截图核查显示状态和价格完整、共享列与字号保持。日志为 `build/pullback-trigger-*-tests.log`，截图为 `build/pullback-trigger-screenshots/`。本次未改小组件、未使用物理设备验证。
+
 ## 交付
 
 [GuailiAndroid-v0.5.0.apk](../dist/pullback-price-alerts/GuailiAndroid-v0.5.0.apk) 为 Release 构建，沿用现有开发证书，v2/v3 签名验证通过。可覆盖安装同证书旧版并保留配置；不是生产发布证书。此前版本包保留，最终校验和、日志与测试摘要见同目录 `build-manifest.json` 和 `使用说明.txt`。

@@ -34,9 +34,10 @@ class PullbackPriceAlertsTest {
         val a = ended()
         val records = listOf(a, a.copy(id = 2, intent = "close_long"), a.copy(id = 3, intent = "open_short"),
             a.copy(id = 4, intent = "close_short"), a.copy(id = 5, intent = "new_server_intent"),
-            a.copy(id = 6, status = "triggered"), a.copy(id = 7, expiresAt = now - 1))
+            a.copy(id = 6, status = "triggered"), a.copy(id = 7, expiresAt = now - 1),
+            a.copy(id = 8, status = "disabled"), a.copy(id = 9, status = "expired"))
         val groups = groupPullbackAlerts(records, now).getValue(a.symbol)
-        assertEquals(listOf(1L, 2L), groups.getValue("Long").map { it.id })
+        assertEquals(listOf(1L, 2L, 6L), groups.getValue("Long").map { it.id })
         assertEquals(listOf(3L, 4L), groups.getValue("Short").map { it.id })
         assertEquals(5L, groups.getValue("Unclassified").single().id)
         assertEquals(2L, primaryPullbackAlert(groups.getValue("Long"), 2)?.id)
@@ -45,6 +46,22 @@ class PullbackPriceAlertsTest {
         assertEquals("范围结束", a.pullbackStatus(now))
         assertEquals("待更新", a.pullbackStatus(now, true))
         assertEquals("等起点", a.copy(geometry = a.geometry.copy(first = a.geometry.first.copy(timeMs = now + 1), second = a.geometry.second.copy(timeMs = now + 100))).pullbackStatus(now))
+    }
+    @Test fun triggeredAlertStaysPrimaryPastExpiryAndRefreshFailureUntilServerRearmsIt() {
+        val active = ended().copy(expiresAt = now + 100)
+        val triggered = active.copy(status = "triggered", triggeredAt = now, revision = active.revision + 1)
+        fun primary(alert: PriceAlertDto, at: Long) = primaryPullbackAlert(
+            groupPullbackAlerts(listOf(alert, active.copy(id = 2, expiresAt = null)), at)
+                .getValue(active.symbol).getValue("Long"), active.id)
+        assertEquals(triggered, primary(triggered, now + 1000))
+        assertEquals("已触发", triggered.pullbackStatus(now + 1000))
+        assertEquals("已触发", triggered.pullbackStatus(now + 1000, stale = true))
+        assertFalse(triggered.canExtend(now))
+        val rearmed = active.copy(revision = triggered.revision + 1, armGeneration = triggered.armGeneration + 1,
+            triggeredAt = null, expiresAt = null, dataStatus = "live", geometry = active.geometry.copy(extend = "right"))
+        assertEquals(rearmed, primary(rearmed, now + 1000))
+        assertEquals("监测", rearmed.pullbackStatus(now + 1000))
+        assertEquals(2L, primary(rearmed.copy(status = "disabled"), now + 1000)?.id)
     }
     @Test fun extensionUsesBoundSecondsHoursDaysAndWeeksAndPreservesGeometry() {
         for (interval in listOf("10S", "120", "2D", "W")) {
