@@ -12,6 +12,7 @@ import androidx.test.uiautomator.UiDevice
 import com.gouge.guaili.MainActivity
 import com.gouge.guaili.data.*
 import com.gouge.guaili.settings.*
+import com.gouge.guaili.pullback.priceAlertPrimaryKey
 import java.io.File
 import java.time.Instant
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -122,6 +123,29 @@ class PullbackPriceAlertsIntegrationTest {
             assertEquals(0, writeCount)
         }
     }
+    @Test fun remainingValidityUnitsPanelsPrimaryAndUntimedAlertsUseOneMeaning() = runBlocking {
+        synchronized(records) {
+            records[1] = records.getValue(1).let { it.copy(geometry = it.geometry.copy(extend = "none",
+                second = it.geometry.second.copy(timeMs = now + 2 * 86_400_000L + 5 * 3_600_000L))) }
+            records[2] = records.getValue(2).copy(expiresAt = now + 5 * 3_600_000L + 20 * 60_000L)
+            records[4] = records.getValue(4).copy(expiresAt = now + 23 * 60_000L + 54_000L)
+            records[6] = records.getValue(1).copy(id = 6, interval = "60", expiresAt = now + 55_000L)
+        }
+        prefs.update { it.copy(pullback = it.pullback.copy(primaryAlerts = mapOf(
+            priceAlertPrimaryKey(server.url("/").toString(), "BTCUSDT", "Short") to 4L))) }
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            awaitAlertState(1, "2D"); awaitAlertState(4, "23m"); capture("validity-main")
+            compose.onNodeWithTag("pullback-alert-more-BTCUSDT-Long").performClick(); await("pullback-alert-group")
+            awaitAlertState(2, "5H"); awaitAlertState(6, "<1m"); capture("validity-group")
+            compose.onNodeWithTag("pullback-primary-2").performClick()
+            device.pressBack(); gone("pullback-alert-group"); awaitAlertState(2, "5H")
+            compose.onNodeWithTag("pullback-unclassified-BTCUSDT").performClick(); await("pullback-alert-group")
+            awaitAlertState(5, "监测"); device.pressBack(); gone("pullback-alert-group")
+            overviewFailure = true
+            refreshAlerts(); await("pullback-alert-error"); awaitAlertState(2, "待更新")
+            assertEquals(0, writeCount)
+        }
+    }
     @Test fun triggeredAlertsRemainVisibleAcrossRefreshRecreationAndNavigationUntilRearmed() {
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
             await("pullback-alert-1"); await("pullback-alert-3")
@@ -153,7 +177,7 @@ class PullbackPriceAlertsIntegrationTest {
                             second = it.geometry.second.copy(timeMs = now + 172_800_000), extend = "none"))
                 }
             }
-            refreshAlerts(); awaitAlertState(1, "等起点")
+            refreshAlerts(); awaitAlertState(1, "1D")
             synchronized(records) {
                 records[1] = records.getValue(1).let {
                     it.copy(revision = it.revision + 1, dataStatus = "live", geometry = alert(1, "open_long", "120").geometry)

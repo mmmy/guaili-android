@@ -21,10 +21,41 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.gouge.guaili.data.*
 import com.gouge.guaili.pullback.*
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 
 internal val PullbackAlertWarning = Color(0xFFEFBB76)
+internal val PullbackValidityDays = Color(0xFF94B8DF)
+internal val PullbackValidityHours = Color(0xFFC2ACDF)
+internal val PullbackValidityMinutes = Color(0xFFDFBD7B)
+
+/** Only this composed alert subtree observes time; no list/projection or network ticks. */
+@Composable
+internal fun rememberPullbackAlertDisplay(alert: PriceAlertDto, now: Long, stale: Boolean,
+    suppressed: Boolean, nowMillis: () -> Long = System::currentTimeMillis): PullbackAlertDisplay {
+    val initial = remember(alert, now, stale) { alert.pullbackDisplay(now, stale) }
+    // A shared request updates `now` twice per refresh. If the displayed unit,
+    // integer and next boundary are unchanged, keep the same suspended timer.
+    val clock = remember(alert, initial, suppressed) { mutableStateOf(initial) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(clock, lifecycle, suppressed) {
+        if (!suppressed) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val current = nowMillis()
+                val display = alert.pullbackDisplay(current, stale)
+                clock.value = display
+                val next = display.nextChangeAt ?: awaitCancellation()
+                delay((next - current).coerceAtLeast(1L))
+            }
+        }
+    }
+    return clock.value
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -36,24 +67,32 @@ internal fun PullbackAlertSummary(alerts: List<PriceAlertDto>, primary: Long?, n
     // the page; actual retained alerts still carry their individual stale state.
     if (alert == null) return
     val mutation = pending[alert.id]
+    val display = rememberPullbackAlertDisplay(alert, now, stale, mutation != null)
     val status = mutation?.let { if (it.operation.purpose.startsWith("extension"))
-        when (it.phase) { "uncertain" -> "延期待核对"; "failed" -> "延期未完成"; else -> "保存中" } else it.label() } ?: alert.pullbackStatus(now, stale)
+        when (it.phase) { "uncertain" -> "延期待核对"; "failed" -> "延期未完成"; else -> "保存中" } else it.label() } ?: display.label
+    val unit = display.unit.takeIf { mutation == null }
+    val statusColor = when (unit) {
+        AlertValidityUnit.Days -> PullbackValidityDays
+        AlertValidityUnit.Hours -> PullbackValidityHours
+        AlertValidityUnit.Minutes -> PullbackValidityMinutes
+        null -> if (status == "监测") MaterialTheme.colorScheme.onSurfaceVariant else PullbackAlertWarning
+    }
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).heightIn(min = 48.dp).clickable(role = Role.Button,
             onClickLabel = "打开警报 K 线", onClick = { onOpen(alert) })
-            .semantics { contentDescription = "${alert.symbol} ${alertIntentLabel(alert.intent)} ${pullbackPeriodLabel(alert.interval)}，打开对应 K 线并定位警报线" }
+            .semantics { contentDescription = "${alert.symbol} ${alertIntentLabel(alert.intent)} ${pullbackPeriodLabel(alert.interval)}，${if (mutation == null) display.description else status}，打开对应 K 线并定位警报线" }
             .testTag("pullback-alert-${alert.id}"), verticalArrangement = Arrangement.Center) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
                 Text(alertIntentLabel(alert.intent), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(pullbackPeriodLabel(alert.interval), fontSize = 14.sp)
-                Text("· $status", fontSize = 11.sp,
-                    color = if (status == "监测") MaterialTheme.colorScheme.onSurfaceVariant else PullbackAlertWarning)
+                Text("· $status", fontSize = if (unit == null) 11.sp else 12.sp, color = statusColor,
+                    modifier = Modifier.testTag("pullback-alert-validity-${alert.id}"))
             }
             Text(if (alert.geometry.kind == "horizontal_segment") "@${alertNumber(alert.geometry.first.price)}" else "斜线",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (alert.canExtend(now) || mutation?.operation?.purpose == "extension") {
+            if (display.extendable || mutation?.operation?.purpose == "extension") {
                 val available = mutation == null || mutation.phase in listOf("failed", "uncertain")
                 TextButton(onClick = { if (available) onExtend(alert) },
                     modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).testTag("pullback-extend-${alert.id}")
