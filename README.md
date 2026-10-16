@@ -24,7 +24,15 @@ Benchmark 模式先在独立 instrumentation 进程检查优化 APK 中 Room 数
 
 运行效率约定：映射、指标及快照序列化在计算线程执行；并发相同观测共享请求且保留每位调用者的取消和持久化要求；快照按实际存储内容复用解析结果。前台已有数据直接更新对应小组件，局部修改不发布旧的完整列表。V2 展示内容与时间边界分离，K 线静态行情图层与交互预览分离；这些优化不降低行情刷新频率，也不改变失效、候选、声音及导航语义。
 
+2026-10-16 第二轮优化包括矩阵可见列、按来源更新组件、TV 警报后台合并同步、V2/回调后台投影、共享 K 线基础计算和启动缓存。基准新增 40 品种 × 28 周期的 V2/回调数据，详情见 [Android 性能优化第二轮与验证](docs/Android性能优化第二轮与验证.md)。
+
 价格轴缩放修复（2026-10-07）：价格轴下拖压缩、上拖展开，主图上下拖动平移价格，双击价格轴或点击「自动」恢复。行情刷新保留手动范围，选中警报的绘制和触摸命中使用相同坐标。见 [修复与验证](docs/手机价格轴缩放修复与验证.md)；[修复版 APK](dist/price-axis-fix/GuailiAndroid-price-axis-fix.apk) 为同开发证书签名的 Release 构建。
+
+## 回调观察桌面小组件（2026-10-16）
+
+在现有「乖离速览」小组件配置中选择「回调观察」，最多关注 10 个品种。多头在上、空头在下，候选目标 32sp 加粗、等待目标 28sp，中性小级别紧邻显示；候选筛选按小组件独立保存且默认关闭，规则与应用共用。顶栏始终一行，无底栏；点左上角查看采样、状态、参数与更多入口，宽版显示编辑和价格警报。
+
+点目标查看固定采样依据，点小级别进入原品种的小周期 K 线，点警报进入原 ID 与周期。过期采样保留为明确标记的历史观察，后台约 15 分钟更新且受系统调度限制；支持手动刷新并复用已有前台同步，不增加后台声音或独立轮询。[实现、原生截图与验证范围](docs/Android回调观察小组件实现与验证.md)。本次调试包为 `app/build/outputs/apk/debug/app-debug.apk`。
 
 ## 回调行精简（0.5.1）
 
@@ -104,9 +112,25 @@ APK：`app/build/outputs/apk/debug/app-debug.apk`。
 
 ### 构建可安装的 Release
 
+推荐使用一键脚本（可从任意工作目录调用，默认输出到 `dist/release/GuailiAndroid-release.apk`）：
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+脚本自动读取本机 SDK／JDK，优先选择最新已安装稳定版 Build Tools，依次完成 Release 构建、16KB 对齐、签名、签名与对齐校验，并生成 `.apk.sha256`。默认复用原有开发密钥，不会创建或替换密钥；只有校验成功才替换输出 APK，不自动安装。需要显式选择工具时可传 `-JavaHome`、`-SdkPath`、`-BuildToolsVersion`，自定义输出使用 `-OutputApk`。
+
+使用自己的正式密钥时，必须同时指定路径与别名；未设置密码环境变量时，由 `apksigner` 交互询问：
+
+```powershell
+.\scripts\build-release.ps1 -KeystorePath 'D:\keys\guaili.jks' -KeyAlias guaili
+```
+
+无人值守构建可通过外部环境注入 `GUAILI_STORE_PASSWORD` 和 `GUAILI_KEY_PASSWORD`；脚本只向工具传递环境变量名称，不记录密码。更换签名证书将影响覆盖安装兼容性，沿用原证书时需保留原密钥。脚本入口见 [build-release.ps1](scripts/build-release.ps1)。下面保留手动步骤，便于排查问题。
+
 本次采用「Gradle 构建 Release → apksigner 签名 → 验证签名和对齐」。当前 `release` 没有配置 Gradle 自动签名，单独运行 `assembleRelease` 会生成未签名 APK，需完成签名后安装。R8、资源收缩和已有的 `app/src/main/baselineProfiles/` 规则会在 Release 构建时生效，普通打包无需连接设备或重新采集 Profile。
 
-以下是本机实际使用的 PowerShell 命令；换机器时调整项目、JDK 和 SDK Build Tools 路径。签名必须继续使用原有的 `%USERPROFILE%\.android\debug.keystore`（别名 `androiddebugkey`，本机既有开发密钥的密码为 `android`）。换机器需复制原密钥文件，新生成的同名密钥无法覆盖旧版。
+以下是本机实际使用的 PowerShell 命令；换机器时调整项目、JDK 和 SDK Build Tools 路径。要覆盖本机历史开发版本，签名需继续使用原有的 `%USERPROFILE%\.android\debug.keystore`（别名 `androiddebugkey`，本机既有开发密钥的密码为 `android`）。换机器需复制原密钥文件，新生成的同名密钥无法覆盖旧版。
 
 ```powershell
 Set-Location 'F:\test\guili-andriod'
