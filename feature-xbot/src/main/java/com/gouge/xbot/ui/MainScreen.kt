@@ -2,6 +2,7 @@ package com.gouge.xbot.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -92,7 +93,11 @@ fun XbotContent(
     var showIconMappings by remember { mutableStateOf(false) }
     var showAlertVisibility by remember { mutableStateOf(false) }
     Surface(modifier = Modifier.fillMaxSize()) {
-        if (!state.isAuthenticated) {
+        if (state.isSessionInitializing) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else if (!state.isAuthenticated) {
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
                     .padding(horizontal = 24.dp, vertical = 32.dp)

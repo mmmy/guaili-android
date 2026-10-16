@@ -2,6 +2,7 @@ package com.gouge.xbot.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,12 +43,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun XbotAccountScreen(viewModel: MainViewModel, onBack: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    BackHandler(onBack = onBack)
+    if (state.isSessionInitializing) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.testTag("xbot-session-loading"))
+            }
+        }
+        return
+    }
     var serverUrl by rememberSaveable { mutableStateOf(state.serverUrl) }
     var username by rememberSaveable { mutableStateOf("") }
     // The password is deliberately never saved to a Bundle or persisted.
     var password by remember { mutableStateOf("") }
     var confirmLogout by remember { mutableStateOf(false) }
-    BackHandler(onBack = onBack)
     LaunchedEffect(state.serverUrl) { serverUrl = state.serverUrl }
     LaunchedEffect(state.isAuthenticated) { if (state.isAuthenticated) password = "" }
     Surface(

@@ -20,6 +20,7 @@ import com.gouge.xbot.widget.SignalWidgetUpdater
 import com.gouge.xbot.widget.SignalWidgetRenderer
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +57,7 @@ data class MainUiState(
     val deletingTvAlert: TvAlertDeletionKey? = null,
     val resettingTvAlert: TvAlertDeletionKey? = null,
     val isRefreshingAlertCache: Boolean = false,
+    val isSessionInitializing: Boolean = false,
 ) {
     val isChangingAlerts: Boolean
         get() = isCreatingAlert || deletingTvAlert != null || resettingTvAlert != null || isRefreshingAlertCache
@@ -74,36 +76,52 @@ class MainViewModel(
     private val alertSync: AlertDataCoordinator,
     private val onSignalsChanged: () -> Unit,
     private val onSignalsLoaded: suspend (SignalObservation, Long) -> Unit = { _, _ -> onSignalsChanged() },
+    private val sessionDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val requests = mutableSetOf<Job>()
-    private var uiScope = sessionStore.currentScope()
-    private val initialAuthenticated = !sessionStore.getAccessToken().isNullOrBlank()
+    private var uiScope: String? = null
     private val _uiState = MutableStateFlow(
         MainUiState(
-            serverUrl = serverConfigStore.getBaseUrl(),
-            isAuthenticated = initialAuthenticated,
-            isLoading = initialAuthenticated,
+            serverUrl = ServerConfigStore.DefaultBaseUrl,
+            isAuthenticated = false,
+            isLoading = true,
+            isSessionInitializing = true,
         ),
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     init {
-        if (initialAuthenticated) refresh()
         viewModelScope.launch {
-            alertSync.snapshots.collect { snapshot ->
+            // Keystore and initial preferences/snapshot reads must not precede the first frame.
+            // Retry if another window changes account while credentials are being restored.
+            while (true) {
+                val restored = withContext(sessionDispatcher) {
+                    val generation = sessionStore.generation()
+                    Triple(generation, sessionStore.currentScope(), serverConfigStore.getBaseUrl())
+                }
+                if (!sessionStore.withCurrentGeneration(restored.first) {
+                    uiScope = restored.second
+                    _uiState.value = MainUiState(restored.third, isAuthenticated = uiScope != null,
+                        isLoading = uiScope != null)
+                }) continue
+                if (uiScope != null) refresh()
+                break
+            }
+            alertSync.observations.collect { observation ->
                 if (sessionStore.currentScope() != uiScope) synchronizeSession()
-                if (!_uiState.value.isAuthenticated) return@collect
-                if (sessionStore.getAccessToken().isNullOrBlank()) {
-                    _uiState.value = MainUiState(serverConfigStore.getBaseUrl(), isAuthenticated = false)
-                } else if (snapshot != null && snapshot.updatedAtMillis > 0) {
-                    _uiState.update { it.copy(
-                        alertConfigs = snapshot.configs,
-                        visibleAlertIds = alertVisibilityStore.getVisibleIds().intersect(snapshot.configs.mapTo(hashSetOf()) { config -> config.id }),
-                        tvAlertsByCookieId = snapshot.alertsByCookieId,
-                        hasLoadedAlerts = true,
-                        alertErrorMessage = snapshot.error,
-                        alertsUpdatedAtMillis = snapshot.updatedAtMillis,
-                    ) }
+                observation.withCurrentSession(sessionStore) {
+                    if (!_uiState.value.isAuthenticated || observation.scope != uiScope) return@withCurrentSession
+                    val snapshot = observation.snapshot
+                    if (snapshot != null && snapshot.updatedAtMillis > 0) {
+                        _uiState.update { it.copy(
+                            alertConfigs = snapshot.configs,
+                            visibleAlertIds = alertVisibilityStore.getVisibleIds().intersect(snapshot.configs.mapTo(hashSetOf()) { config -> config.id }),
+                            tvAlertsByCookieId = snapshot.alertsByCookieId,
+                            hasLoadedAlerts = true,
+                            alertErrorMessage = snapshot.error,
+                            alertsUpdatedAtMillis = snapshot.updatedAtMillis,
+                        ) }
+                    }
                 }
             }
         }
@@ -188,20 +206,10 @@ class MainViewModel(
             val requestScope = alertSync.currentScope()
             updateState(requestGeneration) { it.copy(isLoadingAlerts = true, alertErrorMessage = null) }
             try {
-                val snapshot = alertSync.refresh(initializeHomeSelection = true)
-                val configs = snapshot.configs
-                val visibleIds = alertVisibilityStore.getVisibleIds().intersect(configs.mapTo(hashSetOf()) { it.id })
-                val alerts = snapshot.alertsByCookieId
-                updateState(requestGeneration) {
-                    it.copy(
-                        alertConfigs = configs,
-                        visibleAlertIds = visibleIds,
-                        tvAlertsByCookieId = alerts,
-                        hasLoadedAlerts = true,
-                        isLoadingAlerts = false,
-                        alertsUpdatedAtMillis = snapshot.updatedAtMillis,
-                    )
-                }
+                alertSync.refresh(initializeHomeSelection = true)
+                // The tagged observation stream owns alert content. A newer delete/reset may
+                // already have been published while this refresh awaited widget rendering.
+                updateState(requestGeneration) { it.copy(isLoadingAlerts = false) }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -316,14 +324,9 @@ class MainViewModel(
             try {
                 val result = repository.forSession(requestGeneration).deleteTvAlert(config.cookieId, alert.alertId)
                 if (result.result) {
-                    alertSync.removeAlert(config.cookieId, alert.alertId, requestScope)
+                    alertSync.removeAlert(config.cookieId, alert.alertId, requestScope, expectedGeneration = requestGeneration)
                     updateState(requestGeneration) { state ->
                         state.copy(
-                            tvAlertsByCookieId = state.tvAlertsByCookieId + (
-                                config.cookieId to state.tvAlertsByCookieId[config.cookieId]
-                                    .orEmpty()
-                                    .filterNot { it.alertId == alert.alertId }
-                                ),
                             deletingTvAlert = null,
                             alertActionMessage = result.msg.ifBlank {
                                 "已删除 ${alert.tickerLabel()} · ${alert.resolution}"
@@ -379,9 +382,8 @@ class MainViewModel(
                     if (requestGeneration == sessionStore.generation()) updateState(requestGeneration) { it.copy(alertActionMessage = "已提交再设 $label，等待设置完成") }
                 }) {
                     is TvAlertResetResult.Completed -> {
-                        alertSync.replaceAccount(config.cookieId, result.alerts, requestScope)
+                        alertSync.replaceAccount(config.cookieId, result.alerts, requestScope, expectedGeneration = requestGeneration)
                         updateState(requestGeneration) { it.copy(
-                            tvAlertsByCookieId = it.tvAlertsByCookieId + (config.cookieId to result.alerts),
                             alertActionMessage = "$label 已重新设置",
                         ) }
                     }
@@ -511,6 +513,7 @@ class MainViewModel(
 
     /** Reconciles account changes made by a widget window or a background worker. */
     fun synchronizeSession() {
+        if (_uiState.value.isSessionInitializing) return
         val generation = sessionStore.generation()
         val currentScope = sessionStore.currentScope()
         if (currentScope == uiScope) return

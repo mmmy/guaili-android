@@ -18,6 +18,10 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 data class AlertWidgetTarget(val configId: String, val alertId: Long, val generation: Long = 0)
 
@@ -30,31 +34,69 @@ object AlertWidgetIntents {
 }
 
 object AlertWidgetRenderer {
+    private val repaintScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val repaints = CoalescingAlertRepaint<Context>(repaintScope) { context ->
+        try {
+            renderAll(context)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            android.util.Log.w("AlertWidget", "Widget rendering failed", error)
+        }
+    }
+    private val publicationLock = Any()
+    private var publicationSequence = 0L
+    private val latestPublications = mutableMapOf<Int, Long>()
+
+    /** Safe from UI callbacks; concurrent cache changes share one batch and a latest-state follow-up. */
+    internal fun requestRenderAll(context: Context) = repaints.request(context.applicationContext)
+
     fun widgetIds(context: Context): IntArray = AppWidgetManager.getInstance(context)
         .getAppWidgetIds(ComponentName(context, AlertWidgetProvider::class.java))
 
     fun renderAll(context: Context) {
-        widgetIds(context).forEach { render(context, it) }
+        renderBatch(context, widgetIds(context))
         AlertWidgetScheduler.scheduleLocalRepaint(context)
     }
 
     @Suppress("DEPRECATION")
     fun render(context: Context, id: Int) {
-        val session = SessionStore(context)
-        session.withCurrentGeneration(session.generation()) {
-            renderCurrent(context, id)
-        }
+        renderBatch(context, intArrayOf(id))
     }
 
     @Suppress("DEPRECATION")
-    private fun renderCurrent(context: Context, id: Int) {
+    private fun renderBatch(context: Context, ids: IntArray) {
+        if (ids.isEmpty()) return
+        // Reserve every ID before capturing data. An old batch must never acquire a newer
+        // ticket after a concurrent single-widget repaint has already captured fresher data.
+        val tickets = synchronized(publicationLock) {
+            ids.associateWith { id -> (++publicationSequence).also { latestPublications[id] = it } }
+        }
+        val session = SessionStore(context)
+        val generation = session.generation()
         val manager = AppWidgetManager.getInstance(context)
-        if (manager.getAppWidgetInfo(id)?.provider != ComponentName(context, AlertWidgetProvider::class.java)) return
         val store = AlertWidgetStore(context)
-        val views = buildViews(context, id, store.snapshot(), AlertVisibilityStore(context).getVisibleIds(),
-            store.settings(id), store.currentScope() != null)
-        manager.updateAppWidget(id, views)
-        if (Build.VERSION.SDK_INT < 31) manager.notifyAppWidgetViewDataChanged(id, R.id.xbot_aw_list)
+        val accountScope = store.currentScope()
+        val snapshot = store.snapshot()
+        val visibleIds = AlertVisibilityStore(context).getVisibleIds()
+        val now = Instant.now()
+        ids.forEach { id ->
+            val ticket = tickets.getValue(id)
+            if (manager.getAppWidgetInfo(id)?.provider != ComponentName(context, AlertWidgetProvider::class.java)) return@forEach
+            // Expensive row construction does not hold the login/logout monitor.
+            val views = buildViews(context, id, snapshot, visibleIds, store.settings(id), accountScope != null, now)
+            session.withCurrentGeneration(generation) {
+                if (session.currentScope() == accountScope && store.snapshot() === snapshot) {
+                    synchronized(publicationLock) {
+                        // An overlapping single-widget edit may have already published newer settings.
+                        if (latestPublications[id] == ticket) {
+                            manager.updateAppWidget(id, views)
+                            if (Build.VERSION.SDK_INT < 31) manager.notifyAppWidgetViewDataChanged(id, R.id.xbot_aw_list)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @Suppress("DEPRECATION")
