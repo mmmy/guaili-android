@@ -186,7 +186,7 @@ class PullbackWidgetIntegrationTest {
     }
 
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    @Test fun phoneAlertsUseTheRightColumnWhenFullTextFitsEvenWithLargeFonts() = runBlocking<Unit> {
+    @Test fun phoneAlertsStayInTheRightColumnAcrossResponsiveBucketsAndLargeFonts() = runBlocking<Unit> {
         val target = ApplicationProvider.getApplicationContext<Context>()
         val source = fixture(target)
         val long = PullbackWidgetProjector().project(source, PullbackRules()).rows.first().long!!
@@ -199,19 +199,19 @@ class PullbackWidgetIntegrationTest {
             it.copy(id = 43, interval = "5", intent = "open_short",
                 geometry = it.geometry.copy(first = it.geometry.first.copy(price = 82998.2)))
         })
-        for (night in listOf(false, true)) for (scale in listOf(1f, 1.3f, 1.5f)) {
+        for (night in listOf(false, true)) for (scale in listOf(1f, 1.3f, 1.5f)) for (bucket in listOf(250, 320)) {
             val context = target.createConfigurationContext(Configuration(target.resources.configuration).apply {
                 fontScale = scale
                 uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
                     if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
             })
-            val dims = pullbackWidgetDimensions(context, 320f, rows)
-            assertTrue("320dp / $scale: phone's alerts must fit beside targets", alerts.all {
-                pullbackWidgetAlertFits(context, dims, it, source.response.serverTime, true)
-            })
-            val remote = GlanceRemoteViews().compose(context, DpSize(320.dp, 300.dp)) {
+            // A real 320dp host can select Glance's 250dp bucket after launcher padding.
+            // Test the bucket separately from the width that RemoteViews actually receives.
+            val dims = pullbackWidgetDimensions(context, bucket.toFloat(), rows)
+            val remote = GlanceRemoteViews().compose(context, DpSize(bucket.dp, 300.dp)) {
                 Column(GlanceModifier.fillMaxWidth().padding(horizontal = dims.outer.dp, vertical = 4.dp)) {
-                    androidx.glance.text.Text("BTCUSDT")
+                    androidx.glance.text.Text("BTCUSDT", style = androidx.glance.text.TextStyle(fontSize = 12.sp,
+                        color = androidx.glance.color.ColorProvider(Color(0xff57626d), Color(0xffb4bdc8))))
                     PullbackWidgetTarget("BTCUSDT", PullbackDirection.Long, long, null, alerts[0], true,
                         source.response.serverTime, dims, 1, source.baseUrl)
                     PullbackWidgetTarget("BTCUSDT", PullbackDirection.Short, short, null, alerts[1], true,
@@ -222,7 +222,7 @@ class PullbackWidgetIntegrationTest {
                 val parent = FrameLayout(context)
                 parent.setBackgroundColor(if (night) 0xff171d24.toInt() else 0xfff7f9fb.toInt())
                 parent.addView(remote.apply(context, parent))
-                val pixels = (320 * context.resources.displayMetrics.density).toInt()
+                val pixels = (304 * context.resources.displayMetrics.density).toInt()
                 parent.measure(View.MeasureSpec.makeMeasureSpec(pixels, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
                 parent.layout(0, 0, pixels, parent.measuredHeight)
@@ -253,7 +253,7 @@ class PullbackWidgetIntegrationTest {
                 }
                 val bitmap = Bitmap.createBitmap(pixels, parent.measuredHeight, Bitmap.Config.ARGB_8888)
                 parent.draw(Canvas(bitmap))
-                File(target.getExternalFilesDir(null), "pullback-inline-phone-$scale-${if (night) "dark" else "light"}.png")
+                File(target.getExternalFilesDir(null), "pullback-fixed-phone-$bucket-$scale-${if (night) "dark" else "light"}.png")
                     .outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
         }

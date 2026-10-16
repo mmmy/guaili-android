@@ -121,7 +121,7 @@ internal fun PullbackObservationWidgetContent(frame: PullbackWidgetFrame?, confi
 }
 
 internal data class PullbackWidgetDimensions(val outer: Int, val inner: Int, val level: Float,
-    val entry: Float, val rowHeight: Float, val alertHeight: Float, val wide: Boolean, val alertWidth: Float)
+    val entry: Float, val rowHeight: Float, val alertHeight: Float, val wide: Boolean)
 
 internal fun pullbackWidgetDimensions(context: Context, width: Float, rows: List<PullbackRow> = emptyList(),
     onlyCandidates: Boolean = false): PullbackWidgetDimensions {
@@ -149,27 +149,7 @@ internal fun pullbackWidgetDimensions(context: Context, width: Float, rows: List
         lineHeight(12f) + 8)
     val outer = if (width < 220 && scale > 1.2f) 2 else if (width >= 250) 12 else 8
     val inner = if (width < 220 && scale > 1.2f) 2 else 8
-    val available = width - outer * 2 - inner * 2
-    return PullbackWidgetDimensions(outer, inner, level, entry, rowHeight, alertHeight, width >= 250,
-        available - level - entry - 16)
-}
-
-internal fun pullbackWidgetAlertFits(context: Context, dimensions: PullbackWidgetDimensions,
-    alert: PriceAlertDto, now: Long, stale: Boolean): Boolean {
-    val metrics = context.resources.displayMetrics
-    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = android.graphics.Typeface.DEFAULT
-    }
-    fun textWidth(text: String, sp: Float): Float {
-        paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp, metrics)
-        return paint.measureText(text) / metrics.density
-    }
-    val display = alert.pullbackDisplay(now, stale)
-    val top = textWidth(alertIntentLabel(alert.intent), 11f) + 4 +
-        textWidth(pullbackPeriodLabel(alert.interval), 14f) + 4 +
-        textWidth(display.label, if (display.unit != null) 12f else 11f) + if (display.unit != null) 8 else 0
-    val price = if (alert.geometry.kind == "horizontal_segment") "@${alertNumber(alert.geometry.first.price)}" else "斜线"
-    return maxOf(top, textWidth(price, 12f)) + 4 <= dimensions.alertWidth
+    return PullbackWidgetDimensions(outer, inner, level, entry, rowHeight, alertHeight, width >= 250)
 }
 
 @Composable
@@ -216,9 +196,6 @@ internal fun PullbackWidgetTarget(symbol: String, direction: PullbackDirection, 
     appWidgetId: Int, baseUrl: String) {
     val context = LocalContext.current
     val highlighted = candidate?.highlighted == true
-    val inlineAlert = alert != null && dimensions.wide && remember(context, dimensions, alert, now, alertStale) {
-        pullbackWidgetAlertFits(context, dimensions, alert, now, alertStale)
-    }
     val targetColor = when {
         candidate == null -> PullbackMuted
         direction == PullbackDirection.Long && highlighted -> PullbackLong
@@ -246,13 +223,13 @@ internal fun PullbackWidgetTarget(symbol: String, direction: PullbackDirection, 
                 if (candidate != null) Text(entry?.let(::pullbackPeriodLabel) ?: "—",
                     style = TextStyle(color = PullbackMuted, fontSize = 16.sp), maxLines = 1)
             }
-            if (inlineAlert && alert != null) {
+            // Keep the alert in this row. Responsive LocalSize may be smaller than the
+            // launcher's actual available width; a bucket must never force a second row.
+            if (dimensions.wide && alert != null) {
                 Spacer(GlanceModifier.width(8.dp))
                 PullbackWidgetAlert(alert, now, alertStale, baseUrl, dimensions.alertHeight, GlanceModifier.defaultWeight())
             }
         }
-        if (dimensions.wide && !inlineAlert && alert != null)
-            PullbackWidgetAlert(alert, now, alertStale, baseUrl, dimensions.alertHeight, GlanceModifier.fillMaxWidth())
     }
     Spacer(GlanceModifier.height(2.dp))
 }
@@ -281,7 +258,7 @@ private fun PullbackWidgetAlert(alert: PriceAlertDto, now: Long, stale: Boolean,
                 Text(display.label, style = TextStyle(color = tint, fontSize = 12.sp), maxLines = 1,
                     modifier = GlanceModifier.background(ImageProvider(drawable)).padding(horizontal = 4.dp, vertical = 1.dp))
             } else Text(display.label, style = TextStyle(color = if (display.label == "监测") PullbackMuted else PullbackWarning,
-                fontSize = 11.sp), maxLines = 2)
+                fontSize = 11.sp), maxLines = 1)
         }
         Text(if (alert.geometry.kind == "horizontal_segment") "@${alertNumber(alert.geometry.first.price)}" else "斜线",
             style = TextStyle(color = PullbackMuted, fontSize = 12.sp), maxLines = 1)
