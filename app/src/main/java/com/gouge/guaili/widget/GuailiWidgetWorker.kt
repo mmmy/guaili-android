@@ -30,8 +30,17 @@ class GuailiWidgetWorker(
     override suspend fun doWork(): Result {
         val showFeedback = inputData.getBoolean(ShowRefreshFeedbackKey, false)
         val settings = SettingsStore(applicationContext).settings.first()
-        val targets = widgetRefreshTargets(applicationContext, settings)
+        val availableTargets = widgetRefreshTargets(applicationContext, settings)
             .filter { it.config.mode != WidgetMode.DecisionReminders }
+        val requestedId = inputData.getInt(RefreshWidgetIdKey, android.appwidget.AppWidgetManager.INVALID_APPWIDGET_ID)
+        val targets = if (requestedId == android.appwidget.AppWidgetManager.INVALID_APPWIDGET_ID) availableTargets
+            else {
+                val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
+                val requested = availableTargets.firstOrNull { manager.getAppWidgetId(it.id) == requestedId }
+                if (requested?.config?.mode?.usesServerSignalsSnapshot() == true)
+                    availableTargets.filter { it.config.mode.usesServerSignalsSnapshot() }
+                else availableTargets.filter { manager.getAppWidgetId(it.id) == requestedId }
+            }
         if (targets.isEmpty()) return Result.success()
         val widget = GuailiWidget()
         if (showFeedback) {
@@ -40,26 +49,32 @@ class GuailiWidgetWorker(
                 widget.update(applicationContext, it.id)
             }
         }
-        val needsLegacy = targets.any { it.config.mode !in setOf(WidgetMode.SignalsV2, WidgetMode.DecisionReminders) }
-        val needsV2 = targets.any { it.config.mode == WidgetMode.SignalsV2 }
+        val needsLegacy = targets.any { it.config.mode.usesLegacyMarketSnapshot() }
+        val needsV2 = targets.any { it.config.mode.usesServerSignalsSnapshot() }
         val failures = coroutineScope {
             val legacy = async { if (needsLegacy) GuailiRefreshUseCase(snapshotSink = GuailiSnapshotStore(applicationContext))
                 .refresh(settings, requirePersistence = true) else null }
             val v2 = async { if (needsV2) ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(applicationContext))
                 .refresh(settings.baseUrl, reuseWithinMillis = 1_000L) else null }
+            val alerts = async { if (targets.any { it.config.mode == WidgetMode.PullbackObservation })
+                refreshPullbackWidgetAlerts(applicationContext, settings.baseUrl) else null }
             val legacyResult = legacy.await()
             val v2Result = v2.await()
+            val alertsResult = alerts.await()
             val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
             val configurations = WidgetConfigStore(applicationContext)
             targets.forEach { target ->
-                val result = if (target.config.mode == WidgetMode.SignalsV2) v2Result else legacyResult
+                val result = if (target.config.mode == WidgetMode.PullbackObservation && alertsResult is com.gouge.guaili.data.PriceAlertResult.Failure)
+                    GuailiResult.Failure("价格警报更新失败：${alertsResult.message}")
+                    else if (target.config.mode.usesServerSignalsSnapshot()) v2Result else legacyResult
                 val currentMode = configurations.read(manager.getAppWidgetId(target.id), settings).mode
                 if (result != null && currentMode == target.config.mode) setWidgetRefreshStatus(applicationContext, target.id,
                     if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
                     message = (result as? GuailiResult.Failure)?.message, deduplicate = !showFeedback)
             }
             if (v2Result is GuailiResult.Success) scheduleServerSignalsExpiry(applicationContext, v2Result.value)
-            listOfNotNull(legacyResult, v2Result).filterIsInstance<GuailiResult.Failure>()
+            listOfNotNull(legacyResult, v2Result).filterIsInstance<GuailiResult.Failure>() +
+                if (alertsResult is com.gouge.guaili.data.PriceAlertResult.Failure) listOf(GuailiResult.Failure(alertsResult.message)) else emptyList()
         }
         targets.forEach { widget.update(applicationContext, it.id) }
         return if (failures.isEmpty()) Result.success() else if (showFeedback) Result.failure() else Result.retry()
@@ -88,14 +103,15 @@ object GuailiWidgetScheduler {
         )
     }
 
-    fun refreshNow(context: Context, showFeedback: Boolean = false) {
+    fun refreshNow(context: Context, showFeedback: Boolean = false, appWidgetId: Int? = null) {
         val builder = OneTimeWorkRequestBuilder<GuailiWidgetWorker>()
-            .setInputData(workDataOf(ShowRefreshFeedbackKey to showFeedback))
+            .setInputData(workDataOf(ShowRefreshFeedbackKey to showFeedback,
+                RefreshWidgetIdKey to (appWidgetId ?: android.appwidget.AppWidgetManager.INVALID_APPWIDGET_ID)))
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         if (!showFeedback) builder.setConstraints(networkConstraints)
         val work = builder.build()
         WorkManager.getInstance(context).enqueueUniqueWork(
-            ImmediateWorkName,
+            if (appWidgetId == null) ImmediateWorkName else "$ImmediateWorkName-server",
             ImmediateWorkPolicy,
             work,
         )
@@ -115,6 +131,7 @@ object GuailiWidgetScheduler {
 }
 
 internal const val ShowRefreshFeedbackKey = "show_refresh_feedback"
+internal const val RefreshWidgetIdKey = "refresh_widget_id"
 
 class WidgetFeedbackExpiryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
@@ -123,7 +140,7 @@ class WidgetFeedbackExpiryWorker(context: Context, params: WorkerParameters) : C
         val settings = SettingsStore(applicationContext).settings.first()
         val widget = GuailiWidget()
         widgetRefreshTargets(applicationContext, settings)
-            .filter { if (onlyV2) it.config.mode == WidgetMode.SignalsV2 else it.config.mode != WidgetMode.DecisionReminders }
+            .filter { if (onlyV2) it.config.mode.usesServerSignalsSnapshot() else it.config.mode != WidgetMode.DecisionReminders }
             .forEach { widget.update(applicationContext, it.id) }
         return Result.success()
     }

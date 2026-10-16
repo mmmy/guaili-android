@@ -18,6 +18,7 @@ data class AppLaunchRequest(
     val klineTarget: KlineTarget? = null,
     val alertTarget: AlertWidgetTarget? = null,
     val openAccount: Boolean = false,
+    val marketView: String? = null,
 )
 
 /** Explicit destinations keep widget taps within their own service and business context. */
@@ -26,9 +27,13 @@ fun resolveAppLaunch(intent: Intent?): AppLaunchRequest? {
     val symbol = intent.getStringExtra(MainActivity.ExtraWidgetSymbol)
     val interval = intent.getStringExtra(MainActivity.ExtraWidgetInterval)
     if (!symbol.isNullOrBlank() && !interval.isNullOrBlank()) {
-        return AppLaunchRequest(AppDestination.Market, klineTarget = KlineTarget(symbol, interval))
+        return AppLaunchRequest(AppDestination.Market, klineTarget = KlineTarget(symbol, interval,
+            intent.getLongExtra("widget_price_alert", -1).takeIf { it > 0 },
+            fromPullback = intent.getStringExtra("widget_market_view") == "Pullback"),
+            marketView = intent.getStringExtra("widget_market_view"))
     }
     val configId = intent.getStringExtra(AlertWidgetIntents.ConfigId)
+    if (intent.getStringExtra("widget_market_view") == "Pullback") return AppLaunchRequest(AppDestination.Market, marketView = "Pullback")
     if (!configId.isNullOrBlank()) {
         return AppLaunchRequest(
             AppDestination.Alerts,
@@ -46,6 +51,9 @@ fun resolveAppLaunch(intent: Intent?): AppLaunchRequest? {
 fun Intent.clearAppLaunchExtras() {
     removeExtra(MainActivity.ExtraWidgetSymbol)
     removeExtra(MainActivity.ExtraWidgetInterval)
+    removeExtra("widget_market_view")
+    removeExtra("widget_market_source")
+    removeExtra("widget_price_alert")
     removeExtra(XbotNavigation.ExtraPage)
     removeExtra(AlertWidgetIntents.ConfigId)
     removeExtra(AlertWidgetIntents.AlertId)

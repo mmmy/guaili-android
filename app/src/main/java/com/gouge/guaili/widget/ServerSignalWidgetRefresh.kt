@@ -29,7 +29,7 @@ internal suspend fun widgetRefreshTargets(context: Context, settings: GuailiSett
 /** The market's single V2 poller updates widgets in both table and signal views. */
 internal suspend fun updateServerSignalWidgets(context: Context, settings: GuailiSettings,
     result: GuailiResult<ServerSignalsSnapshot>) {
-    val targets = widgetRefreshTargets(context, settings).filter { it.config.mode == WidgetMode.SignalsV2 }
+    val targets = widgetRefreshTargets(context, settings).filter { it.config.mode.usesServerSignalsSnapshot() }
     if (targets.isEmpty()) return
     targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
         if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,

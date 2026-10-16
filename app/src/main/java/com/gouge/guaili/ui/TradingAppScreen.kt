@@ -71,6 +71,7 @@ internal fun TradingAppScreen(
     var settingsDetail by rememberSaveable { mutableStateOf(SettingsDetail.Overview) }
     var accountOrigin by rememberSaveable { mutableStateOf(AppDestination.Settings) }
     var requestedKline by remember { mutableStateOf<KlineTarget?>(null) }
+    var pullbackLaunchGeneration by remember { mutableLongStateOf(0L) }
     var alertConfigId by rememberSaveable { mutableStateOf<String?>(null) }
     var alertId by rememberSaveable { mutableLongStateOf(-1L) }
     var alertLaunchGeneration by rememberSaveable { mutableLongStateOf(0L) }
@@ -140,6 +141,10 @@ internal fun TradingAppScreen(
     LaunchedEffect(requestedLaunch) {
         requestedLaunch?.let { request ->
             destination = request.destination
+            if (request.marketView == "Pullback") {
+                signalsViewModel.setView(com.gouge.guaili.settings.MarketView.Pullback)
+                pullbackLaunchGeneration++
+            }
             closeTvChart()
             settingsDetail = if (request.openAccount) SettingsDetail.Account else SettingsDetail.Overview
             accountOrigin = AppDestination.Settings
@@ -205,6 +210,7 @@ internal fun TradingAppScreen(
                             viewModel = marketViewModel,
                             signalsViewModel = signalsViewModel,
                             requestedKlineTarget = requestedKline,
+                            pullbackLaunchGeneration = pullbackLaunchGeneration,
                             onRequestedKlineConsumed = { requestedKline = null },
                             onOpenAppSettings = { destination = AppDestination.Settings },
                             xbotViewModel = xbotViewModel,

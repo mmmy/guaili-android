@@ -60,7 +60,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.flow.Flow
 
-private data class PullbackSelection(val symbol: String, val candidate: PullbackCandidate,
+internal data class PullbackSelection(val symbol: String, val candidate: PullbackCandidate,
     val rules: PullbackRules, val sampledAt: Long?, val average: String)
 private val PullbackTime = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT).withZone(ZoneId.systemDefault())
 private fun signed(value: Int?) = when { value == null -> "—"; value > 0 -> "+$value"; else -> value.toString() }
@@ -398,7 +398,7 @@ private fun PullbackTarget(row: PullbackRow, direction: PullbackDirection, candi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PullbackEvidenceSheet(selection: PullbackSelection, live: Boolean, onDismiss: () -> Unit, onKline: () -> Unit) {
+internal fun PullbackEvidenceSheet(selection: PullbackSelection, live: Boolean, onDismiss: () -> Unit, onKline: () -> Unit) {
     val candidate = selection.candidate
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp).testTag("pullback-evidence")) {
@@ -431,7 +431,8 @@ private fun PullbackEvidenceSheet(selection: PullbackSelection, live: Boolean, o
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PullbackParametersSheet(rules: PullbackRules, extensionBars: Int, onDismiss: () -> Unit, onSave: (PullbackRules, Int) -> Unit) {
+internal fun PullbackParametersSheet(rules: PullbackRules, extensionBars: Int, onDismiss: () -> Unit,
+    externalError: String? = null, saving: Boolean = false, onSave: (PullbackRules, Int) -> Unit) {
     var levels by rememberSaveable { mutableStateOf(rules.levels.toString()) }
     var threshold by rememberSaveable { mutableStateOf(rules.threshold.toString()) }
     var strong by rememberSaveable { mutableStateOf(rules.strongLevels.toString()) }
@@ -462,7 +463,7 @@ private fun PullbackParametersSheet(rules: PullbackRules, extensionBars: Int, on
                     modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("pullback-minimum"))
                 PullbackNumberField("小幅反向容差 R（|guaili| × 10）", reverse, { reverse = it }, "pullback-reverse")
             }
-            error?.let { Text(it, Modifier.testTag("pullback-parameter-error"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            (error ?: externalError)?.let { Text(it, Modifier.testTag("pullback-parameter-error"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onDismiss) { Text("取消") }
                 Button({
@@ -472,7 +473,7 @@ private fun PullbackParametersSheet(rules: PullbackRules, extensionBars: Int, on
                     val bars = extension.toIntOrNull() ?: -1
                     error = parsed.error() ?: if (bars !in 1..1000) "延期 K 线数须为 1–1000" else null
                     if (error == null) onSave(parsed, bars)
-                }, Modifier.testTag("pullback-save")) { Text("保存") }
+                }, Modifier.testTag("pullback-save"), enabled = !saving) { Text(if (saving) "保存中…" else "保存") }
             }
         }
     }

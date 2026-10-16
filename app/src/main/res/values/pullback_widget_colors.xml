@@ -1,0 +1,5 @@
+<resources>
+    <color name="pullback_widget_days">#406B97</color>
+    <color name="pullback_widget_hours">#70518D</color>
+    <color name="pullback_widget_minutes">#8A5A1B</color>
+</resources>

@@ -44,6 +44,7 @@
         <activity
             android:name=".widget.GuailiWidgetStatusActivity"
             android:exported="false" />
+        <activity android:name=".widget.PullbackWidgetActivity" android:exported="false" />
         <receiver
             android:name=".widget.DecisionReminderReceiver"
             android:exported="false" />

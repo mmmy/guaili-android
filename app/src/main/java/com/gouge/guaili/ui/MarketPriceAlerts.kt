@@ -65,6 +65,7 @@ internal class MarketPriceAlertsViewModel(
     private val load: suspend () -> PriceAlertResult<List<PriceAlertDto>>,
     private val seenStore: PriceAlertSeenStore,
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val onConfirmation: (PriceAlertConfirmation) -> Unit = {},
 ) : ViewModel() {
     private val mutable = MutableStateFlow(MarketPriceAlertsState(seenTriggers = seenStore.readSeenTriggers(), now = nowMillis()))
     val state = mutable.asStateFlow()
@@ -79,6 +80,7 @@ internal class MarketPriceAlertsViewModel(
 
     fun accept(confirmation: PriceAlertConfirmation) {
         val id = confirmation.alert?.id ?: confirmation.operation.alertId ?: return
+        onConfirmation(confirmation)
         val alert = confirmation.alert
         changeGeneration++
         saved[id] = alert
@@ -175,8 +177,11 @@ internal class MarketPriceAlertsViewModel(
         fun factory(context: Context, baseUrl: String) = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                val repository = PriceAlertRepository.create(baseUrl)
-                return MarketPriceAlertsViewModel(repository::listAll, PriceAlertStore(context, baseUrl)) as T
+                return MarketPriceAlertsViewModel(
+                    load = { com.gouge.guaili.widget.refreshPullbackWidgetAlerts(context, baseUrl, onlyIfInstalled = true) },
+                    seenStore = PriceAlertStore(context, baseUrl),
+                    onConfirmation = { com.gouge.guaili.widget.confirmPullbackWidgetAlert(context, baseUrl, it) },
+                ) as T
             }
         }
     }

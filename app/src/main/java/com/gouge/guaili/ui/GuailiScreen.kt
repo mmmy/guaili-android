@@ -98,6 +98,7 @@ internal fun GuailiScreen(
     signalsViewModel: ServerSignalsViewModel,
     xbotViewModel: MainViewModel,
     requestedKlineTarget: KlineTarget? = null,
+    pullbackLaunchGeneration: Long = 0L,
     onRequestedKlineConsumed: () -> Unit = {},
     onOpenAppSettings: (() -> Unit)? = null,
     onOpenTvAlerts: (MarketTvAlertEntry?) -> Unit = {},
@@ -134,6 +135,9 @@ internal fun GuailiScreen(
     var paneRestore by remember { mutableStateOf<MarketScrollAnchor?>(null) }
     var session by rememberSaveable(stateSaver = MarketLinkSessionSaver) { mutableStateOf(MarketLinkSession()) }
     val marketView = session.viewOverride ?: signalsState.preferences.view
+    LaunchedEffect(pullbackLaunchGeneration) {
+        if (pullbackLaunchGeneration > 0) session = MarketLinkSession(baseUrl = state.settings.baseUrl, viewOverride = MarketView.Pullback)
+    }
     val showSignals = marketView == MarketView.SignalsV2
     val showPullback = marketView == MarketView.Pullback
     val pullbackListState = rememberLazyListState()
@@ -331,8 +335,9 @@ internal fun GuailiScreen(
 
     LaunchedEffect(requestedKlineTarget) {
         requestedKlineTarget?.let { target ->
-            klineFromSignals = false
-            klineAlertId = null
+            klineFromSignals = target.fromPullback
+            klineAlertId = target.priceAlertId
+            if (target.fromPullback) session = session.copy(viewOverride = null)
             klineSymbol = target.symbol
             klineInterval = target.interval
             onRequestedKlineConsumed()
@@ -598,6 +603,8 @@ internal fun GuailiScreen(
 data class KlineTarget(
     val symbol: String,
     val interval: String,
+    val priceAlertId: Long? = null,
+    val fromPullback: Boolean = false,
 )
 
 @Composable

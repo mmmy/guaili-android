@@ -175,9 +175,12 @@ class GuailiWidgetConfigurationActivity : ComponentActivity() {
             if (config.mode == WidgetMode.DecisionReminders) {
                 DecisionReminderScheduler.rescheduleAllNow(applicationContext)
             }
-            GuailiWidget().updateAll(applicationContext)
+            if (config.mode == WidgetMode.PullbackObservation || baseline.mode == WidgetMode.PullbackObservation) {
+                GuailiWidget().update(applicationContext, androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext).getGlanceIdBy(appWidgetId))
+            } else GuailiWidget().updateAll(applicationContext)
             if (config.mode != WidgetMode.DecisionReminders) {
-                GuailiWidgetScheduler.refreshNow(applicationContext)
+                GuailiWidgetScheduler.refreshNow(applicationContext,
+                    appWidgetId = appWidgetId.takeIf { config.mode == WidgetMode.PullbackObservation })
             }
             val result = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
             setResult(Activity.RESULT_OK, result)
@@ -221,6 +224,7 @@ private fun WidgetConfigurationScreen(
     var selectedIntervals by rememberSaveable(stateSaver = configurationSaver<List<String>>()) { mutableStateOf(initialConfig.intervals) }
     var mode by rememberSaveable { mutableStateOf(initialConfig.mode) }
     var enabledSignalKinds by rememberSaveable(stateSaver = configurationSaver<Set<GuailiSignalKind>>()) { mutableStateOf(initialConfig.enabledSignalKinds) }
+    var pullbackOnlyCandidates by rememberSaveable { mutableStateOf(initialConfig.pullbackOnlyCandidates) }
     var singleSymbolColumns by rememberSaveable { mutableStateOf(initialConfig.singleSymbolColumns) }
     var reminders by rememberSaveable(stateSaver = configurationSaver<List<DecisionReminder>>()) { mutableStateOf(initialConfig.reminders) }
     var editingReminderId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -242,7 +246,7 @@ private fun WidgetConfigurationScreen(
     var exitDialog by remember { mutableStateOf(false) }
     var formError by remember { mutableStateOf<String?>(null) }
     val baseline by rememberSaveable(stateSaver = configurationSaver<WidgetConfig>()) { mutableStateOf(initialConfig) }
-    val draft = buildWidgetConfig(mode, selectedSymbols, selectedSingleSymbol, selectedIntervals, singleSymbolColumns, reminders, enabledSignalKinds)
+    val draft = buildWidgetConfig(mode, selectedSymbols, selectedSingleSymbol, selectedIntervals, singleSymbolColumns, reminders, enabledSignalKinds, pullbackOnlyCandidates)
     val dirty = normalizeWidgetConfig(draft) != normalizeWidgetConfig(baseline) || editorDirty
     BackHandler(enabled = dirty || saving) { if (!saving) exitDialog = true }
     if (exitDialog) {
@@ -275,6 +279,8 @@ private fun WidgetConfigurationScreen(
                     "监控最多 10 个品种，使用当前实时动态 K 计算乖离共振、近均线、长短周期分歧及其变化。"
                 WidgetMode.SignalsV2 ->
                     "监控最多 10 个品种，从服务器读取实时动态 K 线的乖离共振、近均线和长短周期分歧。桌面定期刷新，计算周期由服务器配置。"
+                WidgetMode.PullbackObservation ->
+                    "监控最多 10 个品种，显示采样时的回调目标、推荐小级别及候选。规则与应用共用，前台同步、后台定期更新，可手动刷新。"
                 WidgetMode.Matrix ->
                     "选择最多 5 个品种和 4 个周期；上下滑动查看全部品种。"
                 WidgetMode.SingleSymbol ->
@@ -500,6 +506,12 @@ private fun WidgetConfigurationScreen(
                 }
             }
             else -> {
+                if (mode == WidgetMode.PullbackObservation) item {
+                    SignalKindSwitchRow("仅显示回调候选", pullbackOnlyCandidates) { pullbackOnlyCandidates = it }
+                    Text("多头在上、空头在下。点击左上角查看采样时间和共享规则；小组件不播放声音。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                }
                 if (mode == WidgetMode.Signals || mode == WidgetMode.SignalsV2) {
                     item {
                         SectionTitle("启用的信号")
@@ -584,12 +596,13 @@ private fun WidgetConfigurationScreen(
                             singleSymbolColumns = singleSymbolColumns,
                             reminders = reminders,
                             enabledSignalKinds = enabledSignalKinds,
+                            pullbackOnlyCandidates = pullbackOnlyCandidates,
                         ),
                         baseline,
                     )
                 },
                 enabled = !saving && !(mode == WidgetMode.DecisionReminders && editorDirty) && when (mode) {
-                    WidgetMode.Signals, WidgetMode.SignalsV2 -> selectedSymbols.isNotEmpty()
+                    WidgetMode.Signals, WidgetMode.SignalsV2, WidgetMode.PullbackObservation -> selectedSymbols.isNotEmpty()
                     WidgetMode.Matrix -> selectedSymbols.isNotEmpty() && selectedIntervals.isNotEmpty()
                     WidgetMode.SingleSymbol -> selectedSingleSymbol != null
                     WidgetMode.DecisionReminders -> true
@@ -630,6 +643,7 @@ internal fun buildWidgetConfig(
     singleSymbolColumns: WidgetColumnCount = WidgetColumnCount.Auto,
     reminders: List<DecisionReminder> = emptyList(),
     enabledSignalKinds: Set<GuailiSignalKind> = DefaultWidgetSignalKinds,
+    pullbackOnlyCandidates: Boolean = false,
 ): WidgetConfig = WidgetConfig(
     symbols = if (mode == WidgetMode.SingleSymbol) {
         listOfNotNull(selectedSingleSymbol)
@@ -641,6 +655,7 @@ internal fun buildWidgetConfig(
     singleSymbolColumns = singleSymbolColumns,
     reminders = reminders,
     enabledSignalKinds = enabledSignalKinds,
+    pullbackOnlyCandidates = pullbackOnlyCandidates,
 )
 
 @Composable

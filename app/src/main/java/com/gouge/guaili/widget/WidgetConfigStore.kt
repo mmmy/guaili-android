@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.gouge.guaili.domain.GuailiSignalKind
 import com.gouge.guaili.settings.GuailiSettings
@@ -27,6 +28,7 @@ data class WidgetConfig(
     val singleSymbolColumns: WidgetColumnCount = WidgetColumnCount.Auto,
     val reminders: List<DecisionReminder> = emptyList(),
     val enabledSignalKinds: Set<GuailiSignalKind> = DefaultWidgetSignalKinds,
+    val pullbackOnlyCandidates: Boolean = false,
 )
 
 internal val DefaultWidgetSignalKinds: Set<GuailiSignalKind> =
@@ -39,6 +41,7 @@ enum class WidgetMode(val label: String) {
     Matrix("数据矩阵"),
     SingleSymbol("单品种全周期"),
     DecisionReminders("决策提醒"),
+    PullbackObservation("回调观察"),
 }
 
 @Serializable
@@ -105,6 +108,7 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
                 ?: WidgetColumnCount.Auto,
             reminders = savedReminders,
             enabledSignalKinds = decodeSignalKinds(savedSignalKinds),
+            pullbackOnlyCandidates = preferences[booleanPreferencesKey(pullbackCandidatesKey(appWidgetId))] ?: false,
         )
     }
 
@@ -133,7 +137,11 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
                 ReminderJson.encodeToString(reminders)
             preferences[stringPreferencesKey(signalKindsKey(appWidgetId))] =
                 normalizedConfig.enabledSignalKinds.joinToString(",") { it.name }
-            savedConfig = normalizedConfig.copy(reminders = reminders)
+            val candidatesKey = booleanPreferencesKey(pullbackCandidatesKey(appWidgetId))
+            val candidates = if (baseline?.pullbackOnlyCandidates == normalizedConfig.pullbackOnlyCandidates)
+                preferences[candidatesKey] ?: false else normalizedConfig.pullbackOnlyCandidates
+            preferences[candidatesKey] = candidates
+            savedConfig = normalizedConfig.copy(reminders = reminders, pullbackOnlyCandidates = candidates)
         }
         return savedConfig
     }
@@ -146,6 +154,7 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
             preferences.remove(stringPreferencesKey(columnCountKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(remindersKey(appWidgetId)))
             preferences.remove(stringPreferencesKey(signalKindsKey(appWidgetId)))
+            preferences.remove(booleanPreferencesKey(pullbackCandidatesKey(appWidgetId)))
         }
     }
 
@@ -153,6 +162,13 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
         dataStore.edit { preferences ->
             val key = stringPreferencesKey(remindersKey(appWidgetId))
             preferences[key] = ReminderJson.encodeToString(transform(decodeReminders(preferences[key])))
+        }
+    }
+
+    suspend fun togglePullbackCandidates(appWidgetId: Int) {
+        dataStore.edit { preferences ->
+            val key = booleanPreferencesKey(pullbackCandidatesKey(appWidgetId))
+            preferences[key] = !(preferences[key] ?: false)
         }
     }
 
@@ -170,7 +186,7 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
         }
 
         fun maxSymbols(mode: WidgetMode): Int = when (mode) {
-            WidgetMode.Signals, WidgetMode.SignalsV2 -> MaxSignalSymbols
+            WidgetMode.Signals, WidgetMode.SignalsV2, WidgetMode.PullbackObservation -> MaxSignalSymbols
             WidgetMode.Matrix, WidgetMode.DecisionReminders -> MaxMatrixSymbols
             WidgetMode.SingleSymbol -> 1
         }
@@ -181,6 +197,7 @@ class WidgetConfigStore internal constructor(private val dataStore: DataStore<Pr
         private fun columnCountKey(id: Int) = "widget_${id}_single_symbol_columns"
         private fun remindersKey(id: Int) = "widget_${id}_decision_reminders"
         private fun signalKindsKey(id: Int) = "widget_${id}_signal_kinds"
+        private fun pullbackCandidatesKey(id: Int) = "widget_${id}_pullback_candidates"
 
         private fun parse(value: String?): List<String> = value
             ?.split(',')

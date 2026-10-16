@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gouge.guaili.data.GuailiSnapshotStore
 import com.gouge.guaili.settings.GuailiSettingsSource
@@ -20,15 +21,17 @@ import com.gouge.guaili.ui.ServerSignalsViewModel
 import com.gouge.guaili.data.ServerSignalsSnapshotStore
 import com.gouge.guaili.settings.MarketSignalPreferencesStore
 import com.gouge.guaili.widget.updateServerSignalWidgets
+import com.gouge.guaili.widget.updateLegacyMarketWidgets
 import com.gouge.guaili.ui.theme.GuailiTheme
-import com.gouge.guaili.widget.GuailiWidget
-import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.gouge.xbot.ui.MainViewModel
 
 class MainActivity : ComponentActivity() {
     private val requestedLaunch = MutableStateFlow<AppLaunchRequest?>(null)
     private val resumeGeneration = mutableIntStateOf(0)
+    private var widgetLaunchGeneration = 0L
 
     override fun onResume() {
         super.onResume()
@@ -47,7 +50,7 @@ class MainActivity : ComponentActivity() {
                 settingsSource = settingsStore,
                 snapshotStore = GuailiSnapshotStore(applicationContext),
                 onSnapshotUpdated = {
-                    GuailiWidget().updateAll(applicationContext)
+                    updateLegacyMarketWidgets(applicationContext, settingsStore.settings.first())
                 },
             ),
         )[GuailiViewModel::class.java]
@@ -87,7 +90,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleWidgetIntent(intent: android.content.Intent?) {
-        requestedLaunch.value = resolveAppLaunch(intent)
+        val generation = ++widgetLaunchGeneration
+        val source = intent?.getStringExtra("widget_market_source")
+        if (source == null) requestedLaunch.value = resolveAppLaunch(intent)
+        else lifecycleScope.launch {
+            val current = SettingsStore(applicationContext).settings.first()
+            if (generation != widgetLaunchGeneration) return@launch
+            if (com.gouge.guaili.data.normalizeServerSignalsBaseUrl(source) == com.gouge.guaili.data.normalizeServerSignalsBaseUrl(current.baseUrl)) {
+                requestedLaunch.value = resolveAppLaunch(intent)
+            } else {
+                intent.clearAppLaunchExtras()
+                android.widget.Toast.makeText(applicationContext, "行情来源已切换，请从当前回调观察重新打开", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     companion object {

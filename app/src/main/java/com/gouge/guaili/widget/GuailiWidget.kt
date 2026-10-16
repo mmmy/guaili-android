@@ -95,20 +95,22 @@ class GuailiWidget : GlanceAppWidget() {
         val initialConfiguration = configuration.first()
         val snapshotStore = GuailiSnapshotStore(context)
         val initialMode = initialConfiguration.config.mode
-        val initialSnapshot = if (initialMode != WidgetMode.SignalsV2 && initialMode != WidgetMode.DecisionReminders) {
+        val initialSnapshot = if (initialMode.usesLegacyMarketSnapshot()) {
             snapshotStore.read()
         } else null
         val serverSnapshotStore = ServerSignalsSnapshotStore(context)
         val initialServerSnapshot = if (initialMode == WidgetMode.SignalsV2) serverSnapshotStore.read() else null
         val initialServerFailure = if (initialMode == WidgetMode.SignalsV2) serverSnapshotStore.readFailure() else null
         val deliveryStatus = reminderDeliveryStatus(context)
+        val pullbackFrames = pullbackWidgetFrames(context, configuration)
+        val initialPullback = if (initialMode == WidgetMode.PullbackObservation) pullbackFrames.first() else null
 
         provideContent {
             // updateAll does not restart provideGlance while its session is active.
             // Observe saves so refresh feedback and signals use the same latest data.
             val currentConfiguration by configuration.collectAsState(initialConfiguration)
             val mode = currentConfiguration.config.mode
-            val snapshot = if (mode != WidgetMode.SignalsV2 && mode != WidgetMode.DecisionReminders) {
+            val snapshot = if (mode.usesLegacyMarketSnapshot()) {
                 val value by snapshotStore.snapshots.collectAsState(initialSnapshot)
                 value
             } else null
@@ -121,6 +123,10 @@ class GuailiWidget : GlanceAppWidget() {
                 value
             } else null
             val refreshStatus = currentState<Preferences>().widgetRefreshStatus()
+            val pullbackFrame = if (mode == WidgetMode.PullbackObservation) {
+                val value by pullbackFrames.collectAsState(initialPullback)
+                value
+            } else null
             GuailiWidgetContent(
                 snapshot = snapshot,
                 config = currentConfiguration.config,
@@ -130,6 +136,7 @@ class GuailiWidget : GlanceAppWidget() {
                 deliveryStatus = deliveryStatus,
                 serverSnapshot = serverSnapshot,
                 serverFailure = serverFailure,
+                pullbackFrame = pullbackFrame,
             )
         }
     }
@@ -193,7 +200,12 @@ private fun GuailiWidgetContent(
     deliveryStatus: ReminderDeliveryStatus,
     serverSnapshot: ServerSignalsSnapshot? = null,
     serverFailure: ServerSignalsFailure? = null,
+    pullbackFrame: PullbackWidgetFrame? = null,
 ) {
+    if (config.mode == WidgetMode.PullbackObservation) {
+        PullbackObservationWidgetContent(pullbackFrame, config, settings, refreshStatus, appWidgetId)
+        return
+    }
     if (config.mode == WidgetMode.SignalsV2) {
         ServerSignalsV2WidgetContent(serverSnapshot, serverFailure, config, settings, refreshStatus, appWidgetId)
         return
@@ -232,7 +244,12 @@ private fun GuailiWidgetContent(
     }
 
     val useGroupedStyle = config.mode == WidgetMode.SingleSymbol
-    val contentPadding = if (useGroupedStyle) 0.dp else 10.dp
+    val contentPadding = when {
+        useGroupedStyle -> 0.dp
+        config.mode == WidgetMode.Signals -> signalWidgetOuterPadding(size.width.value,
+            LocalContext.current.resources.configuration.fontScale).dp
+        else -> 10.dp
+    }
     val contentWidth = size.width - contentPadding * 2
     val singleSymbolDimensions = groupedLayoutDimensions(
         widthDp = contentWidth.value.toInt(),
@@ -244,7 +261,7 @@ private fun GuailiWidgetContent(
         modifier = GlanceModifier
             .fillMaxSize()
             .background(if (useGroupedStyle) GroupedBackground else WidgetBackground)
-            .padding(contentPadding),
+            .padding(horizontal = contentPadding, vertical = if (config.mode == WidgetMode.Signals) 10.dp else contentPadding),
     ) {
         WidgetHeader(
             snapshot = snapshot,
@@ -252,6 +269,7 @@ private fun GuailiWidgetContent(
             title = when (config.mode) {
                 WidgetMode.Signals -> "乖离信号"
                 WidgetMode.SignalsV2 -> "乖离信号 v2"
+                WidgetMode.PullbackObservation -> "回调观察"
                 WidgetMode.Matrix -> "乖离矩阵"
                 WidgetMode.SingleSymbol -> singleSymbolTitle(config.symbols.firstOrNull().orEmpty())
                 WidgetMode.DecisionReminders -> "决策提醒"
@@ -334,8 +352,11 @@ private fun ServerSignalsV2WidgetContent(
 ) {
     val state = serverSignalsWidgetState(snapshot, failure, config, settings.baseUrl,
         readGuailiDeviceTime(LocalContext.current))
-    val narrow = LocalSize.current.width < 250.dp
-    val wide = LocalSize.current.width >= 320.dp
+    val size = LocalSize.current
+    val fontScale = LocalContext.current.resources.configuration.fontScale
+    val compactHeader = compactSignalWidgetHeader(size.width.value, fontScale)
+    val narrow = size.width < 250.dp || compactHeader
+    val wide = size.width >= 320.dp && !compactHeader
     val feedback = refreshFeedbackText(refreshStatus, snapshotUpdatedAt = snapshot?.updatedAt)
     val time = state.fetchedAt?.let {
         DateTimeFormatter.ofPattern(if (wide) "HH:mm:ss" else "HH:mm").withZone(ZoneId.systemDefault())
@@ -347,7 +368,8 @@ private fun ServerSignalsV2WidgetContent(
         feedback?.contains("超时") == true -> "超时"
         else -> time
     }
-    Column(modifier = GlanceModifier.fillMaxSize().background(WidgetBackground).padding(10.dp)) {
+    Column(modifier = GlanceModifier.fillMaxSize().background(WidgetBackground)
+        .padding(horizontal = signalWidgetOuterPadding(size.width.value, fontScale).dp, vertical = 10.dp)) {
         SignalWidgetHeader(null, appWidgetId, refreshStatus, null, state.signals.size,
             version = "v2", refreshLabelOverride = refreshLabel,
             statusLabelOverride = serverWidgetStatusLabel(state, narrow),
@@ -579,45 +601,65 @@ internal fun SignalWidgetHeader(snapshot: GuailiSnapshot?, appWidgetId: Int, ref
     refreshLabelOverride: String? = null, statusLabelOverride: String? = null,
     warningOverride: Boolean? = null) {
     val width = LocalSize.current.width
+    val compact = compactSignalWidgetHeader(width.value, LocalContext.current.resources.configuration.fontScale)
     val narrow = width < 250.dp
     val wide = width >= 320.dp
     val feedback = refreshFeedbackText(refreshStatus, snapshotUpdatedAt = snapshot?.updatedAt)
     val refreshing = feedback == "刷新中…"
+    val fullTitle = if (version == null) "乖离信号 · ${signalCount}条" else "乖离信号 $version · ${signalCount}条"
+    val title = if (compact) {
+        if (version == null) "${signalCount}条" else "$version·$signalCount"
+    } else if (version == null) {
+        when { wide -> fullTitle; narrow -> "信号·${signalCount}条"; else -> "信号 · ${signalCount}条" }
+    } else {
+        when { wide -> fullTitle; narrow -> "信号$version·${signalCount}条"; else -> "信号 $version · ${signalCount}条" }
+    }
+    val fullRefreshLabel = refreshLabelOverride ?: singleLineRefreshLabel(refreshStatus, snapshot, dataStatus, wide, narrow)
+    val refreshLabel = if (compact && fullRefreshLabel == "刷新中") "刷新" else fullRefreshLabel
+    val statusLabel = statusLabelOverride ?: singleLineStatusLabel(dataStatus, narrow || compact)
+    val fullStatusLabel = statusLabelOverride ?: widgetStatusLabel(dataStatus)
+    val statusPadding = if (compact) 1.dp else if (narrow) 3.dp else 4.dp
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            text = if (version == null) {
-                when { wide -> "乖离信号 · ${signalCount}条"; narrow -> "信号·${signalCount}条"; else -> "信号 · ${signalCount}条" }
-            } else {
-                when { wide -> "乖离信号 $version · ${signalCount}条"; narrow -> "信号$version·${signalCount}条"; else -> "信号 $version · ${signalCount}条" }
-            },
+            text = title,
             style = TextStyle(color = PrimaryText, fontSize = if (wide) SignalCardStyle.HeaderFontSp.sp else if (narrow) 11.sp else 12.sp,
                 fontWeight = FontWeight.Bold),
-            modifier = GlanceModifier.defaultWeight().padding(end = 4.dp)
+            modifier = GlanceModifier.defaultWeight().padding(end = if (compact) 2.dp else 4.dp)
+                .semantics { contentDescription = fullTitle }
                 .clickable(actionStartActivity(mainActivityIntent())), maxLines = 1,
         )
         Text(
-            text = refreshLabelOverride ?: singleLineRefreshLabel(refreshStatus, snapshot, dataStatus, wide, narrow),
+            text = refreshLabel,
             style = TextStyle(color = if (feedback?.contains("失败") == true || feedback?.contains("超时") == true)
                 WarningText else if (feedback == "刷新成功") RefreshSuccessText else SecondaryText, fontSize = 9.sp),
-            modifier = GlanceModifier.padding(horizontal = if (narrow) 3.dp else 4.dp, vertical = 3.dp)
+            modifier = GlanceModifier.padding(horizontal = statusPadding, vertical = 3.dp)
+                .semantics { contentDescription = feedback ?: "获取时间 $fullRefreshLabel" }
                 .clickable(actionStartActivity(widgetStatusIntent(appWidgetId))), maxLines = 1,
         )
         Text(
-            text = statusLabelOverride ?: singleLineStatusLabel(dataStatus, narrow),
+            text = statusLabel,
             style = TextStyle(color = if (warningOverride ?: (dataStatus?.incomplete == true)) WarningText else AccentText, fontSize = 9.sp),
-            modifier = GlanceModifier.padding(horizontal = if (narrow) 3.dp else 4.dp, vertical = 3.dp)
+            modifier = GlanceModifier.padding(horizontal = statusPadding, vertical = 3.dp)
+                .semantics { contentDescription = fullStatusLabel }
                 .clickable(actionStartActivity(widgetStatusIntent(appWidgetId))), maxLines = 1,
         )
         Text("编辑", style = TextStyle(color = SecondaryText, fontSize = if (narrow) 9.sp else 10.sp),
             modifier = GlanceModifier.padding(horizontal = 2.dp, vertical = 3.dp)
                 .clickable(actionStartActivity(widgetConfigurationIntent(appWidgetId))), maxLines = 1)
-        Text(if (refreshing) "⟳" else if (narrow) "↻" else "↻刷新",
+        Text(if (refreshing) "⟳" else if (narrow || compact) "↻" else "↻刷新",
             style = TextStyle(color = SecondaryText, fontSize = 11.sp),
-            modifier = GlanceModifier.padding(horizontal = 4.dp, vertical = 3.dp)
+            modifier = GlanceModifier.padding(horizontal = if (compact) 2.dp else 4.dp, vertical = 3.dp)
+                .semantics { contentDescription = if (refreshing) "正在刷新" else "刷新信号" }
                 .then(if (refreshing) GlanceModifier else GlanceModifier.clickable(actionRunCallback<RefreshWidgetAction>())),
             maxLines = 1)
     }
 }
+
+internal fun signalWidgetOuterPadding(widthDp: Float, fontScale: Float): Int =
+    if (widthDp < 220f && fontScale > 1.2f) 2 else 10
+
+internal fun compactSignalWidgetHeader(widthDp: Float, fontScale: Float): Boolean =
+    fontScale > 1.2f && (widthDp - 2 * signalWidgetOuterPadding(widthDp, fontScale)) / fontScale < 240f
 
 private fun widgetStatusIntent(appWidgetId: Int): Intent =
     Intent().setClassName("com.gouge.guaili", GuailiWidgetStatusActivity::class.java.name)
@@ -880,7 +922,8 @@ internal fun SignalRow(signal: GuailiSignal, maLabel: String) {
             paint.typeface = if (bold) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT
             return paint.measureText(text)
         }
-        com.gouge.guaili.signals.signalCompactLayout((size.width.value - 20 - 2 * padding) * metrics.density,
+        val outerPadding = signalWidgetOuterPadding(size.width.value, context.resources.configuration.fontScale)
+        com.gouge.guaili.signals.signalCompactLayout((size.width.value - 2 * outerPadding - 2 * padding) * metrics.density,
             width(symbol, SignalCardStyle.TitleFontSp), ranges.map { width(it, SignalCardStyle.RangeFontSp, true) },
             metas.map { width(it, SignalCardStyle.DescriptionFontSp) }, 8 * metrics.density)
     }
