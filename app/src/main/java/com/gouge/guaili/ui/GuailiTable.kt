@@ -32,6 +32,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -96,6 +98,18 @@ internal fun GuailiTable(
     val baseDimensions = tableDimensions(state.settings.tableDensity, fontScale)
     val dimensions = baseDimensions.copy(cellHeight = max(baseDimensions.cellHeight.value, 48f * fontScale.coerceAtLeast(1f)).dp)
     val headerHeight = max(dimensions.cellHeight.value, 25.2f * fontScale + 6f).dp
+    val cellWidthPx = with(density) { dimensions.cellWidth.roundToPx() }
+    // Read the shared scroll position only here, and only invalidate composition when a
+    // column enters/leaves the buffered window. Pixel-by-pixel movement remains layout work.
+    val columnWindow by remember(horizontal, intervals.size, cellWidthPx) {
+        derivedStateOf {
+            tableColumnWindow(intervals.size, cellWidthPx, horizontal.value, horizontal.viewportSize)
+        }
+    }
+    // Each original cell rounds its width separately. Build spacers from that same
+    // rounded pixel width so density rounding never changes header alignment or scroll extent.
+    val leadingWidth = with(density) { (columnWindow.firstIndex * cellWidthPx).toDp() }
+    val trailingWidth = with(density) { ((intervals.size - columnWindow.endExclusive) * cellWidthPx).toDp() }
 
     Column(modifier = modifier.background(MatrixBackground)) {
         Row {
@@ -106,13 +120,18 @@ internal fun GuailiTable(
                 height = headerHeight,
             )
             Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
-                intervals.forEach { interval ->
-                    HeaderCell(
-                        text = formatInterval(interval),
-                        width = dimensions.cellWidth,
-                        height = headerHeight,
-                    )
+                if (columnWindow.firstIndex > 0) Spacer(Modifier.width(leadingWidth))
+                for (index in columnWindow.firstIndex until columnWindow.endExclusive) {
+                    val interval = intervals[index]
+                    key(interval) {
+                        HeaderCell(
+                            text = formatInterval(interval),
+                            width = dimensions.cellWidth,
+                            height = headerHeight,
+                        )
+                    }
                 }
+                if (columnWindow.endExclusive < intervals.size) Spacer(Modifier.width(trailingWidth))
             }
         }
 
@@ -132,25 +151,60 @@ internal fun GuailiTable(
                         TvAlertSummary(symbol, tvAlerts[symbol], { onSymbolTvAlerts(symbol) })
                     }
                     Row(modifier = Modifier.weight(1f).horizontalScroll(horizontal)) {
-                        intervals.forEach { interval ->
-                            ValueCell(
-                                cell = state.cells[symbol]?.get(interval),
-                                symbol = symbol,
-                                interval = interval,
-                                onCellClick = onCellClick,
-                                dimensions = rowDimensions,
-                                member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
-                                alerts = priceAlerts[symbol]?.periods?.get(interval),
-                                onAlertClick = { onPeriodAlert(symbol, interval) },
-                                tvAlerts = tvAlerts[symbol]?.period(interval),
-                                onTvAlertClick = { onPeriodTvAlerts(symbol, interval) },
-                            )
+                        if (columnWindow.firstIndex > 0) Spacer(Modifier.width(leadingWidth))
+                        for (index in columnWindow.firstIndex until columnWindow.endExclusive) {
+                            val interval = intervals[index]
+                            key(interval) {
+                                ValueCell(
+                                    cell = state.cells[symbol]?.get(interval),
+                                    symbol = symbol,
+                                    interval = interval,
+                                    onCellClick = onCellClick,
+                                    dimensions = rowDimensions,
+                                    member = link?.takeIf { it.key.symbol == symbol }?.members?.get(interval),
+                                    alerts = priceAlerts[symbol]?.periods?.get(interval),
+                                    onAlertClick = { onPeriodAlert(symbol, interval) },
+                                    tvAlerts = tvAlerts[symbol]?.period(interval),
+                                    onTvAlertClick = { onPeriodTvAlerts(symbol, interval) },
+                                )
+                            }
                         }
+                        if (columnWindow.endExclusive < intervals.size) Spacer(Modifier.width(trailingWidth))
                     }
                 }
             }
         }
     }
+}
+
+internal data class TableColumnWindow(val firstIndex: Int, val endExclusive: Int)
+
+/** Keep partial edge cells and focus buffers; both window edges advance on one column boundary. */
+internal fun tableColumnWindow(
+    columnCount: Int,
+    cellWidthPx: Int,
+    scrollOffsetPx: Int,
+    viewportWidthPx: Int,
+    prefetchColumns: Int = 1,
+): TableColumnWindow {
+    if (columnCount <= 0 || cellWidthPx <= 0) return TableColumnWindow(0, 0)
+    // ScrollState acquires its viewport in the first measure. Keep that pass complete
+    // to avoid a blank initial frame, then use the measured shared viewport thereafter.
+    if (viewportWidthPx <= 0) return TableColumnWindow(0, columnCount)
+    val contentWidth = columnCount.toLong() * cellWidthPx
+    val viewportWidth = viewportWidthPx.toLong()
+    val offset = scrollOffsetPx.toLong().coerceIn(0, (contentWidth - viewportWidth).coerceAtLeast(0))
+    val firstVisible = (offset / cellWidthPx).toInt()
+    // Reserve the trailing partial cell needed at the last pixel of this first column.
+    // Deriving both edges from firstVisible avoids a second recomposition halfway
+    // through the column when viewportWidth is not a multiple of the pixel stride.
+    val visibleColumns = (viewportWidth + 2L * cellWidthPx - 2) / cellWidthPx
+    val endVisible = firstVisible + visibleColumns
+    val prefetch = prefetchColumns.coerceAtLeast(0).toLong()
+    return TableColumnWindow(
+        (firstVisible - prefetch).coerceAtLeast(0).toInt(),
+        (endVisible + prefetch).coerceAtMost(columnCount.toLong()).toInt(),
+    )
 }
 
 @Composable

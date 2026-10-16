@@ -8,7 +8,11 @@ import com.gouge.guaili.settings.*
 import com.gouge.guaili.signals.*
 import com.gouge.guaili.pullback.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -16,6 +20,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal data class MarketSignalsUiState(
     val preferences: MarketSignalPreferences = MarketSignalPreferences(),
@@ -37,6 +42,7 @@ internal class ServerSignalsViewModel(
     private val snapshotSource: ServerSignalsSource,
     private val refresher: ServerSignalsRefreshUseCase = ServerSignalsRefreshUseCase(snapshotSink = snapshotSource),
     private val onRefreshed: suspend (GuailiSettings, GuailiResult<ServerSignalsSnapshot>) -> Unit = { _, _ -> },
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(MarketSignalsUiState())
     val state = mutableState.asStateFlow()
@@ -53,23 +59,35 @@ internal class ServerSignalsViewModel(
     private val mutablePullbackAlerts = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val pullbackAlerts = mutablePullbackAlerts.asSharedFlow()
     private var pullbackActive = false
-    private var projectedSnapshot: ServerSignalsSnapshot? = null
-    private var projectedRules: PullbackRules? = null
-    private var projectedSymbols: List<String> = emptyList()
-    private var projectedBoot: Int? = null
-    private var projectedRefreshIntervalMillis: Long? = null
-    private var projection: PullbackProjection = PullbackProjection()
-    private val presentationCache = ServerSignalsPresentationCache()
     private var observedProjection: PullbackProjection? = null
-    private var availableSnapshot: ServerSignalsSnapshot? = null
-    private var availableSettingsSymbols: List<String>? = null
-    private var availableSelectedSymbols: List<String>? = null
-    private var availableSymbols: List<String> = emptyList()
+    private val rebuilds = Channel<MarketProjectionRequest>(Channel.CONFLATED)
+    private var rebuildGeneration = 0L
+    private var rebuildCompletion = CompletableDeferred<Unit>().apply { complete(Unit) }
     private var boundaryCheckDelayMillis = 1_000L
 
     private fun resetAlerts() { alerts.reset(); observedProjection = null }
 
     init {
+        // A single worker owns its caches. Rapid responses/filters replace queued work;
+        // an older computation can finish but can never publish over newer input.
+        viewModelScope.launch {
+            val projector = MarketSignalsProjector()
+            for (input in rebuilds) {
+                val result = withContext(computationDispatcher) {
+                    projector.project(input, snapshotSource.currentDeviceTime())
+                }
+                if (input.generation != rebuildGeneration) continue
+                val currentTime = snapshotSource.currentDeviceTime()
+                if (result.bootCount != currentTime?.bootCount || result.validUntilElapsedMillis?.let {
+                    currentTime != null && currentTime.elapsedMillis >= it
+                } == true) {
+                    rebuild()
+                    continue
+                }
+                publish(input, result)
+                rebuildCompletion.complete(Unit)
+            }
+        }
         viewModelScope.launch {
             combine(settingsSource.settings, preferencesSource.preferences,
                 snapshotSource.snapshots, snapshotSource.failures) { config, prefs, value, error ->
@@ -150,12 +168,18 @@ internal class ServerSignalsViewModel(
         polling?.cancel()
         expiry?.cancel()
         request?.cancel()
+        rebuild()
         if (active) {
-            rebuild()
             restartPolling()
             // The cheap clock-health guard remains active when requests fail or hang.
             // Presentation content and phases are cached until their actual time boundaries.
-            expiry = viewModelScope.launch { while (foreground) { delay(boundaryCheckDelayMillis); rebuild() } }
+            expiry = viewModelScope.launch {
+                while (foreground) {
+                    awaitLatestProjection()
+                    delay(boundaryCheckDelayMillis)
+                    rebuild()
+                }
+            }
         }
     }
 
@@ -206,51 +230,39 @@ internal class ServerSignalsViewModel(
     }
 
     private fun rebuild() {
-        val symbols = preferences.symbols ?: settings.symbols
-        val device = snapshotSource.currentDeviceTime()
-        val display = presentationCache.state(snapshot, failure, ServerSignalDisplayConfig(symbols, preferences.kinds),
-            settings.baseUrl, device, refreshIntervalMillis())
-        val time = if (snapshot != null && device != null) assessServerSignalsTime(snapshot!!, device) else null
-        val now = time?.nowMillis
-        val rules = preferences.pullback.rules
-        // Reuse sorted evidence between responses; expiry only rebuilds at a quality boundary.
-        if (projectedSnapshot !== snapshot || projectedRules != rules || projectedSymbols != settings.symbols ||
-            projectedBoot != device?.bootCount || projectedRefreshIntervalMillis != refreshIntervalMillis() ||
-            now == null && projection.ready ||
-            projection.nextChangeAt?.let { now != null && now >= it } == true) {
-            projection = projectPullbacks(snapshot, rules, settings.symbols, device, refreshIntervalMillis())
-            projectedSnapshot = snapshot
-            projectedRules = rules
-            projectedSymbols = settings.symbols
-            projectedBoot = device?.bootCount
-            projectedRefreshIntervalMillis = refreshIntervalMillis()
-        }
-        val appeared = if (observedProjection !== projection) {
+        rebuildCompletion.complete(Unit)
+        rebuildCompletion = CompletableDeferred()
+        rebuilds.trySend(MarketProjectionRequest(++rebuildGeneration, settings, preferences, snapshot, failure,
+            foreground && (pullbackActive || preferences.view == MarketView.Pullback)))
+    }
+
+    private suspend fun awaitLatestProjection() {
+        do {
+            val pending = rebuildCompletion
+            pending.await()
+        } while (pending !== rebuildCompletion)
+    }
+
+    private fun publish(input: MarketProjectionRequest, result: MarketProjectionResult) {
+        val projection = result.pullbacks
+        val appeared = if (input.needsPullbacks && observedProjection !== projection) {
             observedProjection = projection
             alerts.observe(projection)
         } else false
-        boundaryCheckDelayMillis = listOfNotNull(presentationCache.nextChangeAt, projection.nextChangeAt)
-            .minOrNull()?.let { at -> now?.let { (at - it).coerceIn(1L, 1_000L) } } ?: 1_000L
+        boundaryCheckDelayMillis = result.nextCheckDelayMillis
         if (appeared && foreground && pullbackActive && preferences.pullback.soundEnabled) mutablePullbackAlerts.tryEmit(Unit)
-        if (availableSnapshot !== snapshot || availableSettingsSymbols != settings.symbols || availableSelectedSymbols != symbols) {
-            availableSymbols = (settings.symbols + snapshot?.response?.results.orEmpty().map { it.symbol } + symbols).distinct()
-            availableSnapshot = snapshot
-            availableSettingsSymbols = settings.symbols
-            availableSelectedSymbols = symbols
-        }
         mutableState.value = mutableState.value.copy(
-            preferences = preferences, symbols = symbols, snapshot = snapshot,
-            availableSymbols = availableSymbols,
-            presentation = display,
+            preferences = input.preferences, symbols = input.preferences.symbols ?: input.settings.symbols,
+            snapshot = input.snapshot,
+            availableSymbols = result.availableSymbols,
+            presentation = result.presentation,
             pullbacks = projection,
-            autoRefreshSeconds = settings.autoRefreshSeconds.coerceAtLeast(1),
-            refreshError = failure?.takeIf {
-                normalizeServerSignalsBaseUrl(it.baseUrl) == normalizeServerSignalsBaseUrl(settings.baseUrl) &&
-                    it.updatedAt >= (snapshot?.updatedAt ?: 0L)
+            autoRefreshSeconds = input.settings.autoRefreshSeconds.coerceAtLeast(1),
+            refreshError = input.failure?.takeIf {
+                normalizeServerSignalsBaseUrl(it.baseUrl) == normalizeServerSignalsBaseUrl(input.settings.baseUrl) &&
+                    it.updatedAt >= (input.snapshot?.updatedAt ?: 0L)
             }?.message,
-            clockMessage = time?.let {
-                it.unavailableReason ?: it.correctionMessage ?: "已按服务器时间校准"
-            } ?: "刷新后校准时间",
+            clockMessage = result.clockMessage,
         )
     }
 

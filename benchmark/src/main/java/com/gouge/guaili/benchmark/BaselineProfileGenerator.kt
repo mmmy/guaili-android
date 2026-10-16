@@ -9,14 +9,17 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.rules.TestName
 
 @RunWith(AndroidJUnit4::class)
 class BaselineProfileGenerator {
     @get:Rule val profile = BaselineProfileRule()
+    @get:Rule val testName = TestName()
     private lateinit var fixture: PerformanceFixture
 
     @Before fun prepare() {
-        fixture = PerformanceFixture()
+        fixture = PerformanceFixture(fullSignals = testName.methodName in setOf("signalsV2", "pullbackObservation"),
+            compactTable = testName.methodName == "matrixViewport")
         fixture.configure(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()))
     }
     @After fun close() = fixture.close()
@@ -41,5 +44,31 @@ class BaselineProfileGenerator {
         pressHome()
         startActivityAndWait()
         device.scrollMatrix()
+    }
+
+    @Test fun matrixViewport() = profile.collect(packageName = TargetPackage, includeInStartupProfile = false,
+        maxIterations = 5, stableIterations = 2, strictStability = false) {
+        killProcess()
+        pressHome()
+        startActivityAndWait()
+        device.scrollMatrixViewport()
+    }
+
+    @Test fun signalsV2() = profile.collect(packageName = TargetPackage, includeInStartupProfile = false,
+        maxIterations = 5, stableIterations = 2, strictStability = false) {
+        killProcess()
+        pressHome()
+        startActivityAndWait()
+        device.openSignalsV2()
+        device.scrollMarketSignals()
+    }
+
+    @Test fun pullbackObservation() = profile.collect(packageName = TargetPackage, includeInStartupProfile = false,
+        maxIterations = 5, stableIterations = 2, strictStability = false) {
+        killProcess()
+        pressHome()
+        startActivityAndWait()
+        device.openPullbackObservation()
+        device.scrollMarketSignals()
     }
 }

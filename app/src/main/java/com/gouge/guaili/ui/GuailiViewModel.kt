@@ -9,6 +9,8 @@ import com.gouge.guaili.data.GUAILI_STALE_AFTER_MILLIS
 import com.gouge.guaili.data.isGuailiSnapshotStale
 import com.gouge.guaili.data.GuailiSnapshot
 import com.gouge.guaili.data.assessGuailiTime
+import com.gouge.guaili.data.signalProfile
+import com.gouge.guaili.domain.GuailiSignalEvolution
 import com.gouge.guaili.domain.GuailiCell
 import com.gouge.guaili.domain.guailiIntervalDurationMillis
 import com.gouge.guaili.settings.GuailiSettings
@@ -23,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class GuailiTableState(
     val settings: GuailiSettings = GuailiSettings.defaults(),
@@ -47,7 +50,7 @@ class GuailiViewModel(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val autoRefreshEnabled: Boolean = true,
     private val onSnapshotUpdated: suspend () -> Unit = { },
-    computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val _state = MutableStateFlow(GuailiTableState())
     val state: StateFlow<GuailiTableState> = _state.asStateFlow()
@@ -67,6 +70,9 @@ class GuailiViewModel(
     private var isForeground: Boolean = true
     private var hasObservedSettings = false
     private var latestSnapshot: GuailiSnapshot? = null
+    private var latestSnapshotSettings: GuailiSettings? = null
+    private var restoreJob: Job? = null
+    private var settingsGeneration = 0L
     private var temporarySymbol: String? = null
     private var temporaryIntervals: List<String> = emptyList()
 
@@ -101,12 +107,50 @@ class GuailiViewModel(
                     isStale = if (requestSettingsChanged) false else _state.value.isStale,
                 )
                 if (requestSettingsChanged) {
+                    latestSnapshot = null
+                    latestSnapshotSettings = null
+                    restoreCachedSnapshot(settings)
                     requestRefresh(requestSettings(settings), clearsCells = true)
                 }
                 if (autoRefreshEnabled) {
                     restartAutoRefresh()
                 }
             }
+        }
+    }
+
+    private fun restoreCachedSnapshot(settings: GuailiSettings) {
+        restoreJob?.cancel()
+        val generation = ++settingsGeneration
+        restoreJob = viewModelScope.launch {
+            val cached = try {
+                withContext(computationDispatcher) {
+                    val value = snapshotSink.read() ?: return@withContext null
+                    if (value.signalProfile != settings.signalProfile() ||
+                        value.signalRuleVersion != GuailiSignalEvolution.RuleVersion) return@withContext null
+                    val device = snapshotSink.currentDeviceTime() ?: return@withContext null
+                    val time = assessGuailiTime(value, device)
+                    value.takeIf { time.available && time.cacheAgeMillis!! < GUAILI_STALE_AFTER_MILLIS }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null // A missing/broken cache never delays the independent network refresh.
+            } ?: return@launch
+            if (generation != settingsGeneration || latestSnapshot != null ||
+                !sameDataRequest(requestSettings(_state.value.settings), settings)) return@launch
+            val currentTime = snapshotSink.currentDeviceTime()?.let { assessGuailiTime(cached, it) } ?: return@launch
+            if (!currentTime.available || currentTime.cacheAgeMillis!! >= GUAILI_STALE_AFTER_MILLIS) return@launch
+            latestSnapshot = cached
+            latestSnapshotSettings = settings
+            _state.value = _state.value.copy(
+                cells = cached.table.cells,
+                lastUpdatedAt = cached.serverClock!!.serverTimeMillis,
+                isLoading = false,
+                isRefreshing = refreshJob?.isActive == true,
+                isStale = _state.value.errorMessage != null,
+            )
+            scheduleStaleStatusUpdate()
         }
     }
 
@@ -178,11 +222,13 @@ class GuailiViewModel(
     }
 
     private suspend fun refreshNow(settings: GuailiSettings, clearsCells: Boolean = false) {
-        val hadData = _state.value.cells.isNotEmpty() && !clearsCells
+        // A matching cache may have restored while the previous configuration's request drained.
+        val clearsDisplayedCells = clearsCells && latestSnapshotSettings?.let { sameDataRequest(it, settings) } != true
+        val hadData = _state.value.cells.isNotEmpty() && !clearsDisplayedCells
         _state.value = _state.value.copy(
             symbols = settings.symbols,
             intervals = settings.intervals,
-            cells = if (clearsCells) emptyMap() else _state.value.cells,
+            cells = if (clearsDisplayedCells) emptyMap() else _state.value.cells,
             isLoading = !hadData,
             isRefreshing = hadData,
             errorMessage = null,
@@ -199,6 +245,7 @@ class GuailiViewModel(
 
                 val snapshot = result.value
                 latestSnapshot = snapshot
+                latestSnapshotSettings = settings
                 val table = snapshot.table
                 _state.value = _state.value.copy(
                     symbols = table.symbols,
@@ -211,7 +258,7 @@ class GuailiViewModel(
                     isStale = false,
                 )
                 scheduleStaleStatusUpdate()
-                onSnapshotUpdated()
+                if (!temporaryRange) onSnapshotUpdated()
             }
             is GuailiResult.Failure -> {
                 if (!sameDataRequest(requestSettings(_state.value.settings), settings)) return
@@ -220,7 +267,7 @@ class GuailiViewModel(
                     isLoading = false,
                     isRefreshing = false,
                     errorMessage = result.message,
-                    isStale = hadData,
+                    isStale = _state.value.cells.isNotEmpty(),
                 )
             }
         }

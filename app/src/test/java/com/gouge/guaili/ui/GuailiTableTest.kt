@@ -13,6 +13,64 @@ import org.junit.Test
 
 class GuailiTableTest {
     @Test
+    fun matrixWindowKeepsPartialEdgeColumnsAndOnePrefetchColumn() {
+        assertEquals(TableColumnWindow(0, 6), tableColumnWindow(28, 52, 0, 200))
+        assertEquals(TableColumnWindow(0, 6), tableColumnWindow(28, 52, 51, 200))
+        assertEquals(TableColumnWindow(0, 7), tableColumnWindow(28, 52, 52, 200))
+        assertEquals(TableColumnWindow(1, 8), tableColumnWindow(28, 52, 104, 200))
+        assertEquals(TableColumnWindow(23, 28), tableColumnWindow(28, 52, 1_256, 200))
+    }
+
+    @Test
+    fun matrixWindowReservesAPartialTrailingColumnAtAnExactBoundary() {
+        assertEquals(TableColumnWindow(3, 8), tableColumnWindow(28, 52, 156, 208, prefetchColumns = 0))
+        assertEquals(TableColumnWindow(3, 8), tableColumnWindow(28, 52, 157, 208, prefetchColumns = 0))
+        // Preserve the rounded per-cell pixel stride at nonintegral device densities.
+        assertEquals(TableColumnWindow(9, 14), tableColumnWindow(28, 143, 1_287, 572, prefetchColumns = 0))
+    }
+
+    @Test
+    fun matrixWindowChangesOnlyWhenTheFirstVisibleColumnChanges() {
+        listOf(52 to 200, 143 to 575).forEach { (width, viewport) ->
+            val start = 5 * width
+            val window = tableColumnWindow(28, width, start, viewport)
+            // A nonintegral viewport used to advance the trailing edge partway
+            // through this same column, independently of the leading edge.
+            for (offset in start until start + width) {
+                assertEquals(window, tableColumnWindow(28, width, offset, viewport))
+            }
+            assertTrue(window != tableColumnWindow(28, width, start - 1, viewport))
+            assertTrue(window != tableColumnWindow(28, width, start + width, viewport))
+        }
+    }
+
+    @Test
+    fun matrixWindowClampsRestoredOffsetsAfterFilteringAndWidthChanges() {
+        assertEquals(TableColumnWindow(0, 4), tableColumnWindow(4, 52, 1_000, 200))
+        assertEquals(TableColumnWindow(0, 4), tableColumnWindow(4, 52, -10, 200))
+        assertEquals(TableColumnWindow(0, 4), tableColumnWindow(4, 52, 1_000, 1_200))
+        assertEquals(TableColumnWindow(0, 28), tableColumnWindow(28, 52, 0, 0))
+        assertEquals(TableColumnWindow(0, 0), tableColumnWindow(0, 52, 0, 200))
+    }
+
+    @Test
+    fun matrixWindowBoundsCompositionAndKeepsTheOriginalScrollExtent() {
+        listOf(52, 143, 180).forEach { width ->
+            val viewport = 5 * width + 1
+            for (offset in 0..(28 * width - viewport)) {
+                val window = tableColumnWindow(28, width, offset, viewport)
+                assertTrue(window.endExclusive - window.firstIndex <= 8)
+                val leadingPixels = window.firstIndex * width
+                val composedPixels = (window.endExclusive - window.firstIndex) * width
+                val trailingPixels = (28 - window.endExclusive) * width
+                assertEquals(28 * width, leadingPixels + composedPixels + trailingPixels)
+                assertTrue(leadingPixels <= offset)
+                assertTrue(leadingPixels + composedPixels >= offset + viewport)
+            }
+        }
+    }
+
+    @Test
     fun tableDensityUsesCompactAndComfortableDimensions() {
         val compact = tableDimensions(TableDensity.Compact)
         val comfortable = tableDimensions(TableDensity.Comfortable)

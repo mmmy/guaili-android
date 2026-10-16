@@ -4,9 +4,6 @@
  */
 package com.gouge.guaili.domain
 
-private const val SignalEmaLength = 20
-private const val SignalAtrLength = 1
-private const val SignalGuailiAtrLength = 14
 private const val SignalPercentileLength = 20
 private const val SignalPickCount = 2
 private const val SignalGuailiMin = 1.0
@@ -19,86 +16,125 @@ object AmplitudeSignalIndicator : KlineIndicator<AmplitudeSignalPoint> {
 
     override fun calculate(candles: List<Kline>): List<AmplitudeSignalPoint> {
         if (candles.isEmpty()) return emptyList()
+        return calculateAmplitudeSignalPoints(candles, KlineIndicatorSeries(candles)) { _, point -> point }
+    }
+}
 
-        val trueRanges = trueRanges(candles)
-        val atr = pineRma(trueRanges, SignalAtrLength)
-        val atr14 = pineRma(trueRanges, SignalGuailiAtrLength)
-        val ema20 = pineEma(candles.map(Kline::close), SignalEmaLength)
-        val normalizedRanges = candles.indices.map { index ->
-            val denominator = candles[index].high + candles[index].low
-            val currentAtr = atr[index]
-            if (currentAtr == null || denominator == 0.0) 0.0 else currentAtr / denominator * 2.0
+private inline fun <T> calculateAmplitudeSignalPoints(
+    candles: List<Kline>,
+    series: KlineIndicatorSeries,
+    createResult: (Int, AmplitudeSignalPoint) -> T,
+): List<T> {
+    val normalizedRanges = DoubleArray(candles.size)
+    var signalAtr = 0.0
+    for (index in candles.indices) {
+        // RMA(1) needs no result array. Retain its exact seed/recurrence even for non-finite inputs.
+        signalAtr = if (index == 0) signalAtr + series.trueRanges[index] else
+            signalAtr * 0 + series.trueRanges[index]
+        val denominator = candles[index].high + candles[index].low
+        normalizedRanges[index] = if (denominator == 0.0) 0.0 else signalAtr / denominator * 2.0
+    }
+    val percentile = (1.0 - SignalPickCount.toDouble() / SignalPercentileLength) * 100.0
+    val thresholds = rollingNearestRankPercentile(
+        normalizedRanges,
+        SignalPercentileLength,
+        percentile,
+    )
+
+    var barsSinceStrongTop = -1
+    var barsSinceStrongBottom = -1
+    // Monotonic queues inspect each candle at most twice rather than scanning two windows per bar.
+    val highestIndices = IntArray(candles.size)
+    val lowestIndices = IntArray(candles.size)
+    var highestHead = 0
+    var highestTail = 0
+    var lowestHead = 0
+    var lowestTail = 0
+    var lastHighNaN = -1
+    var lastLowNaN = -1
+    val output = ArrayList<T>(candles.size)
+
+    for (index in candles.indices) {
+        val candle = candles[index]
+        val windowStart = (index + 1 - SignalPercentileLength).coerceAtLeast(0)
+        while (highestHead < highestTail && highestIndices[highestHead] < windowStart) highestHead++
+        while (lowestHead < lowestTail && lowestIndices[lowestHead] < windowStart) lowestHead++
+        if (candle.high.isNaN()) {
+            lastHighNaN = index
+        } else {
+            while (highestHead < highestTail && candles[highestIndices[highestTail - 1]].high <= candle.high) {
+                highestTail--
+            }
+            highestIndices[highestTail++] = index
         }
-        val percentile = (1.0 - SignalPickCount.toDouble() / SignalPercentileLength) * 100.0
-        val thresholds = rollingNearestRankPercentile(
-            normalizedRanges,
-            SignalPercentileLength,
-            percentile,
-        )
-
-        var barsSinceStrongTop: Int? = null
-        var barsSinceStrongBottom: Int? = null
-
-        return candles.indices.map { index ->
-            val candle = candles[index]
-            val threshold = thresholds[index]
-            val currentRange = normalizedRanges[index]
-            val highestNow = candle.high >= candles
-                .subList((index + 1 - SignalPercentileLength).coerceAtLeast(0), index + 1)
-                .maxOf(Kline::high)
-            val lowestNow = candle.low <= candles
-                .subList((index + 1 - SignalPercentileLength).coerceAtLeast(0), index + 1)
-                .minOf(Kline::low)
-            val strongTop = threshold != null && currentRange > threshold &&
-                candle.close > candle.open && highestNow
-            val strongBottom = threshold != null && currentRange > threshold &&
-                candle.close < candle.open && lowestNow
-
-            barsSinceStrongTop = when {
-                strongTop -> 0
-                barsSinceStrongTop != null -> checkNotNull(barsSinceStrongTop) + 1
-                else -> null
+        if (candle.low.isNaN()) {
+            lastLowNaN = index
+        } else {
+            while (lowestHead < lowestTail && candles[lowestIndices[lowestTail - 1]].low >= candle.low) {
+                lowestTail--
             }
-            barsSinceStrongBottom = when {
-                strongBottom -> 0
-                barsSinceStrongBottom != null -> checkNotNull(barsSinceStrongBottom) + 1
-                else -> null
-            }
+            lowestIndices[lowestTail++] = index
+        }
+        // min/max over a window containing NaN also produced NaN in the original calculation.
+        val highestNow = lastHighNaN < windowStart &&
+            candle.high >= candles[highestIndices[highestHead]].high
+        val lowestNow = lastLowNaN < windowStart &&
+            candle.low <= candles[lowestIndices[lowestHead]].low
+        val threshold = if (index >= SignalPercentileLength - 1) thresholds[index] else null
+        val currentRange = normalizedRanges[index]
+        val strongTop = threshold != null && currentRange > threshold &&
+            candle.close > candle.open && highestNow
+        val strongBottom = threshold != null && currentRange > threshold &&
+            candle.close < candle.open && lowestNow
 
-            val ema = ema20[index]
-            val guailiAtr = atr14[index]
-            val guaili = if (ema != null && guailiAtr != null && guailiAtr != 0.0) {
-                when {
-                    candle.low > ema -> (candle.low - ema) / guailiAtr
-                    candle.high < ema -> (ema - candle.high) / guailiAtr
-                    else -> 0.0
-                }
-            } else {
-                null
-            }
-            val passesGuaili = guaili != null && guaili in SignalGuailiMin..SignalGuailiMax
+        barsSinceStrongTop = when {
+            strongTop -> 0
+            barsSinceStrongTop >= 0 -> barsSinceStrongTop + 1
+            else -> -1
+        }
+        barsSinceStrongBottom = when {
+            strongBottom -> 0
+            barsSinceStrongBottom >= 0 -> barsSinceStrongBottom + 1
+            else -> -1
+        }
 
+        val ema = series.ema20[index]
+        val guailiAtr = series.atr14[index]
+        val guaili = if (index >= KlineAtrLength - 1 && guailiAtr != 0.0) {
+            when {
+                candle.low > ema -> (candle.low - ema) / guailiAtr
+                candle.high < ema -> (ema - candle.high) / guailiAtr
+                else -> 0.0
+            }
+        } else {
+            null
+        }
+        val passesGuaili = guaili != null && guaili in SignalGuailiMin..SignalGuailiMax
+
+        output.add(createResult(
+            index,
             AmplitudeSignalPoint(
                 normalizedRange = currentRange,
                 threshold = threshold,
                 guaili = guaili,
-                weakTop = barsSinceStrongTop?.let { it < WeakSignalWindow } == true &&
+                weakTop = barsSinceStrongTop in 0 until WeakSignalWindow &&
                     highestNow && passesGuaili,
-                weakBottom = barsSinceStrongBottom?.let { it < WeakSignalWindow } == true &&
+                weakBottom = barsSinceStrongBottom in 0 until WeakSignalWindow &&
                     lowestNow && passesGuaili,
-            )
-        }
+            ),
+        ))
     }
+    return output
 }
 
 fun calculateKlineChartRows(candles: List<Kline>): List<KlineChartRow> {
-    val channels = GuailiChannelIndicator.calculate(candles)
-    val amplitudeSignals = AmplitudeSignalIndicator.calculate(candles)
-    return candles.indices.map { index ->
+    if (candles.isEmpty()) return emptyList()
+    val series = KlineIndicatorSeries(candles)
+    return calculateAmplitudeSignalPoints(candles, series) { index, amplitudeSignal ->
         KlineChartRow(
             candle = candles[index],
-            channel = channels[index],
-            amplitudeSignal = amplitudeSignals[index],
+            channel = channelPoint(candles[index], index, series),
+            amplitudeSignal = amplitudeSignal,
         )
     }
 }

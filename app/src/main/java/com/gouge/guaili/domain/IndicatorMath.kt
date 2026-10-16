@@ -4,61 +4,60 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 
-internal fun trueRanges(candles: List<Kline>): List<Double> =
-    candles.mapIndexed { index, candle ->
-        if (index == 0) {
-            candle.high - candle.low
-        } else {
-            val previousClose = candles[index - 1].close
-            max(
-                candle.high - candle.low,
-                max(abs(candle.high - previousClose), abs(candle.low - previousClose)),
-            )
+internal const val KlineEmaLength = 20
+internal const val KlineAtrLength = 14
+
+/** Primitive series shared by every indicator calculated for one exact candle history. */
+internal class KlineIndicatorSeries(candles: List<Kline>) {
+    val trueRanges = DoubleArray(candles.size)
+    val ema20 = DoubleArray(candles.size)
+    // The first KlineAtrLength - 1 slots are uninitialized warm-up values, not real zeroes.
+    val atr14 = DoubleArray(candles.size)
+
+    init {
+        val alpha = 2.0 / (KlineEmaLength + 1.0)
+        var atrSeedSum = 0.0
+        for (index in candles.indices) {
+            val candle = candles[index]
+            val range = if (index == 0) {
+                candle.high - candle.low
+            } else {
+                val previousClose = candles[index - 1].close
+                max(
+                    candle.high - candle.low,
+                    max(abs(candle.high - previousClose), abs(candle.low - previousClose)),
+                )
+            }
+            trueRanges[index] = range
+            ema20[index] = if (index == 0) candle.close else
+                alpha * candle.close + (1.0 - alpha) * ema20[index - 1]
+
+            // Keep the original first-window arithmetic mean seed and RMA operation order.
+            if (index < KlineAtrLength) atrSeedSum += range
+            when {
+                index == KlineAtrLength - 1 -> atr14[index] = atrSeedSum / KlineAtrLength
+                index >= KlineAtrLength -> atr14[index] =
+                    (atr14[index - 1] * (KlineAtrLength - 1) + range) / KlineAtrLength
+            }
         }
     }
-
-internal fun pineEma(values: List<Double>, length: Int): List<Double?> {
-    val output = MutableList<Double?>(values.size) { null }
-    if (values.isEmpty()) return output
-
-    var ema = values.first()
-    output[0] = ema
-    val alpha = 2.0 / (length.coerceAtLeast(1) + 1.0)
-    for (index in 1 until values.size) {
-        ema = alpha * values[index] + (1.0 - alpha) * ema
-        output[index] = ema
-    }
-    return output
 }
 
-internal fun pineRma(values: List<Double>, length: Int): List<Double?> {
-    val safeLength = length.coerceAtLeast(1)
-    val output = MutableList<Double?>(values.size) { null }
-    if (values.size < safeLength) return output
-
-    var rma = values.take(safeLength).average()
-    output[safeLength - 1] = rma
-    for (index in safeLength until values.size) {
-        rma = (rma * (safeLength - 1) + values[index]) / safeLength
-        output[index] = rma
-    }
-    return output
-}
-
+/** Warm-up slots must be read only once [length] values are available. */
 internal fun rollingNearestRankPercentile(
-    values: List<Double>,
+    values: DoubleArray,
     length: Int,
     percentile: Double,
-): List<Double?> {
+): DoubleArray {
     val safeLength = length.coerceAtLeast(1)
     val rank = ceil(percentile.coerceIn(0.0, 100.0) / 100.0 * safeLength)
         .toInt()
         .coerceIn(1, safeLength)
 
-    val output = MutableList<Double?>(values.size) { null }
+    val output = DoubleArray(values.size)
     if (values.size < safeLength) return output
     // Keep one primitive sorted window instead of allocating and sorting each candle's window.
-    val window = DoubleArray(safeLength) { values[it] }
+    val window = values.copyOf(safeLength)
     java.util.Arrays.sort(window)
     output[safeLength - 1] = window[rank - 1]
     for (index in safeLength until values.size) {
@@ -71,4 +70,14 @@ internal fun rollingNearestRankPercentile(
         output[index] = window[rank - 1]
     }
     return output
+}
+
+internal fun rollingNearestRankPercentile(
+    values: List<Double>,
+    length: Int,
+    percentile: Double,
+): List<Double?> {
+    val output = rollingNearestRankPercentile(values.toDoubleArray(), length, percentile)
+    val firstValidIndex = length.coerceAtLeast(1) - 1
+    return List(values.size) { index -> if (index < firstValidIndex) null else output[index] }
 }

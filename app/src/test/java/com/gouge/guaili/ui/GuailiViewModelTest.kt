@@ -67,18 +67,23 @@ class GuailiViewModelTest {
         val original = GuailiSettings.defaults().copy(symbols = listOf("BTCUSDT"), intervals = listOf("D"))
         val saved = mutableListOf<com.gouge.guaili.data.GuailiSnapshot>()
         var calls = 0
+        var widgetUpdates = 0
         val vm = GuailiViewModel(FakeSettingsSource(original), fetcherFactory = { GuailiFetcher { config ->
             calls++
             GuailiResult.Success(responseFor(config, config.symbols.last(), config.intervals.last(), 12))
-        } }, snapshotSink = com.gouge.guaili.data.GuailiSnapshotSink { saved += it }, computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false)
+        } }, snapshotSink = com.gouge.guaili.data.GuailiSnapshotSink { saved += it },
+            onSnapshotUpdated = { widgetUpdates++ },
+            computationDispatcher = StandardTestDispatcher(testScheduler), autoRefreshEnabled = false)
         try {
             advanceUntilIdle()
             assertEquals(1, saved.size)
+            assertEquals(1, widgetUpdates)
             vm.setTemporaryRange("BTCUSDT", listOf("D")); advanceUntilIdle()
             assertEquals(1, calls)
             vm.setTemporaryRange("XAUUSDT", listOf("8")); advanceUntilIdle()
             assertEquals(2, calls)
             assertEquals(1, saved.size)
+            assertEquals(1, widgetUpdates)
             assertEquals(listOf("BTCUSDT"), saved.single().table.symbols)
             assertEquals(listOf("BTCUSDT", "XAUUSDT"), vm.state.value.symbols)
         } finally { vm.clearViewModel() }

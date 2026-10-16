@@ -26,9 +26,13 @@ try {
         if ($LASTEXITCODE -ne 0 -or ($runtimeCheck -join "`n") -notmatch 'OK \(1 test\)') { throw 'Optimized runtime constructor checks failed.' }
         & adb -s $Serial shell am force-stop com.gouge.guaili.benchmark
     }
-    $testClass = if ($Mode -eq 'Profiles') { 'BaselineProfileGenerator' } else { 'StartupBenchmark' }
+    $testClasses = if ($Mode -eq 'Profiles') {
+        'com.gouge.guaili.benchmark.BaselineProfileGenerator'
+    } else {
+        'com.gouge.guaili.benchmark.StartupBenchmark,com.gouge.guaili.benchmark.MarketSignalsBenchmark,com.gouge.guaili.benchmark.MatrixViewportBenchmark'
+    }
     $instrumentArguments = @('-s', $Serial, 'shell', 'am', 'instrument', '-w', '-r',
-        '-e', 'class', "com.gouge.guaili.benchmark.$testClass",
+        '-e', 'class', $testClasses,
         '-e', 'additionalTestOutputDir', $remoteOutput)
     if ($AllowEmulator) { $instrumentArguments += @('-e', 'androidx.benchmark.suppressErrors', 'EMULATOR') }
     $instrumentArguments += 'com.gouge.guaili.benchmark/androidx.test.runner.AndroidJUnitRunner'

@@ -16,7 +16,13 @@ class PerformanceSetupActivity : Activity() {
         val baseUrl = intent.getStringExtra("server") ?: error("Missing local fixture server")
         require(baseUrl.startsWith("http://127.0.0.1:"))
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
-            SettingsStore(applicationContext).save(GuailiSettings.defaults().copy(baseUrl = baseUrl))
+            val defaults = GuailiSettings.defaults().copy(baseUrl = baseUrl)
+            val config = if (intent.getBooleanExtra("full-signals", false)) {
+                val symbols = requireNotNull(intent.getStringExtra("symbols")).split(',')
+                require(symbols.size == 40 && symbols.all { it.matches(Regex("[A-Z0-9]+USDT")) })
+                defaults.copy(symbols = symbols, autoRefreshSeconds = 60)
+            } else defaults
+            SettingsStore(applicationContext).save(config)
             startActivity(android.content.Intent(this@PerformanceSetupActivity, com.gouge.guaili.MainActivity::class.java))
             finish()
         }

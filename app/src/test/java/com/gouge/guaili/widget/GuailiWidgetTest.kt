@@ -4,6 +4,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class GuailiWidgetTest {
+    @Test fun narrowLargeFontSignalsUseTheSameOuterInsetAsTheirLayoutBudget() {
+        assertEquals(10, signalWidgetOuterPadding(180f, 1f))
+        assertEquals(2, signalWidgetOuterPadding(180f, 1.3f))
+        assertEquals(2, signalWidgetOuterPadding(180f, 1.5f))
+        assertEquals(10, signalWidgetOuterPadding(250f, 1.5f))
+        assertEquals(false, compactSignalWidgetHeader(320f, 1f))
+        assertEquals(true, compactSignalWidgetHeader(180f, 1.3f))
+        assertEquals(true, compactSignalWidgetHeader(250f, 1.5f))
+        assertEquals(true, compactSignalWidgetHeader(320f, 1.5f))
+    }
+
     @Test
     fun singleSymbolPeriodsWrapIntoMainScreenStyleRows() {
         val intervals = listOf("10D", "W", "4D", "3D", "2D", "D", "720", "480", "360", "240")

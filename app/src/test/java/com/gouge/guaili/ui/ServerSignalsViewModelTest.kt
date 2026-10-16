@@ -48,11 +48,42 @@ class ServerSignalsViewModelTest {
     }
     private fun ServerSignalsViewModel.close() { javaClass.getMethod("clear\$lifecycle_viewmodel").invoke(this) }
 
+    private fun TestScope.createViewModel(settings: GuailiSettingsSource, preferences: MarketSignalPreferencesSource,
+        cache: ServerSignalsSource, refresher: ServerSignalsRefreshUseCase = ServerSignalsRefreshUseCase(snapshotSink = cache)) =
+        ServerSignalsViewModel(settings, preferences, cache, refresher,
+            computationDispatcher = StandardTestDispatcher(testScheduler))
+
+    @Test fun delayedBackgroundProjectionCannotPublishPreviousServer() = runTest {
+        val settings = Settings()
+        val cache = Cache()
+        cache.save(ServerSignalsSnapshot(response(), now, "http://server-a", GuailiServerClock(now, 100_000, 1, 0), true))
+        val computationScheduler = TestCoroutineScheduler()
+        val vm = ServerSignalsViewModel(settings, Preferences(), cache,
+            computationDispatcher = StandardTestDispatcher(computationScheduler))
+        val publishedSources = mutableListOf<String?>()
+        val observer = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            vm.state.collect { publishedSources += it.snapshot?.baseUrl }
+        }
+        try {
+            runCurrent() // A's computation is queued on an independently paused dispatcher.
+            settings.save(settings.settings.value.copy(baseUrl = "http://server-b"))
+            runCurrent()
+            computationScheduler.runCurrent(); runCurrent()
+            computationScheduler.runCurrent(); runCurrent()
+            assertFalse(publishedSources.contains("http://server-a"))
+            assertNull(vm.state.value.snapshot)
+            cache.save(ServerSignalsSnapshot(response(), now, "http://server-b", GuailiServerClock(now, 100_000, 1, 0), true))
+            runCurrent(); computationScheduler.runCurrent(); runCurrent()
+            assertEquals("http://server-b", vm.state.value.snapshot?.baseUrl)
+            assertEquals(1, vm.state.value.presentation.signals.size)
+        } finally { observer.cancel(); vm.close(); computationScheduler.runCurrent() }
+    }
+
     @Test fun unchangedForegroundSecondsDoNotPublishStatesButPhaseAndClockChangesStillDo() = runTest {
         val settings = Settings()
         settings.save(settings.settings.value.copy(autoRefreshSeconds = 60))
         val cache = Cache { testScheduler.currentTime }
-        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 val wire = response()
                 GuailiResult.Success(wire.copy(results = wire.results.map { row -> row.copy(signals = row.signals.map {
@@ -84,7 +115,7 @@ class ServerSignalsViewModelTest {
         var calls = 0
         var target = 0.4
         var sounds = 0
-        val vm = ServerSignalsViewModel(settings, prefs, cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, prefs, cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 calls++
                 val at = now + testScheduler.currentTime
@@ -124,7 +155,7 @@ class ServerSignalsViewModelTest {
         settings.save(settings.settings.value.copy(autoRefreshSeconds = 10))
         val cache = Cache { testScheduler.currentTime }
         var calls = 0
-        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 calls++; GuailiResult.Success(response(now + testScheduler.currentTime))
             } }, cache,
@@ -156,7 +187,7 @@ class ServerSignalsViewModelTest {
         settings.save(settings.settings.value.copy(autoRefreshSeconds = 60))
         val cache = Cache { testScheduler.currentTime }
         var calls = 0
-        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 calls++; GuailiResult.Success(response(now + testScheduler.currentTime))
             } }, cache,
@@ -179,7 +210,7 @@ class ServerSignalsViewModelTest {
     @Test fun foregroundRefreshWorksWithoutWidgetsAndStopsWhenHidden() = runTest {
         val cache = Cache()
         var calls = 0
-        val vm = ServerSignalsViewModel(Settings(), Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(Settings(), Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher { symbols ->
                 assertTrue("The shared cache must always contain the full server universe", symbols.isEmpty())
                 calls++; GuailiResult.Success(response())
@@ -207,7 +238,7 @@ class ServerSignalsViewModelTest {
         val cache = Cache { testScheduler.currentTime }
         val waiting = CompletableDeferred<GuailiResult<ServerSignalsResponse>>()
         var calls = 0
-        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 if (++calls > 1) waiting.await() else {
                     val at = now + testScheduler.currentTime
@@ -222,7 +253,7 @@ class ServerSignalsViewModelTest {
             } }, cache,
         ))
         try {
-            runCurrent(); vm.setForeground(true); runCurrent()
+            runCurrent(); vm.setPullbackActive(true); vm.setForeground(true); runCurrent()
             assertEquals(1, calls)
             advanceTimeBy(31_000); runCurrent()
             assertEquals(2, calls)
@@ -250,7 +281,7 @@ class ServerSignalsViewModelTest {
     @Test fun failedRefreshKeepsValidCacheAndExpiryTimerHidesItWithoutAnotherResponse() = runTest {
         val cache = Cache()
         var calls = 0
-        val vm = ServerSignalsViewModel(Settings(), Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(Settings(), Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { ServerSignalsFetcher {
                 if (++calls == 1) GuailiResult.Success(response()) else GuailiResult.Failure("offline")
             } }, cache, nowMillis = { now + testScheduler.currentTime },
@@ -276,7 +307,7 @@ class ServerSignalsViewModelTest {
         val cache = Cache()
         val waiting = CompletableDeferred<GuailiResult<ServerSignalsResponse>>()
         val created = mutableListOf<String>()
-        val vm = ServerSignalsViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
+        val vm = createViewModel(settings, Preferences(), cache, ServerSignalsRefreshUseCase(
             ServerSignalsFetcherFactory { url -> created += url; ServerSignalsFetcher {
                 if (url == "http://server-a") GuailiResult.Success(response()) else waiting.await()
             } }, cache,
@@ -298,7 +329,7 @@ class ServerSignalsViewModelTest {
         val prefs = Preferences()
         val cache = Cache()
         cache.save(ServerSignalsSnapshot(response(), now, "http://server-a", GuailiServerClock(now, 100_000, 1, 0), true))
-        val vm = ServerSignalsViewModel(settings, prefs, cache)
+        val vm = createViewModel(settings, prefs, cache)
         try {
             runCurrent()
             vm.setView(MarketView.SignalsV2)
