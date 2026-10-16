@@ -4,6 +4,10 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import com.gouge.guaili.data.*
@@ -21,20 +25,36 @@ private val Context.pullbackAlertsDataStore by preferencesDataStore(name = "pull
 
 @Serializable
 internal data class PullbackWidgetAlertSnapshot(val alerts: List<PriceAlertDto> = emptyList(),
-    val updatedAt: Long = 0, val error: String? = null)
+    val updatedAt: Long = 0, val error: String? = null,
+    @kotlinx.serialization.Transient val receipt: GuailiDeviceTime? = null)
 
 internal class PullbackWidgetAlertStore(context: Context, baseUrl: String) {
     private val store = context.applicationContext.pullbackAlertsDataStore
     private val scope = normalizeServerSignalsBaseUrl(baseUrl)
     private val key = stringPreferencesKey(MessageDigest.getInstance("SHA-256").digest(scope.toByteArray())
         .joinToString("") { "%02x".format(it) })
+    private val elapsedKey = longPreferencesKey("${key.name}_elapsed")
+    private val wallKey = longPreferencesKey("${key.name}_wall")
+    private val bootKey = intPreferencesKey("${key.name}_boot")
+    private fun Preferences.receipt(): GuailiDeviceTime? {
+        val elapsed = this[elapsedKey] ?: return null
+        val wall = this[wallKey] ?: return null
+        return GuailiDeviceTime(wall, elapsed, this[bootKey])
+    }
+    private fun MutablePreferences.setReceipt(time: GuailiDeviceTime) {
+        this[elapsedKey] = time.elapsedMillis
+        this[wallKey] = time.wallMillis
+        time.bootCount?.let { this[bootKey] = it } ?: remove(bootKey)
+    }
     private val decoded = caches.forStore(store)
     val snapshots = store.data.catch { if (it is java.io.IOException) emit(emptyPreferences()) else throw it }
-        .map { it[key] }.distinctUntilChanged().map { encoded ->
-        decoded.decode(encoded) { json.decodeFromString<PullbackWidgetAlertSnapshot>(it) } ?: PullbackWidgetAlertSnapshot()
+        .map { it[key] to it.receipt() }.distinctUntilChanged().map { (encoded, receipt) ->
+        (decoded.decode(encoded) { json.decodeFromString<PullbackWidgetAlertSnapshot>(it) }
+            ?: PullbackWidgetAlertSnapshot()).copy(receipt = receipt)
     }.flowOn(Dispatchers.Default)
 
-    suspend fun publish(result: PriceAlertResult<List<PriceAlertDto>>, generation: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun publish(result: PriceAlertResult<List<PriceAlertDto>>, generation: Long,
+        received: GuailiDeviceTime? = null): Boolean = withContext(Dispatchers.IO) {
         var changed = false
         store.edit { values ->
             val previous = values[key]?.let { json.decodeFromString<PullbackWidgetAlertSnapshot>(it) } ?: PullbackWidgetAlertSnapshot()
@@ -43,12 +63,18 @@ internal class PullbackWidgetAlertStore(context: Context, baseUrl: String) {
                     else PullbackWidgetAlertSnapshot(result.value, System.currentTimeMillis())
                 is PriceAlertResult.Failure -> previous.copy(error = result.message)
             }
-            if (previous == next) return@edit
-            val encoded = json.encodeToString(next)
+            val refreshReceipt = result is PriceAlertResult.Success && received != null &&
+                (previous != next || shouldPersistPullbackReceipt(values.receipt(), received))
+            if (previous == next && !refreshReceipt) return@edit
+            val encoded = if (previous != next) json.encodeToString(next) else null
             val version = versions.getOrPut(scope) { AlertScopeVersion() }
             synchronized(version) {
                 // A confirmed edit/delete invalidates every full read begun before it.
-                if (version.generation == generation && previous != next) { values[key] = encoded; changed = true }
+                if (version.generation == generation) {
+                    if (encoded != null) values[key] = encoded
+                    if (refreshReceipt) values.setReceipt(requireNotNull(received))
+                    changed = true
+                }
             }
         }
         changed
@@ -72,7 +98,7 @@ internal class PullbackWidgetAlertStore(context: Context, baseUrl: String) {
     }
 }
 
-private class AlertScopeVersion(var generation: Long = 0, var successfulRead: GuailiDeviceTime? = null)
+private class AlertScopeVersion(var generation: Long = 0, var persistenceFailed: Boolean = false)
 private val versions = ConcurrentHashMap<String, AlertScopeVersion>()
 private val alertReads = RefreshSingleFlight<Pair<String, Long>, PriceAlertResult<List<PriceAlertDto>>>()
 private val alertPublications = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -95,19 +121,30 @@ internal suspend fun refreshPullbackWidgetAlerts(context: Context, baseUrl: Stri
     val generation = synchronized(version) { version.generation }
     return alertReads.run(scope to generation) {
         val result = PriceAlertRepository.create(baseUrl).listAll()
+        val received = readGuailiDeviceTime(context)
         val changed = try {
-            PullbackWidgetAlertStore(context, baseUrl).publish(result, generation)
+            PullbackWidgetAlertStore(context, baseUrl).publish(result, generation, received)
         } catch (error: CancellationException) { throw error }
         catch (_: Exception) {
             synchronized(version) {
-                if (version.generation == generation) version.successfulRead = null
+                if (version.generation == generation) version.persistenceFailed = true
             }
             return@run PriceAlertResult.Failure("价格警报快照未保存，请重试")
         }
-        if (result is PriceAlertResult.Success) synchronized(version) {
-            if (version.generation == generation) version.successfulRead = readGuailiDeviceTime(context)
-        }
-        if (changed) try { updatePullbackWidgets(context, baseUrl) }
+        val recovered = if (result is PriceAlertResult.Success) synchronized(version) {
+            if (version.generation != generation) false else {
+                val failed = version.persistenceFailed
+                version.persistenceFailed = false
+                failed
+            }
+        } else false
+        if (changed && result is PriceAlertResult.Success) try {
+            PullbackWidgetAlertStore(context, baseUrl).snapshots.first().receipt?.let {
+                schedulePullbackWidgetExpiry(context, baseUrl, it)
+            }
+        } catch (error: CancellationException) { throw error }
+        catch (_: Exception) { /* A failed redraw schedule cannot invalidate the persisted successful read. */ }
+        if (changed || recovered) try { updatePullbackWidgets(context, baseUrl) }
         catch (error: CancellationException) { throw error }
         catch (_: Exception) { /* A rendering error does not invalidate the saved observation. */ }
         result
@@ -135,9 +172,8 @@ internal suspend fun updatePullbackWidgets(context: Context, baseUrl: String? = 
         .forEach { widget.update(context, it.id) }
 }
 
-internal fun pullbackWidgetAlertsStale(baseUrl: String, device: GuailiDeviceTime): Boolean {
-    val version = versions[normalizeServerSignalsBaseUrl(baseUrl)] ?: return true
-    val read = synchronized(version) { version.successfulRead } ?: return true
-    return read.bootCount == null || read.bootCount != device.bootCount || device.elapsedMillis < read.elapsedMillis ||
-        device.elapsedMillis - read.elapsedMillis > 30_000
+internal fun pullbackWidgetAlertsStale(baseUrl: String, snapshot: PullbackWidgetAlertSnapshot, device: GuailiDeviceTime): Boolean {
+    val version = versions[normalizeServerSignalsBaseUrl(baseUrl)]
+    return snapshot.error != null || version?.let { synchronized(it) { it.persistenceFailed } } == true ||
+        pullbackWidgetReceiptOverdue(snapshot.receipt, device)
 }

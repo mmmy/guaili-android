@@ -106,8 +106,8 @@ internal fun PullbackObservationWidgetContent(frame: PullbackWidgetFrame?, confi
                                 val alert = primaryPullbackAlert(group, scoped.preferences.pullback.primaryAlerts[
                                     priceAlertPrimaryKey(settings.baseUrl, row.symbol, direction.name)])
                                 PullbackWidgetTarget(row.symbol, direction, candidate, scoped.evidence["${row.symbol}|${direction.name}"],
-                                    alert, state.historical || scoped.alerts.error != null ||
-                                        pullbackWidgetAlertsStale(settings.baseUrl, device), now, columns, appWidgetId, settings.baseUrl)
+                                    alert, pullbackWidgetAlertsStale(settings.baseUrl, scoped.alerts, device),
+                                    now, columns, appWidgetId, settings.baseUrl)
                             }
                         }
                         row.issue?.let { Text(it, style = TextStyle(color = PullbackWarning, fontSize = 11.sp),
@@ -180,18 +180,18 @@ internal fun PullbackWidgetHeader(state: PullbackWidgetState, levels: Int, onlyC
         !state.projection.ready -> "待更新"
         feedback?.contains("超时") == true -> "超时"
         state.warning != null || feedback?.contains("失败") == true -> "失败"
-        state.historical -> "快照旧"
-        LocalSize.current.width < 320.dp && scale > 1.2f -> "${levels}级"
-        else -> "回调${levels}级"
+        state.refreshOverdue -> "快照旧"
+        else -> sampledAt?.let { (if (LocalSize.current.width >= 320.dp && scale <= 1.2f) "采样" else "") +
+            PullbackHeaderTime.format(java.time.Instant.ofEpochMilli(it)) } ?: "回调${levels}级"
     }
     val description = "回调观察，${levels}级，采样 ${sampledAt?.let { PullbackSampleTime.format(java.time.Instant.ofEpochMilli(it)) } ?: "未知"}，多 ${state.longHits} 空 ${state.shortHits}，" +
-        (state.warning ?: if (state.historical) "历史快照" else "采样快照") + "；打开参数与更多"
+        (state.warning ?: if (state.refreshOverdue) "后台刷新已超时" else "采样时的观察，非实时；后台约15分钟更新") + "；打开参数与更多"
     Row(GlanceModifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(GlanceModifier.defaultWeight().height(48.dp).semantics { contentDescription = description }
             .clickable(actionStartActivity(pullbackWidgetActivityIntent(LocalContext.current, appWidgetId))),
             contentAlignment = Alignment.CenterStart) {
             Text(title + if (LocalSize.current.width >= 320.dp && scale <= 1.2f) " 多${state.longHits} 空${state.shortHits}" else "",
-                style = TextStyle(color = if (state.warning != null || state.historical) PullbackWarning else PullbackText,
+                style = TextStyle(color = if (state.warning != null || state.refreshOverdue) PullbackWarning else PullbackText,
                     fontSize = 12.sp), maxLines = 1)
         }
         Box(GlanceModifier.width(48.dp).height(48.dp)
@@ -334,3 +334,4 @@ private val PullbackWarning = colors(0xFF8A5A1B, 0xFFDFBD7B)
 private val PullbackDays = colors(0xFF406B97, 0xFF94B8DF)
 private val PullbackHours = colors(0xFF70518D, 0xFFC2ACDF)
 private val PullbackSampleTime = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(java.time.ZoneId.systemDefault())
+private val PullbackHeaderTime = java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(java.time.ZoneId.systemDefault())

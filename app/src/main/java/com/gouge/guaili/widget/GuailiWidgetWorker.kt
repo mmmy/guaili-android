@@ -17,6 +17,7 @@ import com.gouge.guaili.data.GuailiResult
 import com.gouge.guaili.data.GuailiSnapshotStore
 import com.gouge.guaili.data.ServerSignalsRefreshUseCase
 import com.gouge.guaili.data.ServerSignalsSnapshotStore
+import com.gouge.guaili.data.belongsTo
 import com.gouge.guaili.settings.SettingsStore
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
@@ -55,7 +56,7 @@ class GuailiWidgetWorker(
             val legacy = async { if (needsLegacy) GuailiRefreshUseCase(snapshotSink = GuailiSnapshotStore(applicationContext))
                 .refresh(settings, requirePersistence = true) else null }
             val v2 = async { if (needsV2) ServerSignalsRefreshUseCase(snapshotSink = ServerSignalsSnapshotStore(applicationContext))
-                .refresh(settings.baseUrl, reuseWithinMillis = 1_000L) else null }
+                .refresh(settings.baseUrl, reuseWithinMillis = if (showFeedback) 0L else 1_000L) else null }
             val alerts = async { if (targets.any { it.config.mode == WidgetMode.PullbackObservation })
                 refreshPullbackWidgetAlerts(applicationContext, settings.baseUrl) else null }
             val legacyResult = legacy.await()
@@ -72,7 +73,13 @@ class GuailiWidgetWorker(
                     if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
                     message = (result as? GuailiResult.Failure)?.message, deduplicate = !showFeedback)
             }
-            if (v2Result is GuailiResult.Success) scheduleServerSignalsExpiry(applicationContext, v2Result.value)
+            if (v2Result is GuailiResult.Success) {
+                if (targets.any { it.config.mode == WidgetMode.SignalsV2 }) scheduleServerSignalsExpiry(applicationContext, v2Result.value)
+                if (targets.any { it.config.mode == WidgetMode.PullbackObservation }) v2Result.value.serverClock?.let {
+                    schedulePullbackWidgetExpiry(applicationContext, settings.baseUrl,
+                        com.gouge.guaili.data.GuailiDeviceTime(v2Result.value.updatedAt, it.receivedElapsedMillis, it.bootCount))
+                }
+            }
             listOfNotNull(legacyResult, v2Result).filterIsInstance<GuailiResult.Failure>() +
                 if (alertsResult is com.gouge.guaili.data.PriceAlertResult.Failure) listOf(GuailiResult.Failure(alertsResult.message)) else emptyList()
         }
@@ -136,12 +143,32 @@ internal const val RefreshWidgetIdKey = "refresh_widget_id"
 class WidgetFeedbackExpiryWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val onlyV2 = inputData.getBoolean(OnlyV2WidgetsKey, false)
+        val onlyPullback = inputData.getBoolean(OnlyPullbackWidgetsKey, false)
         if (onlyV2) clearServerSignalsExpirySchedule()
+        if (onlyPullback) clearPullbackExpirySchedule()
         val settings = SettingsStore(applicationContext).settings.first()
         val widget = GuailiWidget()
         widgetRefreshTargets(applicationContext, settings)
-            .filter { if (onlyV2) it.config.mode.usesServerSignalsSnapshot() else it.config.mode != WidgetMode.DecisionReminders }
+            .filter { when {
+                onlyV2 -> it.config.mode == WidgetMode.SignalsV2
+                onlyPullback -> it.config.mode == WidgetMode.PullbackObservation
+                else -> it.config.mode != WidgetMode.DecisionReminders
+            } }
             .forEach { widget.update(applicationContext, it.id) }
+        if (onlyPullback) {
+            val receipts = mutableListOf<com.gouge.guaili.data.GuailiDeviceTime>()
+            ServerSignalsSnapshotStore(applicationContext).read()?.takeIf { it.belongsTo(settings.baseUrl) }?.let { snapshot ->
+                snapshot.serverClock?.let { clock -> receipts +=
+                    com.gouge.guaili.data.GuailiDeviceTime(snapshot.updatedAt, clock.receivedElapsedMillis, clock.bootCount) }
+            }
+            PullbackWidgetAlertStore(applicationContext, settings.baseUrl).snapshots.first().receipt?.let {
+                receipts += it
+            }
+            val device = com.gouge.guaili.data.readGuailiDeviceTime(applicationContext)
+            receipts.filter { !pullbackWidgetReceiptOverdue(it, device) }.minByOrNull { it.elapsedMillis }?.let {
+                schedulePullbackWidgetExpiry(applicationContext, settings.baseUrl, it, appendAfterCurrent = true)
+            }
+        }
         return Result.success()
     }
 }

@@ -175,7 +175,7 @@ class PullbackWidgetIntegrationTest {
                     assertEquals("$width / $scale / $night: $label must not wrap",1,field.layout.lineCount)
                     assertEquals("$width / $scale / $night: $label must not truncate",0,field.layout.getEllipsisCount(0))
                 }
-                val header = fields.first { it.text.toString().startsWith("回调") || it.text.toString() == "5级" || it.text.toString() == "快照旧" }
+                val header = fields.first { it.text.toString().startsWith("采样") || it.text.toString().matches(Regex("\\d{2}:\\d{2}.*")) || it.text.toString() == "快照旧" }
                 assertTrue(header.layout.lineCount == 1 && header.layout.getEllipsisCount(0) == 0)
                 val bitmap = Bitmap.createBitmap(pixels,parent.measuredHeight,Bitmap.Config.ARGB_8888)
                 parent.draw(Canvas(bitmap))
@@ -296,11 +296,17 @@ class PullbackWidgetIntegrationTest {
         val manager = AppWidgetManager.getInstance(context)
         val id = host.allocateAppWidgetId()
         val server = MockWebServer()
+        val signalReads = java.util.concurrent.atomic.AtomicInteger()
+        val alertReads = java.util.concurrent.atomic.AtomicInteger()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val body = when {
-                    request.path?.startsWith("/api/signals") == true -> PullbackWidgetJson.encodeToString(fixture(context).response)
-                    request.path?.startsWith("/api/price-alerts") == true -> PullbackWidgetJson.encodeToString(listOf(priceFixture(System.currentTimeMillis())))
+                    request.path?.startsWith("/api/signals") == true -> {
+                        signalReads.incrementAndGet(); PullbackWidgetJson.encodeToString(fixture(context).response)
+                    }
+                    request.path?.startsWith("/api/price-alerts") == true -> {
+                        alertReads.incrementAndGet(); PullbackWidgetJson.encodeToString(listOf(priceFixture(System.currentTimeMillis())))
+                    }
                     else -> "[]"
                 }
                 return MockResponse().setHeader("Content-Type","application/json").setBody(body)
@@ -344,12 +350,36 @@ class PullbackWidgetIntegrationTest {
                 fun capture(name: String) {
                     device.waitForIdle()
                     val bounds = android.graphics.Rect()
-                    scenario.onActivity { requireNotNull(hostView).getGlobalVisibleRect(bounds) }
+                    scenario.onActivity {
+                        val view = requireNotNull(hostView)
+                        view.getGlobalVisibleRect(bounds)
+                        var header: TextView? = null
+                        fun findHeader(node: View) {
+                            if (node is TextView && node.text.toString().matches(Regex("(采样)?\\d{2}:\\d{2}.*"))) header = node
+                            if (node is ViewGroup) for (i in 0 until node.childCount) findHeader(node.getChildAt(i))
+                        }
+                        findHeader(view)
+                        assertNotNull("The real Host must show its sample time", header)
+                        assertEquals("The real Host must show the entire sample time", 0, header!!.layout.getEllipsisCount(0))
+                    }
                     val screen = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
                     val bitmap = Bitmap.createBitmap(screen,bounds.left,bounds.top,bounds.width(),bounds.height())
                     File(context.getExternalFilesDir(null),name).outputStream().use { stream -> bitmap.compress(Bitmap.CompressFormat.PNG,100,stream) }
                 }
                 capture("pullback-widget-host-narrow.png")
+                stopWork()
+                val previousSignalReads = signalReads.get()
+                val previousAlertReads = alertReads.get()
+                val previousSnapshot = snapshots.read()!!.updatedAt
+                device.findObject(By.text("刷新")).click()
+                withTimeout(15_000) {
+                    while (signalReads.get() <= previousSignalReads || alertReads.get() <= previousAlertReads ||
+                        snapshots.read()?.updatedAt == previousSnapshot ||
+                        PullbackWidgetAlertStore(context, baseUrl).snapshots.first().receipt == null) delay(100)
+                }
+                assertFalse(pullbackWidgetAlertsStale(baseUrl,
+                    PullbackWidgetAlertStore(context, baseUrl).snapshots.first(), readGuailiDeviceTime(context)))
+                assertTrue(device.wait(Until.hasObject(By.text("刷新")), 8_000))
                 device.findObject(By.text("候选")).click()
                 withTimeout(8_000) { while (!configurations.read(id,settingsStore.settings.first()).pullbackOnlyCandidates) delay(100) }
                 assertTrue(device.wait(Until.gone(By.text("4H")),8_000))
@@ -406,5 +436,60 @@ class PullbackWidgetIntegrationTest {
         assertFalse(store.publish(PriceAlertResult.Success(listOf(alert)),0))
         assertEquals(2L,store.snapshots.first().alerts.single().revision)
         assertTrue(PullbackWidgetAlertStore(context,"$url-other").snapshots.first().alerts.isEmpty())
+    }
+
+    @Test fun unchangedAlertReadsPersistVerificationAcrossStoreReloadWithoutReencodingTheList() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val url = "http://receipt-test-${System.nanoTime()}"
+        val store = PullbackWidgetAlertStore(context, url)
+        val time = readGuailiDeviceTime(context)
+        val alerts = listOf(priceFixture(time.wallMillis))
+        assertTrue(store.publish(PriceAlertResult.Success(alerts), 0, time))
+        val saved = store.snapshots.first()
+        assertEquals(time, saved.receipt)
+        val later = time.copy(elapsedMillis = time.elapsedMillis + 60_000, wallMillis = time.wallMillis + 60_000)
+        assertFalse(store.publish(PriceAlertResult.Success(alerts), 0,
+            time.copy(elapsedMillis = time.elapsedMillis + 10_000)))
+        assertTrue(store.publish(PriceAlertResult.Success(alerts), 0, later))
+        val restored = PullbackWidgetAlertStore(context, url).snapshots.first()
+        assertSame("Receipt-only saves must reuse the decoded list", saved.alerts, restored.alerts)
+        assertEquals(saved.updatedAt, restored.updatedAt)
+        assertEquals(later, restored.receipt)
+        assertFalse(pullbackWidgetAlertsStale(url, restored, later.copy(elapsedMillis = later.elapsedMillis + 45_000)))
+        assertTrue(pullbackWidgetAlertsStale(url, restored, later.copy(bootCount = (later.bootCount ?: 0) + 1)))
+        assertTrue(store.publish(PriceAlertResult.Failure("offline"), 0, later))
+        assertTrue(pullbackWidgetAlertsStale(url, store.snapshots.first(), later))
+        assertTrue(store.publish(PriceAlertResult.Success(alerts), 0, later))
+        assertFalse(pullbackWidgetAlertsStale(url, store.snapshots.first(), later))
+        assertFalse(store.publish(PriceAlertResult.Success(emptyList()), 1, later))
+        assertEquals(alerts, store.snapshots.first().alerts)
+    }
+
+    @Test fun anotherServiceCannotPostponeAnAlreadyScheduledEarlierExpiryCheck() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val work = WorkManager.getInstance(context)
+        val name = "pullback-widget-cache-expiry"
+        work.cancelUniqueWork(name).result.get()
+        clearPullbackExpirySchedule()
+        try {
+            val receipt = readGuailiDeviceTime(context)
+            schedulePullbackWidgetExpiry(context, "http://current-source.invalid",
+                receipt.copy(elapsedMillis = receipt.elapsedMillis - 1_000))
+            suspend fun pending(): androidx.work.WorkInfo = withTimeout(5_000) {
+                while (true) {
+                    work.getWorkInfosForUniqueWork(name).get().firstOrNull {
+                        it.state == androidx.work.WorkInfo.State.ENQUEUED
+                    }?.let { return@withTimeout it }
+                    delay(50)
+                }
+                @Suppress("UNREACHABLE_CODE") error("unreachable")
+            }
+            val earlier = pending().id
+            schedulePullbackWidgetExpiry(context, "http://late-old-source.invalid", receipt)
+            assertEquals("A delayed old-source read must not postpone the current-source clock check", earlier, pending().id)
+        } finally {
+            work.cancelUniqueWork(name).result.get()
+            clearPullbackExpirySchedule()
+        }
     }
 }

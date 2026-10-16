@@ -34,7 +34,13 @@ internal suspend fun updateServerSignalWidgets(context: Context, settings: Guail
     targets.forEach { target -> setWidgetRefreshStatus(context, target.id,
         if (result is GuailiResult.Success) WidgetRefreshPhase.Success else WidgetRefreshPhase.Failure,
         message = (result as? GuailiResult.Failure)?.message, deduplicate = true) }
-    if (result is GuailiResult.Success) scheduleServerSignalsExpiry(context, result.value)
+    if (result is GuailiResult.Success) {
+        if (targets.any { it.config.mode == WidgetMode.SignalsV2 }) scheduleServerSignalsExpiry(context, result.value)
+        if (targets.any { it.config.mode == WidgetMode.PullbackObservation }) result.value.serverClock?.let {
+            schedulePullbackWidgetExpiry(context, settings.baseUrl,
+                GuailiDeviceTime(result.value.updatedAt, it.receivedElapsedMillis, it.bootCount))
+        }
+    }
     val widget = GuailiWidget()
     targets.forEach { widget.update(context, it.id) }
 }
@@ -70,3 +76,31 @@ internal fun clearServerSignalsExpirySchedule() = synchronized(serverSignalsExpi
 }
 
 internal const val OnlyV2WidgetsKey = "only_v2_widgets"
+
+internal const val OnlyPullbackWidgetsKey = "only_pullback_widgets"
+private data class PullbackExpiry(val baseUrl: String, val boot: Int, val elapsed: Long)
+private val pullbackExpiryLock = Any()
+private var scheduledPullbackExpiry: PullbackExpiry? = null
+
+/** Keep an earlier clock check; frequent foreground reads do not repeatedly replace the job. */
+internal fun schedulePullbackWidgetExpiry(context: Context, baseUrl: String, receipt: GuailiDeviceTime,
+    appendAfterCurrent: Boolean = false) {
+    val device = readGuailiDeviceTime(context)
+    val age = pullbackWidgetReceiptAge(receipt, device) ?: return
+    if (age >= PullbackWidgetRefreshWindowMillis) return
+    val next = PullbackExpiry(normalizeServerSignalsBaseUrl(baseUrl), receipt.bootCount ?: return,
+        receipt.elapsedMillis + PullbackWidgetRefreshWindowMillis)
+    synchronized(pullbackExpiryLock) {
+        val previous = scheduledPullbackExpiry
+        // The worker re-reads the current service; an old service must never postpone an earlier check.
+        if (previous != null && previous.boot == next.boot && previous.elapsed <= next.elapsed) return
+        WorkManager.getInstance(context).enqueueUniqueWork("pullback-widget-cache-expiry",
+            if (appendAfterCurrent) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<WidgetFeedbackExpiryWorker>()
+                .setInputData(workDataOf(OnlyPullbackWidgetsKey to true))
+                .setInitialDelay(next.elapsed - device.elapsedMillis + 1_000, TimeUnit.MILLISECONDS).build())
+        scheduledPullbackExpiry = next
+    }
+}
+
+internal fun clearPullbackExpirySchedule() = synchronized(pullbackExpiryLock) { scheduledPullbackExpiry = null }

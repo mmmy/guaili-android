@@ -39,6 +39,9 @@ class PullbackWidgetPresentationTest {
         val historical = pullbackWidgetState(value, null, projection, config, value.baseUrl,
             device.copy(elapsedMillis = device.elapsedMillis + 900_000))
         assertTrue(historical.historical)
+        assertFalse("Normal background sampling is historical, not a missed widget refresh", historical.refreshOverdue)
+        assertTrue(pullbackWidgetState(value, null, projection, config, value.baseUrl,
+            device.copy(elapsedMillis = device.elapsedMillis + 17 * 60_000)).refreshOverdue)
         assertTrue("Keep the recorded observation, never reclassify it as current", historical.rows.single().hasCandidate)
         assertFalse(pullbackWidgetState(value, null, projection, config, "http://two", device).projection.ready)
         assertTrue(pullbackWidgetState(value, null, projection, config, value.baseUrl, device.copy(bootCount = 2)).historical)

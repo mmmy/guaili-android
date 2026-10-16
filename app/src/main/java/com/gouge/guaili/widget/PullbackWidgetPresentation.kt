@@ -28,6 +28,7 @@ internal data class PullbackWidgetState(
     val rows: List<PullbackRow> = emptyList(),
     val historical: Boolean = false,
     val warning: String? = null,
+    val refreshOverdue: Boolean = true,
 ) {
     val longHits get() = rows.count { it.long?.highlighted == true }
     val shortHits get() = rows.count { it.short?.highlighted == true }
@@ -60,7 +61,8 @@ internal fun pullbackWidgetState(snapshot: ServerSignalsSnapshot?, failure: Serv
     val historical = !time.available || projection.nextChangeAt?.let { time.nowMillis == null || time.nowMillis >= it } != false
     val bySymbol = projection.rows.associateBy { it.symbol }
     val rows = config.symbols.map { bySymbol[it] ?: PullbackRow(it, issue = "服务器未计算") }
-    return PullbackWidgetState(projection, rows, historical, warning ?: time.unavailableReason)
+    val overdue = time.cacheAgeMillis?.let { it >= PullbackWidgetRefreshWindowMillis } ?: true
+    return PullbackWidgetState(projection, rows, historical, warning ?: time.unavailableReason, overdue)
 }
 
 @Serializable
