@@ -112,7 +112,7 @@ class PullbackWidgetIntegrationTest {
                 uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
                     if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
             })
-            val dims = pullbackWidgetDimensions(context,width.toFloat())
+            val dims = pullbackWidgetDimensions(context,width.toFloat(),projection.rows)
             val state = pullbackWidgetState(source,null,projection,config,source.baseUrl,readGuailiDeviceTime(target))
             val remote = GlanceRemoteViews().compose(context,DpSize(width.dp,600.dp)) {
                 Column(GlanceModifier.fillMaxWidth().padding(horizontal = dims.outer.dp,vertical = 4.dp)) {
@@ -181,6 +181,80 @@ class PullbackWidgetIntegrationTest {
                 parent.draw(Canvas(bitmap))
                 File(target.getExternalFilesDir(null),"pullback-widget-$width-$scale-${if (night) "dark" else "light"}.png")
                     .outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG,100,it) }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalGlanceRemoteViewsApi::class)
+    @Test fun phoneAlertsUseTheRightColumnWhenFullTextFitsEvenWithLargeFonts() = runBlocking<Unit> {
+        val target = ApplicationProvider.getApplicationContext<Context>()
+        val source = fixture(target)
+        val long = PullbackWidgetProjector().project(source, PullbackRules()).rows.first().long!!
+        val short = long.copy(direction = PullbackDirection.Short, highlighted = false,
+            evidence = long.evidence.dropLast(1) + long.target.copy(interval = "60"), entryInterval = "3")
+        val rows = listOf(PullbackRow("BTCUSDT", long, short))
+        val alerts = listOf(priceFixture(source.response.serverTime).let {
+            it.copy(geometry = it.geometry.copy(first = it.geometry.first.copy(price = 81056.5)))
+        }, priceFixture(source.response.serverTime).let {
+            it.copy(id = 43, interval = "5", intent = "open_short",
+                geometry = it.geometry.copy(first = it.geometry.first.copy(price = 82998.2)))
+        })
+        for (night in listOf(false, true)) for (scale in listOf(1f, 1.3f, 1.5f)) {
+            val context = target.createConfigurationContext(Configuration(target.resources.configuration).apply {
+                fontScale = scale
+                uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                    if (night) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+            })
+            val dims = pullbackWidgetDimensions(context, 320f, rows)
+            assertTrue("320dp / $scale: phone's alerts must fit beside targets", alerts.all {
+                pullbackWidgetAlertFits(context, dims, it, source.response.serverTime, true)
+            })
+            val remote = GlanceRemoteViews().compose(context, DpSize(320.dp, 300.dp)) {
+                Column(GlanceModifier.fillMaxWidth().padding(horizontal = dims.outer.dp, vertical = 4.dp)) {
+                    androidx.glance.text.Text("BTCUSDT")
+                    PullbackWidgetTarget("BTCUSDT", PullbackDirection.Long, long, null, alerts[0], true,
+                        source.response.serverTime, dims, 1, source.baseUrl)
+                    PullbackWidgetTarget("BTCUSDT", PullbackDirection.Short, short, null, alerts[1], true,
+                        source.response.serverTime, dims, 1, source.baseUrl)
+                }
+            }.remoteViews
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                val parent = FrameLayout(context)
+                parent.setBackgroundColor(if (night) 0xff171d24.toInt() else 0xfff7f9fb.toInt())
+                parent.addView(remote.apply(context, parent))
+                val pixels = (320 * context.resources.displayMetrics.density).toInt()
+                parent.measure(View.MeasureSpec.makeMeasureSpec(pixels, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+                parent.layout(0, 0, pixels, parent.measuredHeight)
+                val fields = mutableListOf<TextView>()
+                fun visit(view: View) {
+                    if (view is TextView && view.visibility == View.VISIBLE) fields += view
+                    if (view is ViewGroup) for (i in 0 until view.childCount) visit(view.getChildAt(i))
+                }
+                visit(parent)
+                val bounds = fields.filter { it.text.toString() in listOf("2D", "1H", "做多", "做空", "@81056.5", "@82998.2") }
+                    .associate { field -> field.text.toString() to android.graphics.Rect().also {
+                        field.getDrawingRect(it); parent.offsetDescendantRectToMyCoords(field, it)
+                    } }
+                for ((level, intent, price) in listOf(Triple("2D", "做多", "@81056.5"), Triple("1H", "做空", "@82998.2"))) {
+                    assertTrue("Alert must remain to the right of $level", bounds.getValue(intent).left > bounds.getValue(level).right)
+                    assertTrue("Alert must overlap the target row vertically", bounds.getValue(intent).top < bounds.getValue(level).bottom)
+                    assertTrue("Price must remain beside the target row", bounds.getValue(price).top < bounds.getValue(level).bottom)
+                }
+                for (field in fields.filter { it.text.startsWith("@") || it.text == "待更新" }) {
+                    assertEquals("Alert must not truncate", 0, field.layout.getEllipsisCount(0))
+                    var child: View = field
+                    while (child !== parent) {
+                        val container = child.parent as View
+                        assertTrue("Alert must stay within its container", child.left >= 0 && child.right <= container.width &&
+                            child.top >= 0 && child.bottom <= container.height)
+                        child = container
+                    }
+                }
+                val bitmap = Bitmap.createBitmap(pixels, parent.measuredHeight, Bitmap.Config.ARGB_8888)
+                parent.draw(Canvas(bitmap))
+                File(target.getExternalFilesDir(null), "pullback-inline-phone-$scale-${if (night) "dark" else "light"}.png")
+                    .outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
         }
     }

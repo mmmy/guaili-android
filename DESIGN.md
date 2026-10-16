@@ -80,7 +80,7 @@ K 线工具区的 TV 入口保持至少 48dp 触摸区域，优先在横向工�
 
 局部规范：主表格见 [.impeccable/surfaces/guaili-table.md](.impeccable/surfaces/guaili-table.md)，V2 见 [.impeccable/surfaces/market-signals.md](.impeccable/surfaces/market-signals.md)，回调观察见 [.impeccable/surfaces/pullback-observation.md](.impeccable/surfaces/pullback-observation.md)，小组件见 [.impeccable/surfaces/guaili-widget.md](.impeccable/surfaces/guaili-widget.md)。
 
-2026-10-16 新增回调观察小组件，作为既有系统的局部扩展：目标维持候选 32sp / Bold、等待 28sp / Medium，多上空下、多绿空红，推荐小级别 16sp，中性候选底层；浅／深色分别保证文字对比。一行 48dp 顶栏与无底栏适配桌面空间，宽版警报摘要保留独立至少 48dp 点击区域，并按自身两行内容、状态换行与时间标签内距测量增高；时间使用天蓝、小时紫、分钟金的无填充圆角边框。窄屏大字体的内外横向内距均为 2dp，完整目标与小级别优先。该模式的尺寸、配色和采样历史语义见 [.impeccable/surfaces/pullback-widget.md](.impeccable/surfaces/pullback-widget.md)，不覆盖矩阵、V2 或旧小组件。
+2026-10-16 新增回调观察小组件，作为既有系统的局部扩展：目标维持候选 32sp / Bold、等待 28sp / Medium，多上空下、多绿空红，推荐小级别 16sp，中性候选底层；浅／深色分别保证文字对比。一行 48dp 顶栏与无底栏适配桌面空间，宽版警报摘要保留独立至少 48dp 点击区域，并按自身两行内容、状态换行与时间标签内距测量增高；时间使用天蓝、小时紫、分钟金的无填充圆角边框。2026-10-17 同行修正：目标和小级别按当前可见行与候选筛选共享实测列宽，不预留未显示周期；警报按当前字体测量实际顶段和价格行，计入标签内距及 4dp 安全余量，仅剩余空间不足时下移，不设统一字体缩放阈值。窄屏大字体的内外横向内距均为 2dp，完整目标与小级别优先。该模式的尺寸、配色和采样历史语义见 [.impeccable/surfaces/pullback-widget.md](.impeccable/surfaces/pullback-widget.md)，不覆盖矩阵、V2 或旧小组件。
 
 ## Do's and Don'ts
 

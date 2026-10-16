@@ -47,7 +47,8 @@ class SignalCardSizingTest {
         for (width in listOf(180, 250, 320)) {
             for ((index, case) in cases.withIndex()) {
                 val remote = GlanceRemoteViews().compose(context, DpSize(width.dp, 110.dp)) {
-                    androidx.glance.layout.Column(modifier = GlanceModifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                    androidx.glance.layout.Column(modifier = GlanceModifier.fillMaxWidth().padding(
+                        horizontal = signalWidgetOuterPadding(width.toFloat(), context.resources.configuration.fontScale).dp)) {
                         SignalWidgetHeader(snapshot, 1, case.second, case.first, 12)
                     }
                 }.remoteViews
@@ -68,6 +69,11 @@ class SignalCardSizingTest {
                     visit(parent)
                     assertTrue(fields.any { it.text.toString() == "编辑" })
                     assertEquals(5, fields.size)
+                    assertTrue("The compact count retains the complete signal title for accessibility",
+                        fields.any { it.contentDescription?.toString() == "乖离信号 · 12条" })
+                    if (case.first.timeUncertain) assertTrue(fields.any {
+                        it.text.toString() == "待校时" && it.contentDescription?.toString() == "待校时"
+                    })
                     fields.forEach { text ->
                         val layout = requireNotNull(text.layout)
                         assertEquals("$width dp header: ${text.text}", 1, layout.lineCount)
@@ -100,7 +106,8 @@ class SignalCardSizingTest {
         for (width in listOf(180, 250, 320)) {
             for ((index, signal) in listOf(normal, conflict, exit, conflict.copy(transitionOnly = true)).withIndex()) {
                 val remote = GlanceRemoteViews().compose(context, DpSize(width.dp, 240.dp)) {
-                    androidx.glance.layout.Column(modifier = GlanceModifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                    androidx.glance.layout.Column(modifier = GlanceModifier.fillMaxWidth().padding(
+                        horizontal = signalWidgetOuterPadding(width.toFloat(), context.resources.configuration.fontScale).dp)) {
                         SignalRow(signal, "EMA20")
                     }
                 }.remoteViews

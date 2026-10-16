@@ -73,9 +73,6 @@ internal fun PullbackObservationWidgetContent(frame: PullbackWidgetFrame?, confi
         config, settings.baseUrl, device)
     val rules = scoped?.preferences?.pullback?.rules ?: PullbackRules()
     val scale = context.resources.configuration.fontScale
-    val columns = remember(size.width, context.resources.displayMetrics.density, scale) {
-        pullbackWidgetDimensions(context, size.width.value)
-    }
     val snapshot = scoped?.snapshot
     val assessment = snapshot?.let { assessServerSignalsTime(it, device) }
     val now = assessment?.nowMillis ?: device.wallMillis
@@ -83,6 +80,9 @@ internal fun PullbackObservationWidgetContent(frame: PullbackWidgetFrame?, confi
     val alerts = alertGroups.groups(scoped?.alerts?.alerts.orEmpty(), now)
     val rows = remember(state.rows, config.pullbackOnlyCandidates) {
         state.rows.filter { !config.pullbackOnlyCandidates || it.hasCandidate }
+    }
+    val columns = remember(size.width, context.resources.displayMetrics.density, scale, rows, config.pullbackOnlyCandidates) {
+        pullbackWidgetDimensions(context, size.width.value, rows, config.pullbackOnlyCandidates)
     }
     Column(GlanceModifier.fillMaxSize().background(PullbackWidgetBackground)
         .padding(horizontal = columns.outer.dp, vertical = 4.dp)) {
@@ -121,20 +121,24 @@ internal fun PullbackObservationWidgetContent(frame: PullbackWidgetFrame?, confi
 }
 
 internal data class PullbackWidgetDimensions(val outer: Int, val inner: Int, val level: Float,
-    val entry: Float, val rowHeight: Float, val alertHeight: Float, val wide: Boolean, val stackAlerts: Boolean)
+    val entry: Float, val rowHeight: Float, val alertHeight: Float, val wide: Boolean, val alertWidth: Float)
 
-internal fun pullbackWidgetDimensions(context: Context, width: Float): PullbackWidgetDimensions {
+internal fun pullbackWidgetDimensions(context: Context, width: Float, rows: List<PullbackRow> = emptyList(),
+    onlyCandidates: Boolean = false): PullbackWidgetDimensions {
     val metrics = context.resources.displayMetrics
     val scale = context.resources.configuration.fontScale
     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
     paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, 32f, metrics)
-    val labels = MarketPeriods.all.map { pullbackPeriodLabel(it.interval) } + "—"
-    val level = maxOf(48f, labels.maxOf(paint::measureText) / metrics.density + 2)
+    val candidates = rows.flatMap { listOfNotNull(it.long, it.short) }.filter { !onlyCandidates || it.highlighted }
+    // Share columns across visible rows without reserving space for periods that are not displayed.
+    val levels = candidates.map { pullbackPeriodLabel(it.target.interval) } + "—"
+    val level = maxOf(48f, levels.maxOf(paint::measureText) / metrics.density + 2)
     val rowHeight = maxOf(48f, (paint.fontMetrics.bottom - paint.fontMetrics.top) / metrics.density + 4)
     paint.typeface = android.graphics.Typeface.DEFAULT
     paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, 16f, metrics)
-    val entry = maxOf(48f, labels.maxOf(paint::measureText) / metrics.density + 2)
+    val entries = candidates.mapNotNull { it.entryInterval?.let(::pullbackPeriodLabel) } + "—"
+    val entry = maxOf(48f, entries.maxOf(paint::measureText) / metrics.density + 2)
     fun lineHeight(sp: Float): Float {
         paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp, metrics)
         val font = paint.fontMetricsInt
@@ -147,7 +151,25 @@ internal fun pullbackWidgetDimensions(context: Context, width: Float): PullbackW
     val inner = if (width < 220 && scale > 1.2f) 2 else 8
     val available = width - outer * 2 - inner * 2
     return PullbackWidgetDimensions(outer, inner, level, entry, rowHeight, alertHeight, width >= 250,
-        scale > 1.2f || available - level - entry - 16 < 104)
+        available - level - entry - 16)
+}
+
+internal fun pullbackWidgetAlertFits(context: Context, dimensions: PullbackWidgetDimensions,
+    alert: PriceAlertDto, now: Long, stale: Boolean): Boolean {
+    val metrics = context.resources.displayMetrics
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.DEFAULT
+    }
+    fun textWidth(text: String, sp: Float): Float {
+        paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, sp, metrics)
+        return paint.measureText(text) / metrics.density
+    }
+    val display = alert.pullbackDisplay(now, stale)
+    val top = textWidth(alertIntentLabel(alert.intent), 11f) + 4 +
+        textWidth(pullbackPeriodLabel(alert.interval), 14f) + 4 +
+        textWidth(display.label, if (display.unit != null) 12f else 11f) + if (display.unit != null) 8 else 0
+    val price = if (alert.geometry.kind == "horizontal_segment") "@${alertNumber(alert.geometry.first.price)}" else "斜线"
+    return maxOf(top, textWidth(price, 12f)) + 4 <= dimensions.alertWidth
 }
 
 @Composable
@@ -194,6 +216,9 @@ internal fun PullbackWidgetTarget(symbol: String, direction: PullbackDirection, 
     appWidgetId: Int, baseUrl: String) {
     val context = LocalContext.current
     val highlighted = candidate?.highlighted == true
+    val inlineAlert = alert != null && dimensions.wide && remember(context, dimensions, alert, now, alertStale) {
+        pullbackWidgetAlertFits(context, dimensions, alert, now, alertStale)
+    }
     val targetColor = when {
         candidate == null -> PullbackMuted
         direction == PullbackDirection.Long && highlighted -> PullbackLong
@@ -221,12 +246,12 @@ internal fun PullbackWidgetTarget(symbol: String, direction: PullbackDirection, 
                 if (candidate != null) Text(entry?.let(::pullbackPeriodLabel) ?: "—",
                     style = TextStyle(color = PullbackMuted, fontSize = 16.sp), maxLines = 1)
             }
-            if (dimensions.wide && !dimensions.stackAlerts && alert != null) {
+            if (inlineAlert && alert != null) {
                 Spacer(GlanceModifier.width(8.dp))
                 PullbackWidgetAlert(alert, now, alertStale, baseUrl, dimensions.alertHeight, GlanceModifier.defaultWeight())
             }
         }
-        if (dimensions.wide && dimensions.stackAlerts && alert != null)
+        if (dimensions.wide && !inlineAlert && alert != null)
             PullbackWidgetAlert(alert, now, alertStale, baseUrl, dimensions.alertHeight, GlanceModifier.fillMaxWidth())
     }
     Spacer(GlanceModifier.height(2.dp))
